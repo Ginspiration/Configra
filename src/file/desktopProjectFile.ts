@@ -1,0 +1,72 @@
+import { isTauri } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
+import { save } from '@tauri-apps/plugin-dialog';
+
+export function isDesktopRuntime() {
+  return isTauri();
+}
+
+const projectFilters = [
+  {
+    name: 'Config Graph Project',
+    extensions: ['cfggraph.json', 'json'],
+  },
+];
+
+const fileNameFromPath = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+export async function readProjectFileText(path: string) {
+  const text = await invoke<string>('read_project_file', { path });
+  return { path, name: fileNameFromPath(path), text };
+}
+
+export async function writeTextFile(path: string, text: string) {
+  await invoke('write_project_file', { path, text });
+}
+
+export async function writeProjectFileText(path: string, text: string) {
+  await writeTextFile(path, text);
+  await invoke('save_recent_project_path', { path });
+}
+
+export async function loadRecentProjectPath() {
+  return invoke<string | null>('load_recent_project_path');
+}
+
+export async function rememberRecentProjectPath(path: string) {
+  await invoke('save_recent_project_path', { path });
+}
+
+export async function pickProjectFileText() {
+  const selected = await open({
+    title: 'Open project',
+    multiple: false,
+    filters: projectFilters,
+  });
+
+  if (!selected || Array.isArray(selected)) return undefined;
+
+  return readProjectFileText(selected);
+}
+
+export async function pickProjectSavePath() {
+  return save({
+    title: 'Save project',
+    defaultPath: 'game-config.cfggraph.json',
+    filters: projectFilters,
+  });
+}
+
+export async function pickJsonSavePath(defaultPath: string) {
+  return save({
+    title: 'Save JSON',
+    defaultPath,
+    filters: [
+      {
+        name: 'JSON',
+        extensions: ['json'],
+      },
+    ],
+  });
+}
