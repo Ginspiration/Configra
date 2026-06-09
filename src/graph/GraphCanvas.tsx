@@ -7,7 +7,9 @@ import {
   ReactFlowProvider,
   type NodeTypes,
   type OnNodeDrag,
+  useReactFlow,
 } from '@xyflow/react';
+import type { GraphPosition } from '../model/types';
 import { useEditorStore } from '../store/editorStore';
 import { projectToFlow, type TableFlowNode } from './graphMapping';
 import TableNode from './TableNode';
@@ -18,12 +20,21 @@ const nodeTypes: NodeTypes = {
 
 type GraphCanvasProps = {
   showMiniMap: boolean;
+  onOpenTableData(tableId: string): void;
+  onOpenTableContext(tableId: string, position: { x: number; y: number }): void;
+  onOpenCanvasContext(position: { x: number; y: number }, graphPosition: GraphPosition): void;
 };
 
-function GraphCanvasInner({ showMiniMap }: GraphCanvasProps) {
+function GraphCanvasInner({
+  showMiniMap,
+  onOpenTableData,
+  onOpenTableContext,
+  onOpenCanvasContext,
+}: GraphCanvasProps) {
   const project = useEditorStore((state) => state.project);
   const moveTable = useEditorStore((state) => state.moveTable);
   const selectTable = useEditorStore((state) => state.selectTable);
+  const { screenToFlowPosition } = useReactFlow();
   const { nodes, edges } = useMemo(() => projectToFlow(project), [project]);
 
   const handleNodeDragStop: OnNodeDrag<TableFlowNode> = (_, node) => {
@@ -45,6 +56,22 @@ function GraphCanvasInner({ showMiniMap }: GraphCanvasProps) {
       onNodeDrag={handleNodeDrag}
       onNodeDragStop={handleNodeDragStop}
       onNodeClick={(_, node) => selectTable(node.id)}
+      onNodeDoubleClick={(_, node) => {
+        selectTable(node.id);
+        onOpenTableData(node.id);
+      }}
+      onNodeContextMenu={(event, node) => {
+        event.preventDefault();
+        selectTable(node.id);
+        onOpenTableContext(node.id, { x: event.clientX, y: event.clientY });
+      }}
+      onPaneContextMenu={(event) => {
+        event.preventDefault();
+        onOpenCanvasContext(
+          { x: event.clientX, y: event.clientY },
+          screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+        );
+      }}
     >
       <Background gap={18} size={1} />
       <Controls position="bottom-left" />
@@ -67,10 +94,10 @@ function GraphCanvasInner({ showMiniMap }: GraphCanvasProps) {
   );
 }
 
-export default function GraphCanvas({ showMiniMap }: GraphCanvasProps) {
+export default function GraphCanvas(props: GraphCanvasProps) {
   return (
     <ReactFlowProvider>
-      <GraphCanvasInner showMiniMap={showMiniMap} />
+      <GraphCanvasInner {...props} />
     </ReactFlowProvider>
   );
 }

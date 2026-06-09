@@ -31,6 +31,7 @@ function TableNode({ data }: NodeProps) {
             <span className="table-node__name">{column.name || column.id}</span>
             <span className="table-node__type">{column.type}</span>
             {column.primary ? <span className="table-node__badge">PK</span> : null}
+            {column.autoIncrement ? <span className="table-node__badge">AI</span> : null}
             {column.required ? <span className="table-node__required">*</span> : null}
             {column.type === 'ref' && column.ref ? (
               <span className="table-node__ref">

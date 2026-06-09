@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { message } from '@tauri-apps/plugin-dialog';
 import GraphCanvas from './graph/GraphCanvas';
-import TableInspector from './inspector/TableInspector';
-import DataEditor from './dataGrid/DataEditor';
+import DataGridModal from './dataGrid/DataGridModal';
+import ContextMenu, { type ContextMenuItem } from './contextMenu/ContextMenu';
 import { useEditorStore } from './store/editorStore';
 import { validateProject } from './validation/validateProject';
 import { downloadProjectFile, downloadTableJson, safeFileName, tableJson } from './export/exportTables';
 import { parseProjectFileText } from './file/projectFile';
+import type { GraphPosition } from './model/types';
 import {
   isDesktopRuntime,
   loadRecentProjectPath,
@@ -19,24 +22,50 @@ import {
 } from './file/desktopProjectFile';
 import { languageLabels, translate, type Language } from './i18n';
 
+type MenuState =
+  | {
+      kind: 'table';
+      tableId: string;
+      x: number;
+      y: number;
+    }
+  | {
+      kind: 'canvas';
+      x: number;
+      y: number;
+      graphPosition: GraphPosition;
+    };
+
 export default function App() {
   const project = useEditorStore((state) => state.project);
   const selectedTableId = useEditorStore((state) => state.selectedTableId);
   const selectTable = useEditorStore((state) => state.selectTable);
   const addTable = useEditorStore((state) => state.addTable);
   const addColumn = useEditorStore((state) => state.addColumn);
-  const addRow = useEditorStore((state) => state.addRow);
   const deleteTable = useEditorStore((state) => state.deleteTable);
+  const isDirty = useEditorStore((state) => state.isDirty);
   const loadProject = useEditorStore((state) => state.loadProject);
-  const resetProject = useEditorStore((state) => state.resetProject);
+  const markClean = useEditorStore((state) => state.markClean);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [language, setLanguage] = useState<Language>('zh');
   const [showMiniMap, setShowMiniMap] = useState(false);
+  const [showDataGrid, setShowDataGrid] = useState(false);
+  const [editingTableId, setEditingTableId] = useState<string>();
   const [projectPath, setProjectPath] = useState<string>();
   const [status, setStatus] = useState('');
+  const [menu, setMenu] = useState<MenuState>();
   const t = useMemo(() => translate.bind(null, language), [language]);
+  const isDirtyRef = useRef(false);
+  const allowCloseRef = useRef(false);
+  const closePromptOpenRef = useRef(false);
+  const recentProjectLoadedRef = useRef(false);
+  const saveProjectRef = useRef<() => Promise<boolean>>(async () => false);
+  const tRef = useRef(t);
+  isDirtyRef.current = isDirty;
+  tRef.current = t;
 
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
+  const editingTable = project.tables.find((table) => table.id === editingTableId) ?? selectedTable;
   const issues = useMemo(() => validateProject(project, t), [project, t]);
   const errorCount = issues.filter((issue) => issue.severity === 'error').length;
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
@@ -60,23 +89,60 @@ export default function App() {
   const saveProject = useCallback(async () => {
     if (!isDesktopRuntime()) {
       downloadProjectFile(project);
-      return;
+      markClean();
+      return true;
     }
 
     try {
       const nextPath = projectPath ?? (await pickProjectSavePath());
-      if (!nextPath) return;
+      if (!nextPath) return false;
 
       await writeProjectFileText(nextPath, JSON.stringify(project, null, 2));
       setProjectPath(nextPath);
+      markClean();
       setStatus(`Saved ${nextPath.split(/[\\/]/).pop() ?? nextPath}`);
+      return true;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+      return false;
     }
-  }, [project, projectPath]);
+  }, [markClean, project, projectPath]);
+
+  useEffect(() => {
+    saveProjectRef.current = saveProject;
+  }, [saveProject]);
+
+  const confirmReplaceProject = useCallback(async () => {
+    if (!isDirtyRef.current) return true;
+
+    if (!isDesktopRuntime()) {
+      if (!window.confirm(t('unsavedChangesLoadMessage'))) return false;
+      return saveProject();
+    }
+
+    const saveLabel = t('saveAndContinue');
+    const discardLabel = t('discardAndContinue');
+    const result = await message(t('unsavedChangesLoadMessage'), {
+      title: t('unsavedChangesTitle'),
+      kind: 'warning',
+      buttons: {
+        yes: saveLabel,
+        no: discardLabel,
+        cancel: t('cancel'),
+      },
+    });
+
+    if (result === saveLabel || result === 'Yes') {
+      return saveProject();
+    }
+
+    return result === discardLabel || result === 'No';
+  }, [saveProject, t]);
 
   const openDesktopProjectFile = useCallback(async () => {
     try {
+      if (!(await confirmReplaceProject())) return;
+
       const selected = await pickProjectFileText();
       if (!selected) return;
       if (loadProjectText(selected.text, selected.name, selected.path)) {
@@ -85,7 +151,7 @@ export default function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [loadProjectText]);
+  }, [confirmReplaceProject, loadProjectText]);
 
   const triggerLoadProject = useCallback(() => {
     if (isDesktopRuntime()) {
@@ -93,65 +159,258 @@ export default function App() {
       return;
     }
 
-    fileInputRef.current?.click();
-  }, [openDesktopProjectFile]);
+    void (async () => {
+      if (await confirmReplaceProject()) {
+        fileInputRef.current?.click();
+      }
+    })();
+  }, [confirmReplaceProject, openDesktopProjectFile]);
 
-  const copyCurrentTableJson = useCallback(async () => {
-    if (!selectedTable) return;
+  const copyTableJsonToClipboard = useCallback(async (tableId = selectedTable?.id) => {
+    if (!tableId) return;
+
+    const table = project.tables.find((item) => item.id === tableId);
+    if (!table) return;
 
     try {
-      await navigator.clipboard.writeText(tableJson(project, selectedTable.id));
-      setStatus(t('copiedTableJson', { name: selectedTable.name }));
+      await navigator.clipboard.writeText(tableJson(project, table.id));
+      setStatus(t('copiedTableJson', { name: table.name }));
     } catch {
       setStatus(t('clipboardDenied'));
     }
-  }, [project, selectedTable, t]);
+  }, [project, selectedTable?.id, t]);
 
-  const downloadCurrentTableJson = useCallback(async () => {
-    if (!selectedTable) return;
+  const downloadTableJsonFile = useCallback(async (tableId = selectedTable?.id) => {
+    if (!tableId) return;
+
+    const table = project.tables.find((item) => item.id === tableId);
+    if (!table) return;
 
     if (!isDesktopRuntime()) {
-      downloadTableJson(project, selectedTable.id);
+      downloadTableJson(project, table.id);
       return;
     }
 
     try {
-      const path = await pickJsonSavePath(`${safeFileName(selectedTable.name)}.json`);
+      const path = await pickJsonSavePath(`${safeFileName(table.name)}.json`);
       if (!path) return;
 
-      await writeTextFile(path, tableJson(project, selectedTable.id));
+      await writeTextFile(path, tableJson(project, table.id));
       setStatus(`Saved ${path.split(/[\\/]/).pop() ?? path}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [project, selectedTable]);
+  }, [project, selectedTable?.id]);
 
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
   }, [addColumn, selectedTable]);
 
-  const addRowToSelectedTable = useCallback(() => {
-    if (selectedTable) addRow(selectedTable.id);
-  }, [addRow, selectedTable]);
+  const openRowsModal = useCallback(
+    (tableId = selectedTable?.id) => {
+      if (!tableId) return;
+      setEditingTableId(tableId);
+      selectTable(tableId);
+      setShowDataGrid(true);
+    },
+    [selectTable, selectedTable?.id],
+  );
 
-  const deleteSelectedTable = useCallback(() => {
-    if (!selectedTable) return;
-    if (window.confirm(t('confirmDeleteTable', { name: selectedTable.name }))) {
-      deleteTable(selectedTable.id);
+  const deleteTableById = useCallback((tableId = selectedTable?.id) => {
+    if (!tableId) return;
+
+    const table = project.tables.find((item) => item.id === tableId);
+    if (!table) return;
+
+    if (window.confirm(t('confirmDeleteTable', { name: table.name }))) {
+      deleteTable(table.id);
     }
-  }, [deleteTable, selectedTable, t]);
+  }, [deleteTable, project.tables, selectedTable?.id, t]);
 
-  const resetSampleProject = useCallback(() => {
-    resetProject();
-    setProjectPath(undefined);
-  }, [resetProject]);
+  const openTableContextMenu = useCallback((tableId: string, position: { x: number; y: number }) => {
+    selectTable(tableId);
+    setMenu({ kind: 'table', tableId, x: position.x, y: position.y });
+  }, [selectTable]);
+
+  const openCanvasContextMenu = useCallback(
+    (position: { x: number; y: number }, graphPosition: GraphPosition) => {
+      setMenu({ kind: 'canvas', x: position.x, y: position.y, graphPosition });
+    },
+    [],
+  );
 
   const loadFile = async (file: File) => {
     loadProjectText(await file.text(), file.name);
   };
 
+  const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!menu) return [];
+
+    if (menu.kind === 'table') {
+      const table = project.tables.find((item) => item.id === menu.tableId);
+      if (!table) return [];
+
+      return [
+        { id: 'table-label', type: 'label', label: table.name || table.id },
+        {
+          id: 'edit-rows',
+          label: t('edit'),
+          shortcut: 'R',
+          onSelect: () => openRowsModal(table.id),
+        },
+        { id: 'table-separator-export', type: 'separator' },
+        {
+          id: 'copy-json',
+          label: t('copyTableJson'),
+          shortcut: 'C',
+          onSelect: () => copyTableJsonToClipboard(table.id),
+        },
+        {
+          id: 'download-json',
+          label: t('downloadJson'),
+          shortcut: 'E',
+          onSelect: () => downloadTableJsonFile(table.id),
+        },
+        { id: 'table-separator-danger', type: 'separator' },
+        {
+          id: 'delete-table',
+          label: t('deleteTable'),
+          shortcut: 'Del',
+          danger: true,
+          onSelect: () => deleteTableById(table.id),
+        },
+      ];
+    }
+
+    return [
+      { id: 'canvas-label', type: 'label', label: t('canvas') },
+      {
+        id: 'new-table-here',
+        label: t('newTableHere'),
+        shortcut: 'N',
+        onSelect: () => {
+          addTable(menu.graphPosition);
+        },
+      },
+      { id: 'canvas-separator-project', type: 'separator' },
+      {
+        id: 'save-project',
+        label: t('save'),
+        shortcut: 'Ctrl+S',
+        onSelect: () => {
+          void saveProject();
+        },
+      },
+      {
+        id: 'load-project',
+        label: t('load'),
+        shortcut: 'Ctrl+O',
+        onSelect: triggerLoadProject,
+      },
+      { id: 'canvas-separator-view', type: 'separator' },
+      {
+        id: 'toggle-minimap',
+        label: showMiniMap ? t('hideMiniMap') : t('miniMap'),
+        shortcut: 'M',
+        onSelect: () => setShowMiniMap((value) => !value),
+      },
+    ];
+  }, [
+    addTable,
+    copyTableJsonToClipboard,
+    deleteTableById,
+    downloadTableJsonFile,
+    menu,
+    openRowsModal,
+    project.tables,
+    saveProject,
+    showMiniMap,
+    t,
+    triggerLoadProject,
+  ]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!isDirtyRef.current || allowCloseRef.current) return;
+
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
   useEffect(() => {
     if (!isDesktopRuntime()) return;
+    if (!isDirty) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    const appWindow = getCurrentWindow();
+
+    void appWindow
+      .onCloseRequested((event) => {
+        if (allowCloseRef.current) return;
+        if (!isDirtyRef.current) return;
+
+        event.preventDefault();
+        if (closePromptOpenRef.current) return;
+
+        closePromptOpenRef.current = true;
+
+        void (async () => {
+          const translateNow = tRef.current;
+          const saveLabel = translateNow('saveAndQuit');
+          const discardLabel = translateNow('discardAndQuit');
+
+          try {
+            const result = await message(translateNow('unsavedChangesCloseMessage'), {
+              title: translateNow('unsavedChangesTitle'),
+              kind: 'warning',
+              buttons: {
+                yes: saveLabel,
+                no: discardLabel,
+                cancel: translateNow('cancel'),
+              },
+            });
+
+            if (result === saveLabel || result === 'Yes') {
+              const saved = await saveProjectRef.current();
+              if (!saved) return;
+            } else if (result !== discardLabel && result !== 'No') {
+              return;
+            }
+
+            allowCloseRef.current = true;
+            await appWindow.destroy();
+          } catch (error) {
+            allowCloseRef.current = false;
+            setStatus(error instanceof Error ? error.message : String(error));
+          } finally {
+            closePromptOpenRef.current = false;
+          }
+        })();
+      })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isDirty]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    if (recentProjectLoadedRef.current) return;
+    recentProjectLoadedRef.current = true;
 
     const loadRecentProject = async () => {
       try {
@@ -183,7 +442,7 @@ export default function App() {
       if (commandKey && !event.altKey && !event.shiftKey) {
         if (key === 's') {
           event.preventDefault();
-          saveProject();
+          void saveProject();
         } else if (key === 'o') {
           event.preventDefault();
           triggerLoadProject();
@@ -198,16 +457,18 @@ export default function App() {
         return;
       }
 
-      const actions: Record<string, () => void | Promise<void>> = {
-        c: copyCurrentTableJson,
-        e: downloadCurrentTableJson,
+      const actions: Record<string, () => void | Promise<unknown>> = {
+        c: copyTableJsonToClipboard,
+        e: downloadTableJsonFile,
         f: addFieldToSelectedTable,
         m: () => setShowMiniMap((value) => !value),
-        n: addTable,
+        n: () => {
+          addTable();
+        },
         o: triggerLoadProject,
-        r: addRowToSelectedTable,
+        r: () => openRowsModal(),
         s: saveProject,
-        delete: deleteSelectedTable,
+        delete: deleteTableById,
       };
 
       const action = actions[key];
@@ -221,18 +482,29 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     addFieldToSelectedTable,
-    addRowToSelectedTable,
     addTable,
-    copyCurrentTableJson,
-    deleteSelectedTable,
-    downloadCurrentTableJson,
-    resetSampleProject,
+    copyTableJsonToClipboard,
+    deleteTableById,
+    downloadTableJsonFile,
+    openRowsModal,
     saveProject,
     triggerLoadProject,
   ]);
 
+  const preventNativeContextMenu = useCallback((event: React.MouseEvent) => {
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest('input, textarea, select, [contenteditable="true"]')
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+  }, []);
+
   return (
-    <div className="app-shell">
+    <div className="app-shell" onContextMenu={preventNativeContextMenu}>
       <header className="toolbar">
         <div className="brand-block">
           <strong>Game Config Graph Editor</strong>
@@ -240,35 +512,18 @@ export default function App() {
           {warningCount > 0 ? <span>{t('warningCount', { count: warningCount })}</span> : null}
         </div>
         <div className="toolbar-actions">
-          <button type="button" className="button button--primary" onClick={addTable} title="N / Ctrl+N">
-            {t('newTable')}
-          </button>
-          <button type="button" className="button" onClick={saveProject} title="S / Ctrl+S">
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              void saveProject();
+            }}
+            title="S / Ctrl+S"
+          >
             {t('save')}
           </button>
           <button type="button" className="button" onClick={triggerLoadProject} title="O / Ctrl+O">
             {t('load')}
-          </button>
-          <button type="button" className="button" onClick={resetSampleProject}>
-            {t('resetSample')}
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={!selectedTable}
-            onClick={copyCurrentTableJson}
-            title="C"
-          >
-            {t('copyTableJson')}
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={!selectedTable}
-            onClick={downloadCurrentTableJson}
-            title="E"
-          >
-            {t('downloadJson')}
           </button>
           <label className="toolbar-toggle" title="M">
             <input
@@ -318,6 +573,11 @@ export default function App() {
                 type="button"
                 className={`table-list-item ${table.id === selectedTableId ? 'is-active' : ''}`}
                 onClick={() => selectTable(table.id)}
+                onDoubleClick={() => openRowsModal(table.id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  openTableContextMenu(table.id, { x: event.clientX, y: event.clientY });
+                }}
               >
                 <span>{table.name}</span>
                 <small>
@@ -330,35 +590,33 @@ export default function App() {
         </aside>
 
         <section className="canvas-panel" aria-label="Graph canvas">
-          <GraphCanvas showMiniMap={showMiniMap} />
+          <GraphCanvas
+            showMiniMap={showMiniMap}
+            onOpenTableData={openRowsModal}
+            onOpenTableContext={openTableContextMenu}
+            onOpenCanvasContext={openCanvasContextMenu}
+          />
         </section>
-
-        <aside className="right-panel">
-          <TableInspector table={selectedTable} project={project} t={t} />
-          <section className="issues-panel">
-            <div className="panel-heading">
-              <h2>{t('issues')}</h2>
-              <span>{issues.length}</span>
-            </div>
-            <div className="issue-list">
-              {issues.map((issue) => (
-                <button
-                  key={issue.id}
-                  type="button"
-                  className={`issue-item issue-item--${issue.severity}`}
-                  onClick={() => selectTable(issue.tableId)}
-                >
-                  <span>{issue.severity === 'error' ? t('issueError') : t('issueWarning')}</span>
-                  <p>{issue.message}</p>
-                </button>
-              ))}
-              {issues.length === 0 ? <p className="empty-copy">{t('noIssues')}</p> : null}
-            </div>
-          </section>
-        </aside>
       </main>
 
-      <DataEditor table={selectedTable} project={project} issues={issues} t={t} />
+      <DataGridModal
+        open={showDataGrid}
+        table={editingTable}
+        project={project}
+        issues={issues}
+        t={t}
+        onOpenTable={openRowsModal}
+        onClose={() => setShowDataGrid(false)}
+      />
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={contextMenuItems}
+          onClose={() => setMenu(undefined)}
+        />
+      ) : null}
     </div>
   );
 }

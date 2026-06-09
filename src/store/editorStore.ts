@@ -5,9 +5,10 @@ import type { ConfigColumn, ConfigTable, GraphPosition, ProjectFile } from '../m
 type EditorStore = {
   project: ProjectFile;
   selectedTableId?: string;
+  isDirty: boolean;
 
   selectTable(tableId: string): void;
-  addTable(): void;
+  addTable(position?: GraphPosition): string;
   updateTable(tableId: string, patch: Partial<ConfigTable>): void;
   moveTable(tableId: string, position: GraphPosition): void;
   deleteTable(tableId: string): void;
@@ -16,11 +17,14 @@ type EditorStore = {
   updateColumn(tableId: string, columnId: string, patch: Partial<ConfigColumn>): void;
   deleteColumn(tableId: string, columnId: string): void;
 
-  addRow(tableId: string): void;
+  addRow(tableId: string): string | undefined;
+  insertRow(tableId: string, rowIndex: number): string | undefined;
   updateCell(tableId: string, rowId: string, columnId: string, value: unknown): void;
   deleteRow(tableId: string, rowId: string): void;
+  deleteRows(tableId: string, rowIds: string[]): void;
 
   loadProject(project: ProjectFile): void;
+  markClean(): void;
   resetProject(): void;
 };
 
@@ -44,22 +48,60 @@ const defaultValueForColumn = (column: ConfigColumn): unknown => {
   return '';
 };
 
+const autoIncrementValue = (table: ConfigTable, column: ConfigColumn) => {
+  const lastValue = table.rows[table.rows.length - 1]?.values[column.id];
+  if (typeof lastValue === 'number' && Number.isFinite(lastValue)) return lastValue + 1;
+
+  const numericValues = table.rows
+    .map((row) => row.values[column.id])
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+
+  return numericValues.length === 0 ? 1 : Math.max(...numericValues) + 1;
+};
+
+const defaultValuesForTable = (table: ConfigTable) =>
+  Object.fromEntries(
+    table.columns.map((column) => [
+      column.id,
+      column.autoIncrement && column.type === 'int'
+        ? autoIncrementValue(table, column)
+        : defaultValueForColumn(column),
+    ]),
+  );
+
 const initialProject = createSampleProject();
+
+const changed = { isDirty: true };
+
+const sameValue = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+
+const samePosition = (left: GraphPosition, right: GraphPosition) =>
+  Math.abs(left.x - right.x) < 0.5 && Math.abs(left.y - right.y) < 0.5;
+
+const markDirty = (reason: string) => {
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    console.debug(`[cfggraph] dirty: ${reason}`);
+  }
+
+  return changed;
+};
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
   project: initialProject,
   selectedTableId: initialProject.tables[0]?.id,
+  isDirty: false,
 
   selectTable: (tableId) => set({ selectedTableId: tableId }),
 
-  addTable: () =>
+  addTable: (position) => {
+    const tableId = makeId('table');
+
     set((state) => {
-      const tableId = makeId('table');
       const columnId = 'id';
       const table: ConfigTable = {
         id: tableId,
         name: uniqueName('NewTable', state.project.tables.map((item) => item.name)),
-        position: {
+        position: position ?? {
           x: 160 + state.project.tables.length * 48,
           y: 140 + state.project.tables.length * 34,
         },
@@ -70,28 +112,55 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return {
         project: { ...state.project, tables: [...state.project.tables, table] },
         selectedTableId: table.id,
+        ...markDirty('addTable'),
+      };
+    });
+
+    return tableId;
+  },
+
+  updateTable: (tableId, patch) =>
+    set((state) => {
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+        const nextTable = { ...table, ...patch };
+        if (sameValue(table, nextTable)) return table;
+        updated = true;
+        return nextTable;
+      });
+
+      if (!updated) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        ...markDirty('updateTable'),
       };
     }),
 
-  updateTable: (tableId, patch) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        tables: state.project.tables.map((table) =>
-          table.id === tableId ? { ...table, ...patch } : table,
-        ),
-      },
-    })),
-
   moveTable: (tableId, position) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        tables: state.project.tables.map((table) =>
-          table.id === tableId ? { ...table, position } : table,
-        ),
-      },
-    })),
+    set((state) => {
+      let moved = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+        if (samePosition(table.position, position)) return table;
+        moved = true;
+        return { ...table, position };
+      });
+
+      if (!moved) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        ...markDirty('moveTable'),
+      };
+    }),
 
   deleteTable: (tableId) =>
     set((state) => {
@@ -102,6 +171,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return {
         project: { ...state.project, tables },
         selectedTableId,
+        ...markDirty('deleteTable'),
       };
     }),
 
@@ -128,29 +198,45 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           };
         }),
       },
+      ...markDirty('addColumn'),
     })),
 
   updateColumn: (tableId, columnId, patch) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        tables: state.project.tables.map((table) => {
-          if (table.id !== tableId) return table;
+    set((state) => {
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
 
-          const nextColumns = table.columns.map((column) => {
-            if (column.id !== columnId) {
-              return patch.primary ? { ...column, primary: false } : column;
-            }
+        const nextColumns = table.columns.map((column) => {
+          let nextColumn = column;
 
-            const nextColumn = { ...column, ...patch };
+          if (column.id !== columnId) {
+            if (patch.primary) nextColumn = { ...column, primary: false };
+          } else {
+            nextColumn = { ...column, ...patch };
             if (patch.primary) nextColumn.required = true;
-            return nextColumn;
-          });
+            if (nextColumn.autoIncrement && (nextColumn.type !== 'int' || !nextColumn.primary)) {
+              nextColumn.autoIncrement = false;
+            }
+          }
 
-          return { ...table, columns: nextColumns };
-        }),
-      },
-    })),
+          if (!sameValue(column, nextColumn)) updated = true;
+          return nextColumn;
+        });
+
+        return updated ? { ...table, columns: nextColumns } : table;
+      });
+
+      if (!updated) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        ...markDirty('updateColumn'),
+      };
+    }),
 
   deleteColumn: (tableId, columnId) =>
     set((state) => ({
@@ -170,45 +256,89 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           };
         }),
       },
+      ...markDirty('deleteColumn'),
     })),
 
-  addRow: (tableId) =>
+  addRow: (tableId) => {
+    const rowId = makeId('row');
+    let added = false;
+
     set((state) => ({
       project: {
         ...state.project,
         tables: state.project.tables.map((table) => {
           if (table.id !== tableId) return table;
 
-          const values = Object.fromEntries(
-            table.columns.map((column) => [column.id, defaultValueForColumn(column)]),
-          );
+          added = true;
+          const values = defaultValuesForTable(table);
 
           return {
             ...table,
-            rows: [...table.rows, { _rowId: makeId('row'), values }],
+            rows: [...table.rows, { _rowId: rowId, values }],
           };
         }),
       },
-    })),
+      ...markDirty('addRow'),
+    }));
+
+    return added ? rowId : undefined;
+  },
+
+  insertRow: (tableId, rowIndex) => {
+    const rowId = makeId('row');
+    let inserted = false;
+
+    set((state) => ({
+      project: {
+        ...state.project,
+        tables: state.project.tables.map((table) => {
+          if (table.id !== tableId) return table;
+
+          inserted = true;
+          const values = defaultValuesForTable(table);
+          const nextRows = [...table.rows];
+          const insertAt = Math.max(0, Math.min(rowIndex, nextRows.length));
+          nextRows.splice(insertAt, 0, { _rowId: rowId, values });
+
+          return {
+            ...table,
+            rows: nextRows,
+          };
+        }),
+      },
+      ...markDirty('insertRow'),
+    }));
+
+    return inserted ? rowId : undefined;
+  },
 
   updateCell: (tableId, rowId, columnId, value) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        tables: state.project.tables.map((table) => {
-          if (table.id !== tableId) return table;
+    set((state) => {
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
 
-          return {
-            ...table,
-            rows: table.rows.map((row) =>
-              row._rowId === rowId
-                ? { ...row, values: { ...row.values, [columnId]: value } }
-                : row,
-            ),
-          };
-        }),
-      },
-    })),
+        const rows = table.rows.map((row) => {
+          if (row._rowId !== rowId) return row;
+          if (sameValue(row.values[columnId], value)) return row;
+
+          updated = true;
+          return { ...row, values: { ...row.values, [columnId]: value } };
+        });
+
+        return updated ? { ...table, rows } : table;
+      });
+
+      if (!updated) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        ...markDirty('updateCell'),
+      };
+    }),
 
   deleteRow: (tableId, rowId) =>
     set((state) => ({
@@ -220,16 +350,38 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             : table,
         ),
       },
+      ...markDirty('deleteRow'),
     })),
+
+  deleteRows: (tableId, rowIds) =>
+    set((state) => {
+      const rowIdSet = new Set(rowIds);
+
+      return {
+        project: {
+          ...state.project,
+          tables: state.project.tables.map((table) =>
+            table.id === tableId
+              ? { ...table, rows: table.rows.filter((row) => !rowIdSet.has(row._rowId)) }
+              : table,
+          ),
+        },
+        ...markDirty('deleteRows'),
+      };
+    }),
 
   loadProject: (project) =>
     set({
       project,
       selectedTableId: project.tables[0]?.id,
+      isDirty: false,
     }),
+
+  markClean: () => set({ isDirty: false }),
 
   resetProject: () => {
     const project = createSampleProject();
     get().loadProject(project);
+    set(markDirty('resetProject'));
   },
 }));

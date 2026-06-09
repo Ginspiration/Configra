@@ -26,6 +26,7 @@ export type ConfigColumn = {
   type: ColumnType;
   required?: boolean;
   primary?: boolean;
+  autoIncrement?: boolean;
   enumValues?: string[];
   ref?: ColumnRef;
 };

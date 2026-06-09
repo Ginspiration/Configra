@@ -76,6 +76,13 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
         };
       }
 
+      if (column.autoIncrement !== undefined && typeof column.autoIncrement !== 'boolean') {
+        return {
+          ok: false,
+          error: t('parseColumnShape', { table: table.name, index: columnIndex }),
+        };
+      }
+
       if (
         column.ref !== undefined &&
         (!isRecord(column.ref) ||

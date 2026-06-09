@@ -7,9 +7,10 @@ type TableInspectorProps = {
   table?: ConfigTable;
   project: ProjectFile;
   t: Translator;
+  compact?: boolean;
 };
 
-export default function TableInspector({ table, project, t }: TableInspectorProps) {
+export default function TableInspector({ table, project, t, compact = false }: TableInspectorProps) {
   const updateTable = useEditorStore((state) => state.updateTable);
   const deleteTable = useEditorStore((state) => state.deleteTable);
   const addColumn = useEditorStore((state) => state.addColumn);
@@ -27,16 +28,18 @@ export default function TableInspector({ table, project, t }: TableInspectorProp
     <section className="inspector-panel">
       <div className="panel-heading">
         <h2>{t('inspector')}</h2>
-        <button
-          type="button"
-          className="button button--ghost danger"
-          title="Delete"
-          onClick={() => {
-            if (window.confirm(t('confirmDeleteTable', { name: table.name }))) deleteTable(table.id);
-          }}
-        >
-          {t('deleteTable')}
-        </button>
+        {compact ? null : (
+          <button
+            type="button"
+            className="button button--ghost danger"
+            title="Delete"
+            onClick={() => {
+              if (window.confirm(t('confirmDeleteTable', { name: table.name }))) deleteTable(table.id);
+            }}
+          >
+            {t('deleteTable')}
+          </button>
+        )}
       </div>
 
       <label className="field-stack">

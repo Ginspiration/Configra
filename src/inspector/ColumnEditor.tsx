@@ -15,6 +15,7 @@ export default function ColumnEditor({ column, tableId, project, t }: ColumnEdit
   const deleteColumn = useEditorStore((state) => state.deleteColumn);
   const targetTable = project.tables.find((table) => table.id === column.ref?.tableId);
   const targetFields = targetTable?.columns ?? [];
+  const canAutoIncrement = column.primary && column.type === 'int';
 
   const setType = (type: ColumnType) => {
     if (type === 'ref') {
@@ -89,6 +90,17 @@ export default function ColumnEditor({ column, tableId, project, t }: ColumnEdit
             }
           />
           {t('required')}
+        </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={Boolean(column.autoIncrement)}
+            disabled={!canAutoIncrement}
+            onChange={(event) =>
+              updateColumn(tableId, column.id, { autoIncrement: event.target.checked })
+            }
+          />
+          {t('autoIncrement')}
         </label>
       </div>
 
