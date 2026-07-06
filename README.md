@@ -1,140 +1,143 @@
 # Game Config Graph Editor
 
-Game Config Graph Editor is a blueprint-style table editor for game configuration data. It is designed for editing structured config tables, visualizing table references, validating data, and exporting runtime JSON.
+`Game Config Graph Editor` 是一个面向游戏配置数据的蓝图式表格编辑器。它用于编辑结构化配置表、可视化表之间的引用关系、校验数据，并导出运行时需要的 JSON。
 
-The app currently runs as both a Vite web app and a local Tauri desktop app.
+当前应用同时支持两种运行形态：
 
-## Current Features
+- Vite Web 应用。
+- Tauri 本地桌面应用。
 
-- React Flow canvas with draggable table nodes.
-- Table-to-table arrows generated from `ref` fields.
-- Left table list with click select and double-click edit.
-- Glide Data Grid row editor in a modal.
-- Table properties and field editor integrated into the row editor modal.
-- Fullscreen row editor mode.
-- Config fields with `int`, `float`, `string`, `bool`, `enum`, `ref`, and `json` types.
-- Primary key, required, and auto-increment field flags.
-- `ref` and `enum` cells edited with dropdowns.
-- Multi-row and multi-cell selection in the grid.
-- Paste text blocks into a column, one non-empty line per row.
-- Row context menu: insert above, insert below, append, uppercase strings, copy row JSON, delete rows.
-- Canvas/table context menus for create, edit, export, save/load, delete, and Mini Map toggle.
-- Optional Mini Map.
-- Chinese by default, with English language switcher.
-- Validation for required values, types, primary keys, refs, enums, JSON, and ID Registry rules.
-- Browser save/load of `.cfggraph.json`.
-- Tauri desktop save/load to the current project file.
-- Recent desktop project auto-load.
-- Dirty-state protection before loading another project or closing the desktop app.
-- Export selected table JSON.
-- Export language-neutral `config_ids.json` ID Registry.
+## 当前功能
 
-## Run
+- 使用 React Flow 展示可拖动的表节点。
+- 根据 `ref` 字段自动生成表到表的关系箭头。
+- 左侧表列表支持点击选中、双击编辑。
+- 使用 Glide Data Grid 在弹窗中编辑行数据。
+- 表属性、字段编辑、问题列表都集成在行数据编辑弹窗中。
+- 行数据编辑弹窗支持全屏。
+- 字段类型支持 `int`、`float`、`string`、`bool`、`enum`、`ref`、`json`。
+- 字段支持主键、必填、自增。
+- `enum` 和 `ref` 单元格使用下拉编辑。
+- 表格支持多行、多单元格选择。
+- 粘贴多行文本到单列时，会按非空行自动分配到多行。
+- 表格右键菜单支持上方插入行、下方插入行、追加行、全部大写、复制行 JSON、删除行。
+- 画布和表节点右键菜单支持新建、编辑、导出、保存、加载、删除、小地图切换。
+- 小地图可隐藏和显示。
+- 默认中文，支持切换英文。
+- 支持必填、类型、主键、引用、枚举、JSON、ID 注册表等校验。
+- 浏览器模式支持保存/加载 `.cfggraph.json`。
+- Tauri 桌面模式支持保存到当前工程文件。
+- 桌面模式会自动加载最近打开的工程。
+- 加载其他工程或关闭桌面应用前，如果存在未保存修改，会提示保存。
+- 支持导出当前表 JSON。
+- 支持导出语言无关的 `config_ids.json` ID 注册表。
 
-Install dependencies:
+## 运行
+
+安装依赖：
 
 ```bash
 npm install
 ```
 
-Run the web app:
+运行 Web 应用：
 
 ```bash
 npm run dev
 ```
 
-Run the desktop app:
+运行桌面应用：
 
 ```bash
 npm run tauri:dev
 ```
 
-Build the web app:
+构建 Web 应用：
 
 ```bash
 npm run build
 ```
 
-Check the Tauri/Rust side:
+检查 Tauri/Rust 部分：
 
 ```bash
 cd src-tauri
 cargo check
 ```
 
-## First Screen
+## 初始界面
 
-The app starts with a sample project containing:
+应用启动后会显示示例工程，包含两张表：
 
 - `Speaker`
 - `Dialogue`
 
-`Dialogue.speaker_id` references `Speaker.id`, so the canvas shows a relationship arrow:
+`Dialogue.speaker_id` 引用 `Speaker.id`，所以画布上会显示关系箭头：
 
 ```text
 Dialogue.speaker_id -> Speaker.id
 ```
 
-## Main Workflow
+## 主要工作流
 
-1. Create or select a table on the canvas.
-2. Double-click a table node or table-list item to open the editor.
-3. Edit table name, ID Registry settings, fields, and row data in the modal.
-4. Set `ref` fields to target another table and field.
-5. Fix validation issues shown in the editor.
-6. Right-click a table to copy or export its JSON.
-7. Right-click blank canvas space to save/load the project, create a table, toggle Mini Map, or export `config_ids.json`.
+1. 在画布上新建或选择一张表。
+2. 双击表节点或左侧表列表项，打开编辑弹窗。
+3. 在弹窗中编辑表名、ID 注册表、字段和行数据。
+4. 将字段类型设置为 `ref`，并选择目标表和目标字段。
+5. 根据问题列表修复校验错误。
+6. 右键表节点，复制或导出该表 JSON。
+7. 右键画布空白处，保存/加载工程、新建表、切换小地图，或导出 `config_ids.json`。
 
-## Keyboard Shortcuts
+## 快捷键
 
-- `Ctrl+S`: save project.
-- `Ctrl+O`: load project.
-- `Ctrl+N`: add table.
-- `N`: add table.
-- `R`: open selected table editor.
-- `F`: add field to selected table.
-- `C`: copy selected table JSON.
-- `E`: export selected table JSON.
-- `M`: toggle Mini Map.
-- `Delete`: delete selected table.
+- `Ctrl+S`：保存工程。
+- `Ctrl+O`：加载工程。
+- `Ctrl+N`：新建表。
+- `N`：新建表。
+- `R`：打开当前选中表的编辑弹窗。
+- `F`：给当前选中表新增字段。
+- `C`：复制当前选中表 JSON。
+- `E`：导出当前选中表 JSON。
+- `M`：切换小地图显示状态。
+- `Delete`：删除当前选中表。
 
-Shortcuts are ignored while typing in inputs, textareas, selects, or editable controls.
+当焦点在 `input`、`textarea`、`select` 或可编辑控件内时，全局快捷键不会触发。
 
-## Row Editor
+## 行数据编辑器
 
-The row editor uses Glide Data Grid.
+行数据编辑器使用 Glide Data Grid。
 
-Editing behavior:
+编辑行为：
 
-- Cells activate editing on double-click.
-- `bool` fields render as booleans.
-- `int` and `float` fields parse numeric input.
-- `enum` fields use configured enum options.
-- `ref` fields use options from the target table and target field.
-- `json` fields accept valid JSON strings and export as parsed JSON when possible.
-- Blank rows are available after existing rows; editing a blank row creates missing rows automatically.
-- The primary key column is frozen when it is the first column.
-- Column widths are stored in `localStorage` per table.
+- 单元格双击后进入编辑。
+- `bool` 字段显示为布尔值。
+- `int` 和 `float` 字段会按数字解析输入。
+- `enum` 字段使用字段配置中的枚举选项。
+- `ref` 字段使用目标表目标字段的值作为选项。
+- `json` 字段允许输入合法 JSON 字符串，导出时会尽量解析为 JSON 值。
+- 已有行下方会显示空白行，编辑空白行会自动创建新行。
+- 如果主键字段是第一列，该列会冻结。
+- 每张表的列宽会保存到 `localStorage`。
 
-Paste behavior:
+粘贴行为：
 
-- Normal rectangular paste is supported.
-- A single-column paste containing line breaks or blank rows is split into one non-empty trimmed line per row.
+- 支持普通矩形区域粘贴。
+- 单列粘贴时，如果内容包含换行或空行，会拆成多行；每个非空、去除首尾空白后的文本占一行。
 
-Right-click behavior:
+右键行为：
 
-- Insert row above.
-- Insert row below.
-- Append row.
-- Uppercase string cells.
-- Copy row or selected rows as JSON.
-- Delete row or selected rows.
+- 上方插入行。
+- 下方插入行。
+- 追加到末尾。
+- 全部大写。
+- 复制当前行或选中行 JSON。
+- 删除当前行或选中行。
 
-`Uppercase` only affects `string` cells. It is disabled for non-string targets.
+`全部大写` 只会影响 `string` 类型单元格。右键目标不是字符串单元格时，该选项会禁用。
 
-## Data Model
+## 数据模型
 
-Rows store values by stable column ID. Renaming a field changes `column.name`, not `column.id`.
+行数据通过稳定的字段 ID 保存。重命名字段只会修改 `column.name`，不会修改 `column.id`。
 
 ```ts
 export type ProjectFile = {
@@ -177,17 +180,17 @@ export type ConfigRow = {
 };
 ```
 
-Important ID rules:
+重要 ID 规则：
 
-- `table.id` is an internal stable ID.
-- `column.id` is an internal stable ID.
-- `row._rowId` is editor-only metadata.
-- Exported table JSON uses `column.name || column.id` as keys.
-- Exported table JSON never includes `_rowId`.
+- `table.id` 是内部稳定 ID。
+- `column.id` 是内部稳定 ID。
+- `row._rowId` 只用于编辑器内部。
+- 导出的表 JSON 使用 `column.name || column.id` 作为字段名。
+- 导出的表 JSON 不包含 `_rowId`。
 
-## ID Registry
+## ID 注册表
 
-Some game configs need both a code-facing key and a runtime ID:
+有些游戏配置需要同时满足代码可读的符号名和运行时数值 ID：
 
 ```text
 key             id      path
@@ -195,7 +198,7 @@ SOUND_CLICK      1      res://audio/click.wav
 SOUND_WIN        2      res://audio/win.wav
 ```
 
-Configure the table ID Registry:
+可以为表配置 ID 注册表：
 
 ```ts
 identity: {
@@ -205,7 +208,7 @@ identity: {
 }
 ```
 
-Exported `config_ids.json`:
+导出的 `config_ids.json`：
 
 ```json
 {
@@ -214,57 +217,57 @@ Exported `config_ids.json`:
 }
 ```
 
-This format is language-neutral. Game code in any language can load the registry and resolve symbolic names to runtime IDs.
+这个格式是语言无关的。任何语言的游戏代码都可以加载该注册表，并把符号名解析为运行时 ID。
 
-When a ref target table has ID Registry configured and the ref target field is the runtime ID field, ref dropdown labels show:
+当目标表配置了 ID 注册表，并且引用目标字段正好是运行时 ID 字段时，`ref` 下拉选项会显示：
 
 ```text
 SOUND_CLICK (1)
 ```
 
-## Export Rules
+## 导出规则
 
-Table JSON:
+表 JSON：
 
-- Outputs an array.
-- One object per row.
-- Keys use field display names.
-- `_rowId` and editor metadata are omitted.
-- `json` field strings are parsed into JSON values when valid.
+- 输出数组。
+- 每行输出一个对象。
+- 对象 key 使用字段展示名。
+- 不输出 `_rowId` 和编辑器内部元数据。
+- `json` 字段如果是合法 JSON 字符串，导出时会解析为 JSON 值。
 
-ID Registry JSON:
+ID 注册表 JSON：
 
-- Outputs one flat object.
-- Keys are `${namespace}.${symbolKey}`.
-- Values come from the configured runtime ID field.
-- Rows with empty key or value are skipped.
+- 输出一个扁平对象。
+- key 格式为 `${namespace}.${symbolKey}`。
+- value 来自配置的运行时 ID 字段。
+- key 或 value 为空的行会跳过。
 
-## Save And Load
+## 保存和加载
 
-Browser mode:
+浏览器模式：
 
-- Save downloads `game-config.cfggraph.json`.
-- Load uses a file picker and replaces the current project after validation.
+- 保存会下载 `game-config.cfggraph.json`。
+- 加载会打开文件选择器，读取并校验后替换当前工程。
 
-Desktop mode:
+桌面模式：
 
-- On startup, the app tries to load the last saved/opened project path.
-- If no recent project exists, the sample project is shown.
-- Save writes to the current project file.
-- New projects without a file path open a save dialog on first save.
-- Loading another project prompts when unsaved changes exist.
-- Closing the app prompts when unsaved changes exist.
+- 启动时会尝试加载最近保存或打开的工程路径。
+- 如果没有最近工程，则显示示例工程。
+- 保存会写回当前工程文件。
+- 新工程没有文件路径时，第一次保存会弹出保存位置选择框。
+- 加载其他工程前，如果有未保存修改，会提示保存。
+- 关闭应用前，如果有未保存修改，会提示保存。
 
-Tauri commands are implemented in `src-tauri/src/lib.rs`:
+Tauri 命令实现位置是 `src-tauri/src/lib.rs`：
 
 - `read_project_file`
 - `write_project_file`
 - `load_recent_project_path`
 - `save_recent_project_path`
 
-## Validation
+## 校验
 
-The validator reports `ValidationIssue` records:
+校验器返回 `ValidationIssue`：
 
 ```ts
 type ValidationIssue = {
@@ -277,27 +280,27 @@ type ValidationIssue = {
 };
 ```
 
-Implemented checks:
+已实现校验：
 
-- Required fields cannot be empty.
-- `int` values must be integers.
-- `float` values must be finite numbers.
-- `string` values must be strings.
-- `bool` values must be booleans.
-- `enum` values must be in `enumValues`.
-- `json` values must be valid JSON values.
-- `ref` values must exist in the target table/field.
-- Each table can have at most one primary key field.
-- Primary keys must be required, non-empty, and unique.
-- Ref fields must have valid target table and target field.
-- Empty enum option lists are warnings.
-- ID Registry namespace cannot be empty.
-- ID Registry key/value fields must be configured if identity is used.
-- ID Registry keys must match `^[A-Z][A-Z0-9_]*$`.
-- ID Registry keys and runtime values must be unique per table.
-- ID Registry entries must be unique across the project.
+- 必填字段不能为空。
+- `int` 必须是整数。
+- `float` 必须是有限数字。
+- `string` 必须是字符串。
+- `bool` 必须是布尔值。
+- `enum` 必须在 `enumValues` 中。
+- `json` 必须是合法 JSON 值。
+- `ref` 必须能在目标表目标字段中找到对应值。
+- 每张表最多只能有一个主键字段。
+- 主键必须必填、非空、唯一。
+- `ref` 字段必须配置有效的目标表和目标字段。
+- 枚举选项为空时显示警告。
+- ID 注册表命名空间不能为空。
+- 配置了 ID 注册表时，必须选择符号 Key 字段和运行时 ID 字段。
+- ID 注册表 Key 必须匹配 `^[A-Z][A-Z0-9_]*$`。
+- ID 注册表 Key 和运行时 ID 在表内必须唯一。
+- ID 注册表条目在整个工程中必须唯一。
 
-## Source Layout
+## 源码结构
 
 ```text
 game-config-graph-editor/
@@ -338,14 +341,14 @@ game-config-graph-editor/
         `-- lib.rs
 ```
 
-## Current Non-Goals
+## 当前不做的内容
 
-- AI-assisted editing.
-- Undo/redo.
-- CSV or Excel import.
-- Multi-user collaboration.
-- Plugin system.
-- Complex export templates.
-- Installer, auto-update, or release packaging polish.
+- AI 辅助编辑。
+- 撤销/重做。
+- CSV 或 Excel 导入。
+- 多人协作。
+- 插件系统。
+- 复杂导出模板。
+- 安装包、自动更新或发布流程打磨。
 
-The project should stay focused on the game-config editing loop: table schema, row data, references, validation, save/load, and JSON export.
+项目应继续聚焦游戏配置编辑闭环：表结构、行数据、引用、校验、保存/加载和 JSON 导出。
