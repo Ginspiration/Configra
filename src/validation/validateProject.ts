@@ -5,10 +5,12 @@ import type {
   ValidationIssue,
 } from '../model/types';
 import type { Translator } from '../i18n';
+import { identityNamespace } from '../model/schemaUtils';
 
 const isEmpty = (value: unknown) => value === null || value === undefined || value === '';
 
 const valueKey = (value: unknown) => `${typeof value}:${String(value)}`;
+const CODE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 
 const issueId = (
   tableId: string,
@@ -91,6 +93,7 @@ const validateType = (
 
 export function validateProject(project: ProjectFile, t: Translator): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  const registryEntries = new Map<string, { tableId: string; rowId: string }>();
 
   const pushIssue = (issue: Omit<ValidationIssue, 'id'>, code: string) => {
     issues.push({
@@ -101,6 +104,9 @@ export function validateProject(project: ProjectFile, t: Translator): Validation
 
   for (const table of project.tables) {
     const primaryColumns = table.columns.filter((column) => column.primary);
+    const identity = table.identity;
+    const identityKeyColumn = findColumn(table, identity?.keyColumnId);
+    const identityValueColumn = findColumn(table, identity?.valueColumnId);
 
     if (primaryColumns.length > 1) {
       pushIssue(
@@ -225,6 +231,160 @@ export function validateProject(project: ProjectFile, t: Translator): Validation
           );
         } else {
           seen.set(key, row._rowId);
+        }
+      }
+    }
+
+    if (identity?.keyColumnId || identity?.valueColumnId || identity?.namespace !== undefined) {
+      const namespace = identityNamespace(table);
+
+      if (!namespace.trim()) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            message: t('validationIdentityNamespaceEmpty', { table: table.name }),
+          },
+          'identity-namespace-empty',
+        );
+      }
+
+      if (!identityKeyColumn) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            message: t('validationIdentityKeyFieldMissing', { table: table.name }),
+          },
+          'identity-key-field-missing',
+        );
+      }
+
+      if (!identityValueColumn) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            message: t('validationIdentityValueFieldMissing', { table: table.name }),
+          },
+          'identity-value-field-missing',
+        );
+      }
+
+      if (identityKeyColumn && identityValueColumn) {
+        const seenKeys = new Map<string, string>();
+        const seenValues = new Map<string, string>();
+
+        for (const row of table.rows) {
+          const key = row.values[identityKeyColumn.id];
+          const runtimeValue = row.values[identityValueColumn.id];
+
+          if (isEmpty(key)) {
+            pushIssue(
+              {
+                severity: 'error',
+                tableId: table.id,
+                rowId: row._rowId,
+                columnId: identityKeyColumn.id,
+                message: t('validationIdentityKeyEmpty', {
+                  table: table.name,
+                  column: identityKeyColumn.name,
+                }),
+              },
+              'identity-key-empty',
+            );
+          } else {
+            const keyText = String(key);
+            if (!CODE_KEY_PATTERN.test(keyText)) {
+              pushIssue(
+                {
+                  severity: 'error',
+                  tableId: table.id,
+                  rowId: row._rowId,
+                  columnId: identityKeyColumn.id,
+                  message: t('validationIdentityInvalidKey', {
+                    table: table.name,
+                    column: identityKeyColumn.name,
+                  }),
+                },
+                'identity-key-invalid',
+              );
+            }
+
+            const duplicateKeyRowId = seenKeys.get(keyText);
+            if (duplicateKeyRowId) {
+              pushIssue(
+                {
+                  severity: 'error',
+                  tableId: table.id,
+                  rowId: row._rowId,
+                  columnId: identityKeyColumn.id,
+                  message: t('validationIdentityKeyDuplicate', {
+                    table: table.name,
+                    column: identityKeyColumn.name,
+                    rowId: duplicateKeyRowId,
+                  }),
+                },
+                'identity-key-duplicate',
+              );
+            } else {
+              seenKeys.set(keyText, row._rowId);
+            }
+
+            const entry = `${namespace}.${keyText}`;
+            const duplicateEntry = registryEntries.get(entry);
+            if (duplicateEntry) {
+              pushIssue(
+                {
+                  severity: 'error',
+                  tableId: table.id,
+                  rowId: row._rowId,
+                  columnId: identityKeyColumn.id,
+                  message: t('validationIdentityDuplicateEntry', { entry }),
+                },
+                'identity-registry-entry-duplicate',
+              );
+            } else {
+              registryEntries.set(entry, { tableId: table.id, rowId: row._rowId });
+            }
+          }
+
+          if (isEmpty(runtimeValue)) {
+            pushIssue(
+              {
+                severity: 'error',
+                tableId: table.id,
+                rowId: row._rowId,
+                columnId: identityValueColumn.id,
+                message: t('validationIdentityValueEmpty', {
+                  table: table.name,
+                  column: identityValueColumn.name,
+                }),
+              },
+              'identity-value-empty',
+            );
+          } else {
+            const runtimeValueKey = valueKey(runtimeValue);
+            const duplicateValueRowId = seenValues.get(runtimeValueKey);
+            if (duplicateValueRowId) {
+              pushIssue(
+                {
+                  severity: 'error',
+                  tableId: table.id,
+                  rowId: row._rowId,
+                  columnId: identityValueColumn.id,
+                  message: t('validationIdentityValueDuplicate', {
+                    table: table.name,
+                    column: identityValueColumn.name,
+                    rowId: duplicateValueRowId,
+                  }),
+                },
+                'identity-value-duplicate',
+              );
+            } else {
+              seenValues.set(runtimeValueKey, row._rowId);
+            }
+          }
         }
       }
     }

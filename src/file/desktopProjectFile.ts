@@ -70,3 +70,7 @@ export async function pickJsonSavePath(defaultPath: string) {
     ],
   });
 }
+
+export async function pickIdRegistrySavePath() {
+  return pickJsonSavePath('config_ids.json');
+}

@@ -46,6 +46,16 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
       return { ok: false, error: t('parseRowsArray', { table: table.name }) };
     }
 
+    if (
+      table.identity !== undefined &&
+      (!isRecord(table.identity) ||
+        (table.identity.namespace !== undefined && typeof table.identity.namespace !== 'string') ||
+        (table.identity.keyColumnId !== undefined && typeof table.identity.keyColumnId !== 'string') ||
+        (table.identity.valueColumnId !== undefined && typeof table.identity.valueColumnId !== 'string'))
+    ) {
+      return { ok: false, error: t('parseTableObject', { index: tableIndex }) };
+    }
+
     for (const [columnIndex, column] of table.columns.entries()) {
       if (!isRecord(column)) {
         return {

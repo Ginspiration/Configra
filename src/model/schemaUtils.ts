@@ -44,12 +44,34 @@ export function getDisplayColumn(table: ConfigTable | undefined, valueColumnId?:
   );
 }
 
+export function getIdentityColumns(table: ConfigTable | undefined) {
+  const keyColumn = table?.columns.find((column) => column.id === table.identity?.keyColumnId);
+  const valueColumn = table?.columns.find((column) => column.id === table.identity?.valueColumnId);
+  return { keyColumn, valueColumn };
+}
+
+export function identityNamespace(table: ConfigTable) {
+  return table.identity?.namespace?.trim() || table.name || table.id;
+}
+
 export function formatRefOptionLabel(
   table: ConfigTable,
   targetColumn: ConfigColumn,
   row: ConfigRow,
 ) {
   const value = row.values[targetColumn.id];
+  const { keyColumn, valueColumn } = getIdentityColumns(table);
+  const keyValue = keyColumn ? row.values[keyColumn.id] : undefined;
+
+  if (
+    keyColumn &&
+    valueColumn?.id === targetColumn.id &&
+    isPresent(keyValue) &&
+    String(keyValue) !== String(value)
+  ) {
+    return `${String(keyValue)} (${String(value)})`;
+  }
+
   const displayColumn = getDisplayColumn(table, targetColumn.id);
   const displayValue = displayColumn ? row.values[displayColumn.id] : undefined;
 

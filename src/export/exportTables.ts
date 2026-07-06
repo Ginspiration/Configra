@@ -1,3 +1,4 @@
+import { identityNamespace } from '../model/schemaUtils';
 import type { ConfigColumn, ProjectFile } from '../model/types';
 
 export const safeFileName = (value: string) =>
@@ -41,6 +42,32 @@ export function tableJson(project: ProjectFile, tableId: string) {
   return JSON.stringify(exportTableRows(project, tableId), null, 2);
 }
 
+export function exportIdRegistry(project: ProjectFile): Record<string, unknown> {
+  return Object.fromEntries(
+    project.tables.flatMap((table) => {
+      const keyColumn = table.columns.find((column) => column.id === table.identity?.keyColumnId);
+      const valueColumn = table.columns.find((column) => column.id === table.identity?.valueColumnId);
+      if (!keyColumn || !valueColumn) return [];
+
+      const namespace = identityNamespace(table);
+
+      return table.rows.flatMap((row) => {
+        const key = row.values[keyColumn.id];
+        const value = row.values[valueColumn.id];
+        if (key === null || key === undefined || key === '' || value === null || value === undefined || value === '') {
+          return [];
+        }
+
+        return [[`${namespace}.${String(key)}`, value] as const];
+      });
+    }),
+  );
+}
+
+export function idRegistryJson(project: ProjectFile) {
+  return JSON.stringify(exportIdRegistry(project), null, 2);
+}
+
 export function downloadTableJson(project: ProjectFile, tableId: string) {
   const table = project.tables.find((item) => item.id === tableId);
   if (!table) return;
@@ -49,4 +76,8 @@ export function downloadTableJson(project: ProjectFile, tableId: string) {
 
 export function downloadProjectFile(project: ProjectFile) {
   downloadTextFile('game-config.cfggraph.json', JSON.stringify(project, null, 2));
+}
+
+export function downloadIdRegistry(project: ProjectFile) {
+  downloadTextFile('config_ids.json', idRegistryJson(project));
 }

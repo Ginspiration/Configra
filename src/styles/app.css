@@ -426,6 +426,12 @@ h3 {
   gap: 6px;
 }
 
+.identity-grid {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
 .issue-list {
   display: grid;
   gap: 5px;

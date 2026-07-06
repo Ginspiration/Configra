@@ -43,6 +43,7 @@ const DEFAULT_COLUMN_WIDTH = 120;
 type GridMenuState = {
   x: number;
   y: number;
+  colIndex: number;
   rowIndex: number;
 };
 
@@ -564,11 +565,28 @@ export default function DataGridModal({
   const openCellMenu = useCallback((cell: Item, event: CellClickedEventArgs) => {
     event.preventDefault();
     setMenu({
+      colIndex: cell[0],
       rowIndex: cell[1],
       x: event.bounds.x + event.localEventX,
       y: event.bounds.y + event.localEventY,
     });
   }, []);
+
+  const uppercaseCells = useCallback((cells: Item[]) => {
+    if (!table) return;
+
+    for (const [colIndex, rowIndex] of cells) {
+      const column = table.columns[colIndex];
+      const row = table.rows[rowIndex];
+      if (!column || !row || column.type !== 'string') continue;
+
+      const value = row.values[column.id];
+      if (typeof value !== 'string') continue;
+
+      const nextValue = value.toUpperCase();
+      if (nextValue !== value) updateCell(table.id, row._rowId, column.id, nextValue);
+    }
+  }, [table, updateCell]);
 
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!table || !menu) return [];
@@ -587,6 +605,55 @@ export default function DataGridModal({
       actionRowIndexes.length > 1
         ? t('deleteRowsCount', { count: actionRowIndexes.length })
         : t('deleteRow');
+    const selectedRanges = selection.current
+      ? [selection.current.range, ...(selection.current.rangeStack ?? [])]
+      : [];
+    const menuCellIsSelected =
+      menu.colIndex >= 0 &&
+      selectedRanges.some(
+        (range) =>
+          menu.colIndex >= range.x &&
+          menu.colIndex < range.x + range.width &&
+          menu.rowIndex >= range.y &&
+          menu.rowIndex < range.y + range.height,
+      );
+    const uppercaseTargetMap = new Map<string, Item>();
+    const addUppercaseTarget = (colIndex: number, rowIndex: number) => {
+      const column = table.columns[colIndex];
+      const row = table.rows[rowIndex];
+      if (!column || !row || column.type !== 'string') return;
+      if (typeof row.values[column.id] !== 'string') return;
+      uppercaseTargetMap.set(`${colIndex}:${rowIndex}`, [colIndex, rowIndex]);
+    };
+
+    if (selectedRanges.length > 0 && menuCellIsSelected) {
+      for (const range of selectedRanges) {
+        const startCol = Math.max(0, range.x);
+        const endCol = Math.min(table.columns.length, range.x + range.width);
+        const startRow = Math.max(0, range.y);
+        const endRow = Math.min(table.rows.length, range.y + range.height);
+
+        for (let rowIndex = startRow; rowIndex < endRow; rowIndex += 1) {
+          for (let colIndex = startCol; colIndex < endCol; colIndex += 1) {
+            addUppercaseTarget(colIndex, rowIndex);
+          }
+        }
+      }
+    } else if (selectedRowCount > 0 && selectedIncludesMenuRow) {
+      for (const rowIndex of selectedRows) {
+        for (let colIndex = 0; colIndex < table.columns.length; colIndex += 1) {
+          addUppercaseTarget(colIndex, rowIndex);
+        }
+      }
+    } else if (hasExistingRow && menu.colIndex >= 0) {
+      addUppercaseTarget(menu.colIndex, menu.rowIndex);
+    } else if (hasExistingRow) {
+      for (let colIndex = 0; colIndex < table.columns.length; colIndex += 1) {
+        addUppercaseTarget(colIndex, menu.rowIndex);
+      }
+    }
+
+    const uppercaseTargets = [...uppercaseTargetMap.values()];
 
     return [
       {
@@ -608,6 +675,12 @@ export default function DataGridModal({
         id: 'add-row-end',
         label: t('addRowToEnd'),
         onSelect: addRowAtEnd,
+      },
+      {
+        id: 'uppercase',
+        label: t('uppercase'),
+        disabled: uppercaseTargets.length === 0,
+        onSelect: () => uppercaseCells(uppercaseTargets),
       },
       { id: 'row-separator-copy', type: 'separator' },
       {
@@ -643,8 +716,10 @@ export default function DataGridModal({
     getSelectedRowIndexes,
     insertRowAt,
     menu,
+    selection,
     t,
     table,
+    uppercaseCells,
   ]);
 
   const primaryColumnIndex = useMemo(

@@ -6,12 +6,20 @@ import DataGridModal from './dataGrid/DataGridModal';
 import ContextMenu, { type ContextMenuItem } from './contextMenu/ContextMenu';
 import { useEditorStore } from './store/editorStore';
 import { validateProject } from './validation/validateProject';
-import { downloadProjectFile, downloadTableJson, safeFileName, tableJson } from './export/exportTables';
+import {
+  downloadIdRegistry,
+  downloadProjectFile,
+  downloadTableJson,
+  idRegistryJson,
+  safeFileName,
+  tableJson,
+} from './export/exportTables';
 import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition } from './model/types';
 import {
   isDesktopRuntime,
   loadRecentProjectPath,
+  pickIdRegistrySavePath,
   pickProjectFileText,
   pickJsonSavePath,
   pickProjectSavePath,
@@ -180,6 +188,15 @@ export default function App() {
     }
   }, [project, selectedTable?.id, t]);
 
+  const copyIdRegistryToClipboard = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(idRegistryJson(project));
+      setStatus(t('copiedIdRegistry'));
+    } catch {
+      setStatus(t('clipboardDenied'));
+    }
+  }, [project, t]);
+
   const downloadTableJsonFile = useCallback(async (tableId = selectedTable?.id) => {
     if (!tableId) return;
 
@@ -201,6 +218,23 @@ export default function App() {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }, [project, selectedTable?.id]);
+
+  const downloadIdRegistryFile = useCallback(async () => {
+    if (!isDesktopRuntime()) {
+      downloadIdRegistry(project);
+      return;
+    }
+
+    try {
+      const path = await pickIdRegistrySavePath();
+      if (!path) return;
+
+      await writeTextFile(path, idRegistryJson(project));
+      setStatus(`Saved ${path.split(/[\\/]/).pop() ?? path}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }, [project]);
 
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
@@ -307,6 +341,21 @@ export default function App() {
         shortcut: 'Ctrl+O',
         onSelect: triggerLoadProject,
       },
+      { id: 'canvas-separator-id-registry', type: 'separator' },
+      {
+        id: 'copy-id-registry',
+        label: t('copyIdRegistry'),
+        onSelect: () => {
+          void copyIdRegistryToClipboard();
+        },
+      },
+      {
+        id: 'download-id-registry',
+        label: t('downloadIdRegistry'),
+        onSelect: () => {
+          void downloadIdRegistryFile();
+        },
+      },
       { id: 'canvas-separator-view', type: 'separator' },
       {
         id: 'toggle-minimap',
@@ -317,8 +366,10 @@ export default function App() {
     ];
   }, [
     addTable,
+    copyIdRegistryToClipboard,
     copyTableJsonToClipboard,
     deleteTableById,
+    downloadIdRegistryFile,
     downloadTableJsonFile,
     menu,
     openRowsModal,

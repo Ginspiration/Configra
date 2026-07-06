@@ -13,6 +13,13 @@ export type ConfigTable = {
   position: GraphPosition;
   columns: ConfigColumn[];
   rows: ConfigRow[];
+  identity?: TableIdentity;
+};
+
+export type TableIdentity = {
+  namespace?: string;
+  keyColumnId?: string;
+  valueColumnId?: string;
 };
 
 export type GraphPosition = {

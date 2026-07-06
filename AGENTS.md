@@ -1,63 +1,34 @@
-# 游戏配置蓝图式表格编辑器开发文档
+# Game Config Graph Editor Development Notes
 
-本文档用于新建项目后交给 AI / 开发者接手实现。当前仓库是 Godot 游戏项目，**不要在当前 Godot 项目里实现本工具**。请另建一个独立前端/桌面项目。
+This document is the handoff guide for AI agents and developers working in this repository.
 
-工具暂定名：`Game Config Graph Editor`。名字可改，核心目标不要改。
+The repository is now an independent Vite + React + TypeScript + Tauri project. It is not the old Godot game project. Keep this tool focused on game configuration editing, not general spreadsheet replacement.
 
-## 1. 产品目标
+## 1. Product Goal
 
-做一个**游戏配置专用的蓝图式表格编辑器**。
+Build a blueprint-style table editor for game configuration data.
 
-第一版只解决一个闭环：
+The core loop is:
 
 ```text
-新建表
-新建字段
-填写行数据
-设置字段引用关系
-用箭头可视化表关系
-校验数据
-每张表导出独立 JSON
-保存/加载工程文件
+Create table
+Create fields
+Edit rows
+Set field reference relations
+Visualize table relations with arrows
+Validate data
+Export per-table JSON
+Export language-neutral ID registry JSON
+Save/load project file
 ```
 
-它不是 Excel，不追求完整电子表格能力；它也不是一开始就 AI 自动生成配置。它是一个面向游戏配置的结构化数据编辑器。
+The tool is not Excel. It should stay optimized for structured game config tables, stable internal IDs, references, validation, and export.
 
-后续 AI 只作为增强能力：理解当前表结构和已有数据，帮用户追加行、批量改数据、解释错误和生成测试数据。
+AI features are intentionally not implemented yet. If added later, AI should generate patches, show diffs, wait for user confirmation, apply changes, and re-run validation.
 
-## 2. 第一版边界
+## 2. Current Implementation Summary
 
-### 必须实现
-
-- 画布上显示多张可拖动的表节点。
-- 每张表有字段列表。
-- 字段支持名称、类型、主键、必填、引用目标。
-- 选中表后，可以编辑字段。
-- 选中表后，可以编辑行数据。
-- `ref` 字段自动生成表之间的箭头。
-- 支持基础校验。
-- 支持保存/加载 `.cfggraph.json` 工程文件。
-- 支持按表导出 JSON。
-
-### 暂不实现
-
-- AI。
-- 复杂公式。
-- 撤销/重做。
-- 多人协作。
-- CSV/Excel 导入。
-- 大型表格虚拟滚动。
-- 插件系统。
-- 复杂导出模板。
-- 权限系统。
-
-第一版目标是能跑通，而不是一次做成完整产品。
-
-说明：桌面端是推荐方向，但第一版不要把桌面打包、安装包、自动更新、本地文件系统权限作为核心难点。先用 Web 形态跑通编辑器闭环；如果核心交互成立，再接入 Tauri，让工具可以直接打开项目目录并读写配置文件。
-
-## 3. 推荐技术栈
-
-使用可商用开源库，优先 MIT / Apache-2.0。
+Current stack:
 
 ```text
 Vite
@@ -65,100 +36,165 @@ React
 TypeScript
 React Flow
 Zustand
-普通 HTML table + input
+Glide Data Grid
+Tauri
 ```
 
-说明：
-
-- `React Flow`：用于蓝图画布、节点拖拽、连线渲染。MIT。
-- `Zustand`：轻量状态管理。MIT。
-- 第一版先不要接入复杂表格库，直接用 HTML table 验证产品形态。
-- 后续如果需要大量数据编辑，再接 `Glide Data Grid`。Glide Data Grid 是 MIT，适合高性能表格编辑。
-- 桌面版推荐用 `Tauri`，它是 MIT / Apache-2.0。Tauri 适合在第二阶段接入，用来支持打开项目目录、直接保存工程文件、直接导出 JSON 到游戏项目。
-
-不建议第一版使用：
-
-- Handsontable：商业使用许可容易复杂。
-- AG Grid Enterprise：商业授权。
-- MUI X Pro/Premium：商业授权。
-- 完整 Office/Spreadsheet SDK：第一版太重。
-
-## 4. 界面布局
-
-推荐三栏 + 底部数据区：
+Current app shape:
 
 ```text
-┌──────────────────────────────────────────────────────┐
-│ 顶部工具栏：新建表 / 保存 / 加载 / 校验 / 导出 JSON    │
-├───────────────┬───────────────────────┬──────────────┤
-│ 左侧表列表     │ 中间蓝图画布           │ 右侧属性面板  │
-│ Tables        │ React Flow             │ Inspector    │
-├───────────────┴───────────────────────┴──────────────┤
-│ 底部数据编辑区：当前选中表的行数据                     │
-└──────────────────────────────────────────────────────┘
+Top toolbar: save / load / Mini Map / language
+Left panel: table list
+Center: React Flow blueprint canvas
+Modal editor: table properties + fields + issues + Glide Data Grid rows
+Context menus: table, canvas, and grid row/cell actions
 ```
 
-### 中间画布
+The project currently supports both:
 
-画布节点只展示表结构，不展示大量行数据。
+- Web mode via `npm run dev`
+- Desktop mode via `npm run tauri:dev`
 
-节点示例：
+## 3. Step-By-Step Goal Comparison
 
-```text
-Dialogue
-────────────────
-id          int      PK
-desc        string
-speaker_id  ref  -> Speaker.id
-```
+This section tracks the original MVP target against current behavior.
 
-节点交互：
+| Step | Original target | Current status | Main files |
+| --- | --- | --- | --- |
+| 1 | Create Vite + React + TypeScript app | Done | `package.json`, `vite.config.ts`, `src/main.tsx` |
+| 2 | Install React Flow and Zustand | Done | `package.json`, `src/graph/*`, `src/store/editorStore.ts` |
+| 3 | Define data model and sample project | Done, extended with `identity` and `autoIncrement` | `src/model/types.ts`, `src/model/sampleProject.ts` |
+| 4 | Implement Zustand store | Done, includes dirty state, insert/delete multiple rows, auto-increment rows | `src/store/editorStore.ts` |
+| 5 | Implement base layout | Done, simplified to toolbar + table list + canvas + modal editor | `src/App.tsx`, `src/styles/app.css` |
+| 6 | Render table nodes in React Flow | Done | `src/graph/GraphCanvas.tsx`, `src/graph/TableNode.tsx` |
+| 7 | Drag table nodes and save positions | Done; position updates during drag and drag stop | `src/graph/GraphCanvas.tsx`, `src/store/editorStore.ts` |
+| 8 | Generate arrows from `ref` fields | Done | `src/graph/graphMapping.ts` |
+| 9 | Select tables | Done by table list, node click, and context menu | `src/App.tsx`, `src/graph/GraphCanvas.tsx` |
+| 10 | Edit table and fields | Done inside modal side panel | `src/inspector/TableInspector.tsx`, `src/inspector/ColumnEditor.tsx` |
+| 11 | Edit row data | Done with Glide Data Grid modal | `src/dataGrid/DataGridModal.tsx` |
+| 12 | Add tables, fields, rows | Done via shortcuts, right-click menus, editor buttons, and blank grid rows | `src/App.tsx`, `src/store/editorStore.ts`, `src/dataGrid/DataGridModal.tsx` |
+| 13 | Validate data | Done, extended with ID Registry checks | `src/validation/validateProject.ts` |
+| 14 | Export current table JSON | Done by table right-click and keyboard shortcut | `src/App.tsx`, `src/export/exportTables.ts` |
+| 15 | Save/load project file | Done in browser and desktop modes | `src/App.tsx`, `src/file/projectFile.ts`, `src/file/desktopProjectFile.ts`, `src-tauri/src/lib.rs` |
+| 16 | Simple UI polish | Done; compact editor-style UI | `src/styles/app.css` |
+| 17 | Language selector | Done, default Chinese | `src/i18n.ts`, `src/App.tsx` |
+| 18 | Optional Mini Map | Done | `src/App.tsx`, `src/graph/GraphCanvas.tsx` |
+| 19 | Keyboard shortcuts | Done | `src/App.tsx` |
+| 20 | Desktop recent project and dirty-close guard | Done | `src/App.tsx`, `src/file/desktopProjectFile.ts`, `src-tauri/src/lib.rs` |
+| 21 | ID Registry for code/config bridge | Done | `src/model/types.ts`, `src/inspector/TableInspector.tsx`, `src/export/exportTables.ts`, `src/validation/validateProject.ts` |
 
-- 拖动节点改变位置。
-- 点击节点选中表。
-- 字段为 `ref` 时，在画布上显示箭头。
+## 4. Current UI Behavior
 
-### 右侧属性面板
+### Toolbar
 
-选中表时显示：
+Toolbar contains:
 
-- 表 ID。
-- 表名。
-- 字段列表。
-- 新增字段。
-- 删除字段。
-- 修改字段名。
-- 修改字段类型。
-- 设置主键。
-- 设置必填。
-- 设置 ref 目标表和目标字段。
+- Save
+- Load
+- Mini Map toggle
+- Language selector
 
-### 底部数据编辑区
+Default language is Chinese. English is available through the selector.
 
-选中表时显示行数据。
+### Table List
 
-第一版使用普通 HTML table：
+Left table list behavior:
 
-- 每列对应一个字段。
-- 每行对应一条数据。
-- 单元格用 input / select 编辑。
-- `bool` 用 checkbox。
-- `enum` 用 select。
-- `ref` 用 select，选项来自目标表目标字段的所有值。
+- Click selects a table.
+- Double-click opens row editor modal.
+- Right-click opens the same table context actions as canvas table nodes.
 
-## 5. 数据模型
+### Canvas
 
-核心类型建议如下：
+React Flow canvas behavior:
+
+- Nodes show table name and field list.
+- Nodes show `PK`, `AI`, required marker, and `ref` target label.
+- Dragging a node updates table position.
+- Double-clicking a node opens the editor modal.
+- Right-clicking a node opens table actions.
+- Right-clicking blank canvas opens canvas/project actions.
+- Optional Mini Map can be toggled.
+
+### Context Menus
+
+Table context menu:
+
+- Edit
+- Copy Table JSON
+- Download JSON
+- Delete Table
+
+Canvas context menu:
+
+- New Table Here
+- Save
+- Load
+- Copy ID Registry
+- Download ID Registry
+- Toggle Mini Map
+
+Grid context menu:
+
+- Insert row above
+- Insert row below
+- Append row
+- Uppercase string cells
+- Copy row or selected rows as JSON
+- Delete row or selected rows
+
+Native browser context menus are suppressed except inside inputs, textareas, selects, and editable controls.
+
+## 5. Row Editor Details
+
+Rows are edited in `src/dataGrid/DataGridModal.tsx` with Glide Data Grid.
+
+Important behavior:
+
+- The editor opens as a modal.
+- Table properties, ID Registry settings, fields, and issues are integrated into the modal side panel.
+- Fullscreen mode is supported.
+- Close button is an `X`.
+- Search uses Glide search and focuses matching cells.
+- Cells activate editing on double-click.
+- `editOnType` is disabled.
+- Row markers are clickable numbers.
+- Multi-row and multi-rect selection are enabled.
+- Fill handle is enabled.
+- Smooth scroll is enabled.
+- Primary key column is frozen if it is the first column.
+- Extra blank rows are displayed after existing rows; editing blank rows creates rows.
+- Column widths are persisted in `localStorage` per table.
+
+Cell behavior:
+
+- `bool` maps to Glide boolean cells.
+- `int` and `float` map to number cells.
+- `enum` and `ref` map to custom dropdown cells.
+- `json` maps to markdown-like text editing and is parsed on export when valid.
+- Invalid cells are highlighted through issue-derived theme overrides.
+
+Paste behavior:
+
+- Normal rectangular paste is applied from the target cell.
+- Single-column text with line breaks or blank rows is split into one trimmed non-empty line per row.
+- Pasting beyond existing rows creates rows.
+- Pasted values are parsed by column type.
+
+Uppercase behavior:
+
+- Only string cells are uppercased.
+- If right-clicking inside a selected range, all string cells in that range are uppercased.
+- If right-clicking inside selected rows, all string cells in those rows are uppercased.
+- Otherwise only the right-clicked string cell is uppercased.
+- The menu item is disabled when no target string cell exists.
+
+## 6. Data Model
+
+Current model lives in `src/model/types.ts`.
 
 ```ts
-export type ColumnType =
-  | 'int'
-  | 'float'
-  | 'string'
-  | 'bool'
-  | 'enum'
-  | 'ref'
-  | 'json';
+export const COLUMN_TYPES = ['int', 'float', 'string', 'bool', 'enum', 'ref', 'json'] as const;
 
 export type ProjectFile = {
   version: 1;
@@ -171,11 +207,13 @@ export type ConfigTable = {
   position: GraphPosition;
   columns: ConfigColumn[];
   rows: ConfigRow[];
+  identity?: TableIdentity;
 };
 
-export type GraphPosition = {
-  x: number;
-  y: number;
+export type TableIdentity = {
+  namespace?: string;
+  keyColumnId?: string;
+  valueColumnId?: string;
 };
 
 export type ConfigColumn = {
@@ -184,13 +222,9 @@ export type ConfigColumn = {
   type: ColumnType;
   required?: boolean;
   primary?: boolean;
+  autoIncrement?: boolean;
   enumValues?: string[];
   ref?: ColumnRef;
-};
-
-export type ColumnRef = {
-  tableId: string;
-  columnId: string;
 };
 
 export type ConfigRow = {
@@ -199,174 +233,82 @@ export type ConfigRow = {
 };
 ```
 
-注意：
+Important rules:
 
-- `table.id` 是内部稳定 ID，不要直接依赖展示名。
-- `column.id` 是内部稳定 ID，字段重命名时不要改变 ID。
-- `row._rowId` 是编辑器内部行 ID，导出 JSON 时默认不输出。
-- 行数据放在 `values` 中，key 使用 `column.id`。
+- `table.id` is an internal stable ID.
+- `column.id` is an internal stable ID.
+- Renaming a field changes `column.name`, not `column.id`.
+- Row values are stored by `column.id`.
+- `_rowId` is editor metadata and is not exported.
+- Exported table JSON uses `column.name || column.id`.
 
-## 6. 示例工程
+## 7. ID Registry
 
-应用首次打开时，内置一个默认示例。
+ID Registry bridges code-facing symbolic names and runtime config IDs without generating language-specific constants.
+
+Example table:
+
+```text
+key             id      path
+SOUND_CLICK      1      res://audio/click.wav
+SOUND_WIN        2      res://audio/win.wav
+```
+
+Table identity:
 
 ```json
 {
-  "version": 1,
-  "tables": [
-    {
-      "id": "speaker",
-      "name": "Speaker",
-      "position": { "x": 120, "y": 120 },
-      "columns": [
-        { "id": "id", "name": "id", "type": "int", "primary": true, "required": true },
-        { "id": "name", "name": "name", "type": "string", "required": true }
-      ],
-      "rows": [
-        { "_rowId": "row_speaker_1", "values": { "id": 1001, "name": "人类" } },
-        { "_rowId": "row_speaker_2", "values": { "id": 1002, "name": "旁白" } }
-      ]
-    },
-    {
-      "id": "dialogue",
-      "name": "Dialogue",
-      "position": { "x": 460, "y": 120 },
-      "columns": [
-        { "id": "id", "name": "id", "type": "int", "primary": true, "required": true },
-        { "id": "desc", "name": "desc", "type": "string", "required": true },
-        {
-          "id": "speaker_id",
-          "name": "speaker_id",
-          "type": "ref",
-          "required": true,
-          "ref": { "tableId": "speaker", "columnId": "id" }
-        }
-      ],
-      "rows": [
-        {
-          "_rowId": "row_dialogue_1",
-          "values": {
-            "id": 1,
-            "desc": "上帝为什么要创造我",
-            "speaker_id": 1001
-          }
-        },
-        {
-          "_rowId": "row_dialogue_2",
-          "values": {
-            "id": 2,
-            "desc": "今天心情不错",
-            "speaker_id": 1001
-          }
-        }
-      ]
-    }
-  ]
+  "namespace": "Sound",
+  "keyColumnId": "key",
+  "valueColumnId": "id"
 }
 ```
 
-画布上应显示：
+Exported `config_ids.json`:
+
+```json
+{
+  "Sound.SOUND_CLICK": 1,
+  "Sound.SOUND_WIN": 2
+}
+```
+
+This is intentionally language-neutral. Game code can load the JSON registry and resolve names in C#, GDScript, Lua, JavaScript, C++, or other languages.
+
+Ref dropdown labels use identity information when possible:
 
 ```text
-Dialogue.speaker_id -> Speaker.id
+SOUND_CLICK (1)
 ```
 
-## 7. 导出 JSON 规则
+That display happens when the referenced target column is the table identity `valueColumnId`.
 
-每张表导出一个独立 JSON 文件。
+## 8. Export Rules
 
-导出时：
+Implemented in `src/export/exportTables.ts`.
 
-- 输出数组。
-- 每一行输出一个对象。
-- key 使用字段展示名 `column.name`。
-- 不输出 `_rowId`。
-- 不输出编辑器内部元数据。
+Table export:
 
-`Speaker` 导出：
+- Exports one table as a JSON array.
+- Each row becomes one object.
+- Keys are `column.name || column.id`.
+- `_rowId`, positions, column metadata, and editor metadata are omitted.
+- Valid string JSON in `json` fields is parsed before export.
 
-```json
-[
-  { "id": 1001, "name": "人类" },
-  { "id": 1002, "name": "旁白" }
-]
-```
+ID Registry export:
 
-`Dialogue` 导出：
+- Exports one flat JSON object.
+- Key format is `${namespace}.${symbolKey}`.
+- Value is the configured runtime ID column value.
+- Rows with empty key or empty value are skipped.
+- Browser mode downloads `config_ids.json`.
+- Desktop mode asks for a save path and writes the file.
 
-```json
-[
-  {
-    "id": 1,
-    "desc": "上帝为什么要创造我",
-    "speaker_id": 1001
-  },
-  {
-    "id": 2,
-    "desc": "今天心情不错",
-    "speaker_id": 1001
-  }
-]
-```
+## 9. Validation Rules
 
-第一版可以提供两种导出：
+Implemented in `src/validation/validateProject.ts`.
 
-- 复制当前表 JSON。
-- 下载当前表 JSON。
-
-第二阶段桌面端再做：
-
-- 一键导出所有表。
-- zip 下载。
-- 导出到指定目录。
-- Tauri 桌面端直接写文件。
-
-## 8. 校验规则
-
-第一版实现以下校验。
-
-### 类型校验
-
-- `int`：必须是整数。
-- `float`：必须是数字。
-- `string`：必须是字符串。
-- `bool`：必须是布尔值。
-- `enum`：必须在 `enumValues` 内。
-- `ref`：值必须存在于目标表目标字段。
-- `json`：必须能解析为合法 JSON。
-
-### 必填校验
-
-如果字段 `required = true`，则值不能是：
-
-- `null`
-- `undefined`
-- 空字符串
-
-### 主键校验
-
-每张表最多一个主键字段。
-
-主键字段：
-
-- 必须 required。
-- 不能重复。
-- 不能空。
-
-### 引用校验
-
-`ref` 字段必须有：
-
-- 目标表。
-- 目标字段。
-
-并且目标字段必须存在。
-
-行数据中引用值必须能在目标字段中找到。
-
-### 错误展示
-
-错误需要包含：
+Validation issues use:
 
 ```ts
 type ValidationIssue = {
@@ -379,245 +321,278 @@ type ValidationIssue = {
 };
 ```
 
-UI 中至少显示：
+Implemented checks:
 
-- 顶部错误数量。
-- 右侧或底部错误列表。
-- 点击错误后选中对应表。
+- Unnamed fields are errors.
+- More than one primary key field is an error.
+- Primary key fields must be required.
+- Primary key values cannot be empty.
+- Primary key values cannot duplicate.
+- Empty enum option lists are warnings.
+- Ref fields must have target table and target field.
+- Ref target table and field must exist.
+- Required fields cannot be empty.
+- `int` values must be integers.
+- `float` values must be finite numbers.
+- `string` values must be strings.
+- `bool` values must be booleans.
+- `enum` values must be in `enumValues`.
+- `json` values must be valid JSON values.
+- `ref` values must exist in the target table/field.
+- ID Registry namespace cannot be empty.
+- If identity is configured, key and value fields must exist.
+- ID Registry key values cannot be empty.
+- ID Registry key values must match `^[A-Z][A-Z0-9_]*$`.
+- ID Registry key values cannot duplicate within a table.
+- ID Registry runtime values cannot be empty.
+- ID Registry runtime values cannot duplicate within a table.
+- ID Registry entries cannot duplicate across the project.
 
-## 9. React Flow 映射
+## 10. Save And Load
 
-表节点：
+### Browser Mode
 
-```ts
-type TableNodeData = {
-  tableId: string;
-};
-```
+Browser mode behavior:
 
-节点 ID：
+- Save downloads `game-config.cfggraph.json`.
+- Load uses a hidden file input.
+- The chosen file is parsed and structurally validated before replacing the project.
+- Unsaved changes prompt before loading another file.
 
-```ts
-node.id = table.id
-```
+### Desktop Mode
 
-节点位置：
+Desktop mode behavior:
 
-```ts
-node.position = table.position
-```
+- Uses Tauri file dialogs and Rust commands.
+- On startup, tries to load the remembered recent project path.
+- If no recent project exists, starts with the sample project.
+- Save writes to the current project path.
+- If no path exists, save opens a save dialog.
+- Opening another project prompts when there are unsaved changes.
+- Closing the app prompts when there are unsaved changes.
+- "Save and Quit" saves first, then destroys the app window.
 
-边 ID：
+Tauri commands in `src-tauri/src/lib.rs`:
 
-```ts
-edge.id = `${fromTableId}.${fromColumnId}->${toTableId}.${toColumnId}`
-```
+- `read_project_file(path)`
+- `write_project_file(path, text)`
+- `load_recent_project_path()`
+- `save_recent_project_path(path)`
 
-边生成规则：
+Recent project path is stored in the app config directory as `recent-project.txt`.
 
-遍历所有表的所有字段，如果字段类型是 `ref` 且有合法 `ref`，则创建边：
+## 11. Store Behavior
 
-```ts
-source = currentTable.id
-target = column.ref.tableId
-```
+Implemented in `src/store/editorStore.ts`.
 
-第一版不需要精确连到字段级 handle。可以表到表连线。后续再升级为字段级连线。
+Store contains:
 
-## 10. 状态管理
+- `project`
+- `selectedTableId`
+- `isDirty`
 
-推荐使用 Zustand。
+Actions:
 
-Store 至少提供：
+- `selectTable`
+- `addTable`
+- `updateTable`
+- `moveTable`
+- `deleteTable`
+- `addColumn`
+- `updateColumn`
+- `deleteColumn`
+- `addRow`
+- `insertRow`
+- `updateCell`
+- `deleteRow`
+- `deleteRows`
+- `loadProject`
+- `markClean`
+- `resetProject`
 
-```ts
-type EditorStore = {
-  project: ProjectFile;
-  selectedTableId?: string;
+Dirty-state behavior:
 
-  selectTable(tableId: string): void;
-  addTable(): void;
-  updateTable(tableId: string, patch: Partial<ConfigTable>): void;
-  moveTable(tableId: string, position: GraphPosition): void;
-  deleteTable(tableId: string): void;
+- Mutating actions mark the project dirty.
+- Loading a project marks clean.
+- Saving marks clean.
+- Selection alone does not mark dirty.
+- Small sub-pixel table movement is ignored by `samePosition`.
 
-  addColumn(tableId: string): void;
-  updateColumn(tableId: string, columnId: string, patch: Partial<ConfigColumn>): void;
-  deleteColumn(tableId: string, columnId: string): void;
+Auto-increment behavior:
 
-  addRow(tableId: string): void;
-  updateCell(tableId: string, rowId: string, columnId: string, value: unknown): void;
-  deleteRow(tableId: string, rowId: string): void;
+- A column can auto-increment only when it is both `primary` and `int`.
+- New rows use last row value + 1 when possible.
+- If the last row value is not numeric, uses max numeric value + 1.
+- If no numeric values exist, starts at `1`.
+- IDs remain editable by the user.
 
-  loadProject(project: ProjectFile): void;
-  resetProject(): void;
-};
-```
+## 12. Keyboard Shortcuts
 
-第一版可以不做 undo/redo。
+Implemented in `src/App.tsx`.
 
-## 11. 文件保存与加载
+Global shortcuts:
 
-浏览器版第一版：
+- `Ctrl+S`: save project.
+- `Ctrl+O`: load project.
+- `Ctrl+N`: add table.
+- `S`: save project.
+- `O`: load project.
+- `N`: add table.
+- `R`: open selected table editor.
+- `F`: add field to selected table.
+- `C`: copy selected table JSON.
+- `E`: download selected table JSON.
+- `M`: toggle Mini Map.
+- `Delete`: delete selected table.
 
-- 保存：生成 `.cfggraph.json` 文件下载。
-- 加载：用户选择 `.cfggraph.json` 文件，读取后替换当前 project。
+Shortcuts do not run when the event target is inside:
 
-保存文件即完整 `ProjectFile`。
+- `input`
+- `textarea`
+- `select`
+- `[contenteditable="true"]`
 
-加载时必须做基本结构校验：
+## 13. Internationalization
 
-- `version` 是否支持。
-- `tables` 是否为数组。
-- 每张表字段是否完整。
+Implemented in `src/i18n.ts`.
 
-加载失败要显示错误，不要让页面崩溃。
+Languages:
 
-## 12. 推荐目录结构
+- `zh`
+- `en`
+
+Default language is `zh`.
+
+When adding UI text:
+
+1. Add the English key first to the `en` object.
+2. Add the matching Chinese translation in `zh`.
+3. Use the `Translator` type in components.
+4. Do not hardcode new visible UI text unless it is non-localized technical content.
+
+## 14. Source Layout
 
 ```text
 game-config-graph-editor/
-├── package.json
-├── index.html
-├── vite.config.ts
-├── tsconfig.json
-├── src/
-│   ├── main.tsx
-│   ├── App.tsx
-│   ├── model/
-│   │   ├── types.ts
-│   │   └── sampleProject.ts
-│   ├── store/
-│   │   └── editorStore.ts
-│   ├── graph/
-│   │   ├── GraphCanvas.tsx
-│   │   ├── TableNode.tsx
-│   │   └── graphMapping.ts
-│   ├── inspector/
-│   │   ├── TableInspector.tsx
-│   │   └── ColumnEditor.tsx
-│   ├── dataGrid/
-│   │   └── DataEditor.tsx
-│   ├── validation/
-│   │   └── validateProject.ts
-│   ├── export/
-│   │   └── exportTables.ts
-│   ├── file/
-│   │   └── projectFile.ts
-│   └── styles/
-│       └── app.css
-└── README.md
+|-- AGENTS.md
+|-- README.md
+|-- package.json
+|-- src/
+|   |-- App.tsx
+|   |-- contextMenu/
+|   |   `-- ContextMenu.tsx
+|   |-- dataGrid/
+|   |   `-- DataGridModal.tsx
+|   |-- export/
+|   |   `-- exportTables.ts
+|   |-- file/
+|   |   |-- desktopProjectFile.ts
+|   |   `-- projectFile.ts
+|   |-- graph/
+|   |   |-- GraphCanvas.tsx
+|   |   |-- TableNode.tsx
+|   |   `-- graphMapping.ts
+|   |-- inspector/
+|   |   |-- ColumnEditor.tsx
+|   |   `-- TableInspector.tsx
+|   |-- model/
+|   |   |-- sampleProject.ts
+|   |   |-- schemaUtils.ts
+|   |   `-- types.ts
+|   |-- store/
+|   |   `-- editorStore.ts
+|   |-- validation/
+|   |   `-- validateProject.ts
+|   |-- i18n.ts
+|   |-- main.tsx
+|   `-- styles/
+|       `-- app.css
+`-- src-tauri/
+    |-- Cargo.toml
+    |-- tauri.conf.json
+    `-- src/
+        |-- lib.rs
+        `-- main.rs
 ```
 
-## 13. 开发顺序
+## 15. Coding Guidelines For Future Agents
 
-严格按这个顺序实现，避免过早做复杂功能。
+Follow these rules when editing this project:
 
-1. 创建 Vite + React + TypeScript 项目。
-2. 安装 React Flow 和 Zustand。
-3. 定义 `types.ts` 和 `sampleProject.ts`。
-4. 实现 Zustand store。
-5. 实现基础布局。
-6. 用 React Flow 渲染表节点。
-7. 实现拖动节点并保存 position。
-8. 根据 `ref` 字段生成表到表箭头。
-9. 实现表选择。
-10. 实现右侧表/字段编辑。
-11. 实现底部行数据编辑。
-12. 实现新增表、字段、行。
-13. 实现基础校验。
-14. 实现导出当前表 JSON。
-15. 实现保存/加载工程文件。
-16. 简单美化 UI。
+- Preserve stable IDs in project data.
+- Do not key row values by display name.
+- Do not put full row data inside React Flow nodes.
+- Keep graph nodes focused on table structure.
+- Prefer extending existing store actions over local ad-hoc state mutations.
+- Keep validation centralized in `validateProject.ts`.
+- Keep export logic centralized in `exportTables.ts`.
+- Keep file parsing and structural validation in `projectFile.ts`.
+- Keep Tauri filesystem calls behind `desktopProjectFile.ts`.
+- Do not add language-specific constant generation unless the user explicitly asks; prefer language-neutral JSON first.
+- Do not add broad spreadsheet features unless they serve game config editing.
+- Do not silently introduce commercial-license UI/data-grid dependencies.
+- Do not implement AI features directly against store mutation; use patch/diff/confirm/apply if added later.
 
-每一步完成后都要保证应用可运行。
+## 16. Verification Commands
 
-## 14. UI 风格要求
+After code changes, run:
 
-这个工具是开发工具，不是营销页面。
-
-风格建议：
-
-- 安静。
-- 密集但不拥挤。
-- 类似编辑器 / 数据库工具。
-- 不要做大 Hero。
-- 不要做装饰性卡片堆叠。
-- 不要做花哨渐变背景。
-
-布局优先级：
-
-```text
-信息清晰 > 操作效率 > 视觉装饰
+```bash
+npm run build
 ```
 
-按钮建议：
+For Tauri/Rust changes or desktop file behavior:
 
-- 顶部工具栏使用清晰文本按钮。
-- 后续可接 lucide-react 图标。
-- 危险操作如删除表，需要确认。
-
-## 15. 后续 AI 能力预留
-
-第一版不要实现 AI，但代码结构要允许后续加入。
-
-未来 AI 功能建议：
-
-```text
-根据当前表结构追加 N 行数据
-根据已有行风格补全文案
-解释校验错误
-批量修改某些行
-根据自然语言生成新表结构草稿
-根据 JSON 样例反推表结构
+```bash
+cd src-tauri
+cargo check
 ```
 
-AI 不应直接修改 store。推荐流程：
+For UI behavior changes, also run a local app and test the relevant workflow:
 
-```text
-AI 生成 patch
-展示 diff
-用户确认
-应用 patch
-重新校验
+```bash
+npm run dev
 ```
 
-## 16. 第一版验收标准
+or:
 
-完成后必须能做到：
-
-1. 打开应用看到 `Speaker` 和 `Dialogue` 两张表示例。
-2. 画布上两张表可拖动。
-3. `Dialogue.speaker_id` 到 `Speaker.id` 有箭头。
-4. 可以新建一张表。
-5. 可以给表新增字段。
-6. 可以添加一行数据。
-7. 可以把字段类型设为 `ref` 并选择目标表字段。
-8. 引用不存在时能显示错误。
-9. 主键重复时能显示错误。
-10. 可以导出当前表 JSON。
-11. 可以保存 `.cfggraph.json`。
-12. 可以重新加载 `.cfggraph.json` 并恢复画布。
-
-只要这些能跑通，第一版就是成功的。
-
-## 17. 重要取舍
-
-不要试图第一版复刻 Excel。
-
-不要把完整行数据塞进画布节点。
-
-不要先做 AI。
-
-不要先把桌面打包、本地文件系统、自动更新作为第一版中心。
-
-推荐节奏：
-
-```text
-第一阶段：Web 形态，跑通表结构、行数据、引用、校验、导出。
-第二阶段：Tauri 桌面端，支持打开项目目录、直接读写 .cfggraph.json 和导出 JSON。
+```bash
+npm run tauri:dev
 ```
 
-不要为了导出做复杂模板系统。
+Known build warnings:
 
-先把“表结构、行数据、引用关系、JSON 导出”这个最小闭环做稳定。
+- Vite/Rollup may warn about `/*#__PURE__*/` annotations inside Glide Data Grid dependencies.
+- Vite may warn that the main chunk is larger than 500 kB.
+
+These warnings currently do not block builds.
+
+## 17. Current Non-Goals
+
+Do not treat these as expected current features:
+
+- AI generation or AI editing.
+- Undo/redo.
+- CSV/Excel import.
+- Multi-user collaboration.
+- Plugin system.
+- Complex export templates.
+- Release packaging polish.
+- Auto-update.
+- Permission system.
+- Full spreadsheet formula engine.
+
+## 18. Future Work Ideas
+
+Reasonable next steps:
+
+- Add undo/redo around store patches.
+- Add import from JSON sample to infer table schema.
+- Add bulk find/replace in selected string cells.
+- Add duplicate-row action.
+- Add explicit all-table export.
+- Add export directory configuration in desktop mode.
+- Add test coverage for export and validation pure functions.
+- Add optional code generation as a separate export layer if the user later wants language-specific constants.
+
+Keep the minimum loop stable before expanding: schema, rows, refs, validation, save/load, export.
