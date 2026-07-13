@@ -30,10 +30,12 @@ export function exportTableRows(project: ProjectFile, tableId: string): Record<s
 
   return table.rows.map((row) =>
     Object.fromEntries(
-      table.columns.map((column) => [
-        column.name || column.id,
-        exportValue(column, row.values[column.id]),
-      ]),
+      table.columns
+        .filter((column) => column.export !== false)
+        .map((column) => [
+          column.name || column.id,
+          exportValue(column, row.values[column.id]),
+        ]),
     ),
   );
 }

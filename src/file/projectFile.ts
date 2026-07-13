@@ -93,6 +93,20 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
         };
       }
 
+      if (column.export !== undefined && typeof column.export !== 'boolean') {
+        return {
+          ok: false,
+          error: t('parseColumnShape', { table: table.name, index: columnIndex }),
+        };
+      }
+
+      if (column.remark !== undefined && typeof column.remark !== 'string') {
+        return {
+          ok: false,
+          error: t('parseColumnShape', { table: table.name, index: columnIndex }),
+        };
+      }
+
       if (
         column.ref !== undefined &&
         (!isRecord(column.ref) ||

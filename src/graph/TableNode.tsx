@@ -1,6 +1,12 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { useEditorStore } from '../store/editorStore';
+import { sourceColumnHandleId, targetColumnHandleId } from './graphMapping';
+
+const shortRemark = (value: string) => {
+  const singleLine = value.replace(/\s+/g, ' ').trim();
+  return singleLine.length > 12 ? `${singleLine.slice(0, 12)}...` : singleLine;
+};
 
 function TableNode({ data }: NodeProps) {
   const project = useEditorStore((state) => state.project);
@@ -10,6 +16,15 @@ function TableNode({ data }: NodeProps) {
   const table = project.tables.find((item) => item.id === tableId);
 
   if (!table) return null;
+
+  const incomingColumnIds = new Set<string>();
+  for (const sourceTable of project.tables) {
+    for (const sourceColumn of sourceTable.columns) {
+      if (sourceColumn.type === 'ref' && sourceColumn.ref?.tableId === table.id) {
+        incomingColumnIds.add(sourceColumn.ref.columnId);
+      }
+    }
+  }
 
   const refLabel = (tableId: string, columnId: string) => {
     const targetTable = project.tables.find((item) => item.id === tableId);
@@ -23,26 +38,49 @@ function TableNode({ data }: NodeProps) {
       className={`table-node ${selectedTableId === table.id ? 'is-selected' : ''}`}
       onClick={() => selectTable(table.id)}
     >
-      <Handle type="target" position={Position.Left} className="node-handle" />
       <div className="table-node__title">{table.name || table.id}</div>
       <div className="table-node__fields">
-        {table.columns.map((column) => (
-          <div className="table-node__field" key={column.id}>
-            <span className="table-node__name">{column.name || column.id}</span>
-            <span className="table-node__type">{column.type}</span>
-            {column.primary ? <span className="table-node__badge">PK</span> : null}
-            {column.autoIncrement ? <span className="table-node__badge">AI</span> : null}
-            {column.required ? <span className="table-node__required">*</span> : null}
-            {column.type === 'ref' && column.ref ? (
-              <span className="table-node__ref">
-                {'-> '}
-                {refLabel(column.ref.tableId, column.ref.columnId)}
+        {table.columns.map((column) => {
+          const remark = column.remark?.trim() ?? '';
+          const isRefColumn = column.type === 'ref';
+          const hasIncomingRef = incomingColumnIds.has(column.id);
+
+          return (
+            <div className="table-node__field" key={column.id}>
+              {hasIncomingRef ? (
+                <Handle
+                  id={targetColumnHandleId(column.id)}
+                  type="target"
+                  position={Position.Left}
+                  className="node-handle node-handle--field"
+                />
+              ) : null}
+              <span className="table-node__name" title={remark || undefined}>
+                {column.name || column.id}
+                {remark ? <span className="table-node__remark"> {shortRemark(remark)}</span> : null}
               </span>
-            ) : null}
-          </div>
-        ))}
+              <span className="table-node__type">{column.type}</span>
+              {column.primary ? <span className="table-node__badge">PK</span> : null}
+              {column.autoIncrement ? <span className="table-node__badge">AI</span> : null}
+              {column.required ? <span className="table-node__required">*</span> : null}
+              {column.type === 'ref' && column.ref ? (
+                <span className="table-node__ref">
+                  {'-> '}
+                  {refLabel(column.ref.tableId, column.ref.columnId)}
+                </span>
+              ) : null}
+              {isRefColumn ? (
+                <Handle
+                  id={sourceColumnHandleId(column.id)}
+                  type="source"
+                  position={Position.Right}
+                  className="node-handle node-handle--field"
+                />
+              ) : null}
+            </div>
+          );
+        })}
       </div>
-      <Handle type="source" position={Position.Right} className="node-handle" />
     </button>
   );
 }

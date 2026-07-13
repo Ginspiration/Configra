@@ -15,6 +15,7 @@ type EditorStore = {
 
   addColumn(tableId: string): void;
   updateColumn(tableId: string, columnId: string, patch: Partial<ConfigColumn>): void;
+  moveColumn(tableId: string, columnId: string, targetIndex: number): void;
   deleteColumn(tableId: string, columnId: string): void;
 
   addRow(tableId: string): string | undefined;
@@ -97,7 +98,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const tableId = makeId('table');
 
     set((state) => {
-      const columnId = 'id';
       const table: ConfigTable = {
         id: tableId,
         name: uniqueName('NewTable', state.project.tables.map((item) => item.name)),
@@ -105,7 +105,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           x: 160 + state.project.tables.length * 48,
           y: 140 + state.project.tables.length * 34,
         },
-        columns: [{ id: columnId, name: 'id', type: 'int', primary: true, required: true }],
+        columns: [],
         rows: [],
       };
 
@@ -186,6 +186,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             id: makeId('col'),
             name: uniqueName('field', table.columns.map((item) => item.name)),
             type: 'string',
+            export: true,
           };
 
           return {
@@ -235,6 +236,40 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           tables,
         },
         ...markDirty('updateColumn'),
+      };
+    }),
+
+  moveColumn: (tableId, columnId, targetIndex) =>
+    set((state) => {
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+
+        const sourceIndex = table.columns.findIndex((column) => column.id === columnId);
+        if (sourceIndex < 0) return table;
+
+        const clampedTargetIndex = Math.max(0, Math.min(targetIndex, table.columns.length));
+        const insertIndex =
+          clampedTargetIndex > sourceIndex ? clampedTargetIndex - 1 : clampedTargetIndex;
+
+        if (insertIndex === sourceIndex) return table;
+
+        const columns = [...table.columns];
+        const [column] = columns.splice(sourceIndex, 1);
+        columns.splice(insertIndex, 0, column);
+        updated = true;
+
+        return { ...table, columns };
+      });
+
+      if (!updated) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        ...markDirty('moveColumn'),
       };
     }),
 

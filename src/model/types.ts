@@ -34,6 +34,8 @@ export type ConfigColumn = {
   required?: boolean;
   primary?: boolean;
   autoIncrement?: boolean;
+  export?: boolean;
+  remark?: string;
   enumValues?: string[];
   ref?: ColumnRef;
 };

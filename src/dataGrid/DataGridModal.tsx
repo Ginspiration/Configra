@@ -9,7 +9,9 @@ import {
   type EditableGridCell,
   type GridCell,
   type GridColumn,
+  type GridMouseEventArgs,
   type GridSelection,
+  type HeaderClickedEventArgs,
   type Item,
   type ProvideEditorCallback,
 } from '@glideapps/glide-data-grid';
@@ -40,11 +42,28 @@ type ChoiceCellData = {
 const GHOST_ROW_COUNT = 16;
 const DEFAULT_COLUMN_WIDTH = 120;
 
-type GridMenuState = {
+type CellMenuState = {
   x: number;
   y: number;
   colIndex: number;
   rowIndex: number;
+};
+
+type HeaderMenuState = {
+  x: number;
+  y: number;
+  colIndex: number;
+};
+
+type RemarkEditorState = {
+  columnId: string;
+  draft: string;
+};
+
+type HeaderTooltipState = {
+  x: number;
+  y: number;
+  text: string;
 };
 
 type PasteHandler = (target: Item, values: readonly (readonly string[])[]) => boolean;
@@ -60,6 +79,62 @@ const toInputValue = (value: unknown) => {
 const parseNumber = (value: string) => (value.trim() === '' ? '' : Number(value));
 
 const valueKey = (value: unknown) => JSON.stringify([typeof value, value]);
+
+const columnRemark = (column: ConfigColumn) => column.remark?.trim() ?? '';
+
+const shortRemark = (remark: string) => {
+  const singleLine = remark.replace(/\s+/g, ' ').trim();
+  return singleLine.length > 18 ? `${singleLine.slice(0, 18)}...` : singleLine;
+};
+
+const ellipsizeCanvasText = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+) => {
+  if (maxWidth <= 0) return '';
+  if (ctx.measureText(text).width <= maxWidth) return text;
+
+  const ellipsis = '...';
+  const ellipsisWidth = ctx.measureText(ellipsis).width;
+  if (ellipsisWidth > maxWidth) return '';
+
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (ctx.measureText(`${text.slice(0, mid)}${ellipsis}`).width <= maxWidth) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return `${text.slice(0, low)}${ellipsis}`;
+};
+
+const drawRoundRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) => {
+  const right = x + width;
+  const bottom = y + height;
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(right - radius, y);
+  ctx.quadraticCurveTo(right, y, right, y + radius);
+  ctx.lineTo(right, bottom - radius);
+  ctx.quadraticCurveTo(right, bottom, right - radius, bottom);
+  ctx.lineTo(x + radius, bottom);
+  ctx.quadraticCurveTo(x, bottom, x, bottom - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+};
 
 const emptySelection = (): GridSelection => ({
   columns: CompactSelection.empty(),
@@ -232,31 +307,48 @@ export default function DataGridModal({
   const insertRow = useEditorStore((state) => state.insertRow);
   const deleteRow = useEditorStore((state) => state.deleteRow);
   const deleteRows = useEditorStore((state) => state.deleteRows);
+  const updateColumn = useEditorStore((state) => state.updateColumn);
   const updateCell = useEditorStore((state) => state.updateCell);
   const gridRef = useRef<DataEditorRef>(null);
+  const hoverTimeoutRef = useRef<number>();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [showSearch, setShowSearch] = useState(false);
   const [searchStatus, setSearchStatus] = useState('');
-  const [menu, setMenu] = useState<GridMenuState>();
+  const [cellMenu, setCellMenu] = useState<CellMenuState>();
+  const [headerMenu, setHeaderMenu] = useState<HeaderMenuState>();
+  const [remarkEditor, setRemarkEditor] = useState<RemarkEditorState>();
+  const [headerTooltip, setHeaderTooltip] = useState<HeaderTooltipState>();
   const gridRowCount = table ? table.rows.length + GHOST_ROW_COUNT : 0;
 
   useEffect(() => {
     setSelection(emptySelection());
-    setMenu(undefined);
+    setCellMenu(undefined);
+    setHeaderMenu(undefined);
+    setRemarkEditor(undefined);
+    setHeaderTooltip(undefined);
     setShowSearch(false);
     setSearchStatus('');
     setColumnWidths(table ? readColumnWidths(table.id) : {});
   }, [table?.id]);
 
+  useEffect(
+    () => () => {
+      if (hoverTimeoutRef.current !== undefined) window.clearTimeout(hoverTimeoutRef.current);
+    },
+    [],
+  );
+
   const columns = useMemo<readonly GridColumn[]>(
     () =>
-      table?.columns.map((column) => ({
-        id: column.id,
-        title: `${column.name || column.id}${column.primary ? ' PK' : ''}`,
-        width: columnWidths[column.id] ?? defaultColumnWidth(column),
-      })) ?? [],
+      table?.columns.map((column) => {
+        return {
+          id: column.id,
+          title: column.name || column.id,
+          width: columnWidths[column.id] ?? defaultColumnWidth(column),
+        };
+      }) ?? [],
     [columnWidths, table],
   );
 
@@ -564,13 +656,62 @@ export default function DataGridModal({
 
   const openCellMenu = useCallback((cell: Item, event: CellClickedEventArgs) => {
     event.preventDefault();
-    setMenu({
+    setHeaderMenu(undefined);
+    setHeaderTooltip(undefined);
+    setCellMenu({
       colIndex: cell[0],
       rowIndex: cell[1],
       x: event.bounds.x + event.localEventX,
       y: event.bounds.y + event.localEventY,
     });
   }, []);
+
+  const openHeaderMenu = useCallback((colIndex: number, event: HeaderClickedEventArgs) => {
+    event.preventDefault();
+    setCellMenu(undefined);
+    setHeaderTooltip(undefined);
+    setHeaderMenu({
+      colIndex,
+      x: event.bounds.x + event.localEventX,
+      y: event.bounds.y + event.localEventY,
+    });
+  }, []);
+
+  const onItemHovered = useCallback((args: GridMouseEventArgs) => {
+    if (hoverTimeoutRef.current !== undefined) {
+      window.clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = undefined;
+    }
+
+    if (args.kind !== 'header') {
+      setHeaderTooltip(undefined);
+      return;
+    }
+
+    const column = table?.columns[args.location[0]];
+    const remark = column ? columnRemark(column) : '';
+    if (!remark) {
+      setHeaderTooltip(undefined);
+      return;
+    }
+
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      setHeaderTooltip({
+        x: args.bounds.x + 8,
+        y: args.bounds.y + args.bounds.height + 6,
+        text: remark,
+      });
+    }, 350);
+  }, [table]);
+
+  const saveRemark = useCallback(() => {
+    if (!table || !remarkEditor) return;
+
+    const remark = remarkEditor.draft.trim();
+    updateColumn(table.id, remarkEditor.columnId, { remark: remark || undefined });
+    setRemarkEditor(undefined);
+    setHeaderTooltip(undefined);
+  }, [remarkEditor, table, updateColumn]);
 
   const uppercaseCells = useCallback((cells: Item[]) => {
     if (!table) return;
@@ -588,18 +729,18 @@ export default function DataGridModal({
     }
   }, [table, updateCell]);
 
-  const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
-    if (!table || !menu) return [];
+  const cellMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!table || !cellMenu) return [];
 
-    const hasExistingRow = menu.rowIndex >= 0 && menu.rowIndex < table.rows.length;
+    const hasExistingRow = cellMenu.rowIndex >= 0 && cellMenu.rowIndex < table.rows.length;
     const selectedRows = getSelectedRowIndexes();
     const selectedRowCount = selectedRows.length;
-    const selectedIncludesMenuRow = selectedRows.includes(menu.rowIndex);
+    const selectedIncludesMenuRow = selectedRows.includes(cellMenu.rowIndex);
     const actionRowIndexes =
       selectedRowCount > 1 && selectedIncludesMenuRow
         ? selectedRows
         : hasExistingRow
-          ? [menu.rowIndex]
+          ? [cellMenu.rowIndex]
           : [];
     const deleteLabel =
       actionRowIndexes.length > 1
@@ -609,13 +750,13 @@ export default function DataGridModal({
       ? [selection.current.range, ...(selection.current.rangeStack ?? [])]
       : [];
     const menuCellIsSelected =
-      menu.colIndex >= 0 &&
+      cellMenu.colIndex >= 0 &&
       selectedRanges.some(
         (range) =>
-          menu.colIndex >= range.x &&
-          menu.colIndex < range.x + range.width &&
-          menu.rowIndex >= range.y &&
-          menu.rowIndex < range.y + range.height,
+          cellMenu.colIndex >= range.x &&
+          cellMenu.colIndex < range.x + range.width &&
+          cellMenu.rowIndex >= range.y &&
+          cellMenu.rowIndex < range.y + range.height,
       );
     const uppercaseTargetMap = new Map<string, Item>();
     const addUppercaseTarget = (colIndex: number, rowIndex: number) => {
@@ -645,11 +786,11 @@ export default function DataGridModal({
           addUppercaseTarget(colIndex, rowIndex);
         }
       }
-    } else if (hasExistingRow && menu.colIndex >= 0) {
-      addUppercaseTarget(menu.colIndex, menu.rowIndex);
+    } else if (hasExistingRow && cellMenu.colIndex >= 0) {
+      addUppercaseTarget(cellMenu.colIndex, cellMenu.rowIndex);
     } else if (hasExistingRow) {
       for (let colIndex = 0; colIndex < table.columns.length; colIndex += 1) {
-        addUppercaseTarget(colIndex, menu.rowIndex);
+        addUppercaseTarget(colIndex, cellMenu.rowIndex);
       }
     }
 
@@ -659,17 +800,17 @@ export default function DataGridModal({
       {
         id: 'row-label',
         type: 'label',
-        label: hasExistingRow ? t('rowLabel', { index: menu.rowIndex + 1 }) : t('blankRow'),
+        label: hasExistingRow ? t('rowLabel', { index: cellMenu.rowIndex + 1 }) : t('blankRow'),
       },
       {
         id: 'insert-above',
         label: t('insertRowAbove'),
-        onSelect: () => insertRowAt(menu.rowIndex),
+        onSelect: () => insertRowAt(cellMenu.rowIndex),
       },
       {
         id: 'insert-below',
         label: t('insertRowBelow'),
-        onSelect: () => insertRowAt(menu.rowIndex + 1),
+        onSelect: () => insertRowAt(cellMenu.rowIndex + 1),
       },
       {
         id: 'add-row-end',
@@ -715,12 +856,34 @@ export default function DataGridModal({
     deleteSelectedRows,
     getSelectedRowIndexes,
     insertRowAt,
-    menu,
+    cellMenu,
     selection,
     t,
     table,
     uppercaseCells,
   ]);
+
+  const headerMenuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!table || !headerMenu) return [];
+
+    const column = table.columns[headerMenu.colIndex];
+    if (!column) return [];
+
+    return [
+      {
+        id: 'field-label',
+        type: 'label',
+        label: column.name || column.id,
+      },
+      {
+        id: 'insert-remark',
+        label: t('insertRemark'),
+        onSelect: () => {
+          setRemarkEditor({ columnId: column.id, draft: column.remark ?? '' });
+        },
+      },
+    ];
+  }, [headerMenu, t, table]);
 
   const primaryColumnIndex = useMemo(
     () => table?.columns.findIndex((column) => column.primary) ?? -1,
@@ -794,6 +957,93 @@ export default function DataGridModal({
       drawContent();
     },
     [],
+  );
+
+  const drawHeader = useCallback<NonNullable<DataEditorProps['drawHeader']>>(
+    (args, drawContent) => {
+      const column = table?.columns[args.columnIndex];
+      if (!column) {
+        drawContent();
+        return;
+      }
+
+      const remark = columnRemark(column);
+      drawContent();
+
+      const paddingLeft = 8;
+      const paddingRight = 8;
+      const centerY = args.rect.y + args.rect.height / 2;
+      const title = column.name || column.id;
+      const remarkText = remark ? shortRemark(remark) : '';
+      const badgeWidth = column.primary ? 22 : 0;
+      const badgeGap = column.primary ? 7 : 0;
+      const contentWidth = args.rect.width - paddingLeft - paddingRight;
+      const textRight = args.rect.x + args.rect.width - paddingRight - badgeWidth - badgeGap;
+      const textLeft = args.rect.x + paddingLeft;
+
+      args.ctx.save();
+      args.ctx.beginPath();
+      args.ctx.rect(textLeft, args.rect.y, Math.max(0, contentWidth), args.rect.height);
+      args.ctx.clip();
+
+      args.ctx.fillStyle = args.isSelected ? args.theme.accentColor : args.hasSelectedCell ? args.theme.bgHeaderHasFocus : args.theme.bgHeader;
+      args.ctx.fillRect(textLeft, args.rect.y, Math.max(0, contentWidth), args.rect.height);
+
+      args.ctx.textBaseline = 'middle';
+      args.ctx.textAlign = 'left';
+      args.ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
+      args.ctx.fillStyle = args.isSelected ? args.theme.textHeaderSelected : args.theme.textHeader;
+
+      const titleWidth = Math.ceil(args.ctx.measureText(title).width);
+      const remarkGap = remarkText ? 8 : 0;
+      const remarkFont = `italic 11px ${args.theme.fontFamily}`;
+      args.ctx.font = remarkFont;
+      const remarkWidth = remarkText ? Math.ceil(args.ctx.measureText(remarkText).width) : 0;
+      args.ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
+
+      const availableTextWidth = Math.max(0, textRight - textLeft);
+      const idealTextWidth = titleWidth + remarkGap + remarkWidth;
+      let displayTitle = title;
+      let displayRemark = remarkText;
+
+      if (idealTextWidth > availableTextWidth) {
+        const minTitleWidth = Math.min(titleWidth, Math.max(28, availableTextWidth * 0.55));
+        displayTitle = ellipsizeCanvasText(args.ctx, title, remarkText ? minTitleWidth : availableTextWidth);
+        const usedTitleWidth = Math.ceil(args.ctx.measureText(displayTitle).width);
+        const remainingWidth = availableTextWidth - usedTitleWidth - remarkGap;
+        args.ctx.font = remarkFont;
+        displayRemark = remarkText ? ellipsizeCanvasText(args.ctx, remarkText, remainingWidth) : '';
+        args.ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
+      }
+
+      args.ctx.fillText(displayTitle, textLeft, centerY);
+      const titleDrawWidth = Math.ceil(args.ctx.measureText(displayTitle).width);
+
+      if (displayRemark) {
+        args.ctx.font = `italic 11px ${args.theme.fontFamily}`;
+        args.ctx.fillStyle = '#64748b';
+        args.ctx.fillText(displayRemark, textLeft + titleDrawWidth + remarkGap, centerY);
+      }
+
+      args.ctx.restore();
+
+      if (column.primary) {
+        const badgeHeight = 14;
+        const badgeX = args.rect.x + args.rect.width - badgeWidth - paddingRight;
+        const badgeY = args.rect.y + Math.floor((args.rect.height - badgeHeight) / 2);
+        args.ctx.save();
+        drawRoundRect(args.ctx, badgeX, badgeY, badgeWidth, badgeHeight, 3);
+        args.ctx.fillStyle = '#dcfce7';
+        args.ctx.fill();
+        args.ctx.fillStyle = '#166534';
+        args.ctx.font = `700 9px ${args.theme.fontFamily}`;
+        args.ctx.textBaseline = 'middle';
+        args.ctx.textAlign = 'center';
+        args.ctx.fillText('PK', badgeX + badgeWidth / 2, badgeY + badgeHeight / 2);
+        args.ctx.restore();
+      }
+    },
+    [table],
   );
 
   if (!open || !table) return null;
@@ -878,10 +1128,13 @@ export default function DataGridModal({
               onDelete={onDelete}
               onColumnResize={onColumnResize}
               onCellContextMenu={openCellMenu}
+              onHeaderContextMenu={openHeaderMenu}
+              onItemHovered={onItemHovered}
               gridSelection={selection}
               onGridSelectionChange={(nextSelection) => setSelection(nextSelection)}
               provideEditor={provideEditor}
               drawCell={drawCell}
+              drawHeader={drawHeader}
               showSearch={showSearch}
               onSearchClose={() => {
                 setShowSearch(false);
@@ -929,13 +1182,60 @@ export default function DataGridModal({
           </div>
         </div>
       </section>
-      {menu ? (
+      {cellMenu ? (
         <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          items={contextMenuItems}
-          onClose={() => setMenu(undefined)}
+          x={cellMenu.x}
+          y={cellMenu.y}
+          items={cellMenuItems}
+          onClose={() => setCellMenu(undefined)}
         />
+      ) : null}
+      {headerMenu ? (
+        <ContextMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          items={headerMenuItems}
+          onClose={() => setHeaderMenu(undefined)}
+        />
+      ) : null}
+      {headerTooltip ? (
+        <div className="field-remark-tooltip" style={{ left: headerTooltip.x, top: headerTooltip.y }}>
+          {headerTooltip.text}
+        </div>
+      ) : null}
+      {remarkEditor ? (
+        <div className="remark-editor-backdrop" role="presentation" onMouseDown={() => setRemarkEditor(undefined)}>
+          <form
+            className="remark-editor"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveRemark();
+            }}
+          >
+            <label className="field-stack">
+              <span>{t('fieldRemark')}</span>
+              <textarea
+                autoFocus
+                rows={5}
+                value={remarkEditor.draft}
+                onChange={(event) =>
+                  setRemarkEditor((current) =>
+                    current ? { ...current, draft: event.target.value } : current,
+                  )
+                }
+              />
+            </label>
+            <div className="remark-editor__actions">
+              <button type="button" className="button" onClick={() => setRemarkEditor(undefined)}>
+                {t('cancel')}
+              </button>
+              <button type="submit" className="button button--primary">
+                {t('save')}
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
     </div>
   );

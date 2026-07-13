@@ -384,7 +384,57 @@ h3 {
 .column-list {
   display: grid;
   gap: 6px;
+  position: relative;
   padding: 8px 10px;
+}
+
+.column-list.is-reordering {
+  user-select: none;
+}
+
+.column-list__item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 5px;
+  border-radius: 4px;
+}
+
+.column-list__item.is-dragging {
+  opacity: 0.55;
+}
+
+.column-list__insert-line {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  z-index: 2;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+  transform: translateY(-1px);
+}
+
+.column-drag-handle {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  width: 18px;
+  min-height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #f8fafc;
+  color: var(--muted);
+  cursor: grab;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  touch-action: none;
+}
+
+.column-drag-handle:active {
+  cursor: grabbing;
 }
 
 .column-editor {
@@ -604,6 +654,54 @@ h3 {
   padding: 0 8px;
 }
 
+.field-remark-tooltip {
+  position: fixed;
+  z-index: 55;
+  max-width: 320px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(15, 23, 42, 0.72);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #fff;
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.24);
+  pointer-events: none;
+}
+
+.remark-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.28);
+  padding: 24px;
+}
+
+.remark-editor {
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 48px));
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 12px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.28);
+}
+
+.remark-editor textarea {
+  min-height: 112px;
+}
+
+.remark-editor__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .th-badge {
   display: inline-block;
   margin-left: 6px;
@@ -689,6 +787,7 @@ h3 {
 }
 
 .table-node__field {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(58px, 1fr) 42px auto auto;
   align-items: center;
@@ -707,6 +806,13 @@ h3 {
 
 .table-node__type {
   color: var(--muted);
+}
+
+.table-node__remark {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 500;
 }
 
 .table-node__badge {
@@ -733,6 +839,18 @@ h3 {
   height: 7px;
   border-color: #fff;
   background: var(--success);
+}
+
+.node-handle--field {
+  top: 9.5px;
+}
+
+.node-handle--field.react-flow__handle-left {
+  left: -10px;
+}
+
+.node-handle--field.react-flow__handle-right {
+  right: -10px;
 }
 
 @media (max-width: 1100px) {

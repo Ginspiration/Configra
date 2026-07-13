@@ -102,6 +102,16 @@ export default function ColumnEditor({ column, tableId, project, t }: ColumnEdit
           />
           {t('autoIncrement')}
         </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={column.export !== false}
+            onChange={(event) =>
+              updateColumn(tableId, column.id, { export: event.target.checked })
+            }
+          />
+          {t('exportField')}
+        </label>
       </div>
 
       {column.type === 'enum' ? (

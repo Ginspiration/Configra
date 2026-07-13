@@ -279,6 +279,10 @@ export function validateProject(project: ProjectFile, t: Translator): Validation
           const key = row.values[identityKeyColumn.id];
           const runtimeValue = row.values[identityValueColumn.id];
 
+          if (isEmpty(runtimeValue)) {
+            continue;
+          }
+
           if (isEmpty(key)) {
             pushIssue(
               {
@@ -349,41 +353,25 @@ export function validateProject(project: ProjectFile, t: Translator): Validation
             }
           }
 
-          if (isEmpty(runtimeValue)) {
+          const runtimeValueKey = valueKey(runtimeValue);
+          const duplicateValueRowId = seenValues.get(runtimeValueKey);
+          if (duplicateValueRowId) {
             pushIssue(
               {
                 severity: 'error',
                 tableId: table.id,
                 rowId: row._rowId,
                 columnId: identityValueColumn.id,
-                message: t('validationIdentityValueEmpty', {
+                message: t('validationIdentityValueDuplicate', {
                   table: table.name,
                   column: identityValueColumn.name,
+                  rowId: duplicateValueRowId,
                 }),
               },
-              'identity-value-empty',
+              'identity-value-duplicate',
             );
           } else {
-            const runtimeValueKey = valueKey(runtimeValue);
-            const duplicateValueRowId = seenValues.get(runtimeValueKey);
-            if (duplicateValueRowId) {
-              pushIssue(
-                {
-                  severity: 'error',
-                  tableId: table.id,
-                  rowId: row._rowId,
-                  columnId: identityValueColumn.id,
-                  message: t('validationIdentityValueDuplicate', {
-                    table: table.name,
-                    column: identityValueColumn.name,
-                    rowId: duplicateValueRowId,
-                  }),
-                },
-                'identity-value-duplicate',
-              );
-            } else {
-              seenValues.set(runtimeValueKey, row._rowId);
-            }
+            seenValues.set(runtimeValueKey, row._rowId);
           }
         }
       }

@@ -4,6 +4,9 @@ import type { ProjectFile } from '../model/types';
 export const TABLE_NODE_WIDTH = 210;
 export const TABLE_NODE_MIN_HEIGHT = 84;
 
+export const sourceColumnHandleId = (columnId: string) => `source-column:${columnId}`;
+export const targetColumnHandleId = (columnId: string) => `target-column:${columnId}`;
+
 export type TableNodeData = Record<string, unknown> & {
   tableId: string;
 };
@@ -37,7 +40,9 @@ export function projectToFlow(project: ProjectFile): {
         {
           id: `${table.id}.${column.id}->${targetTable.id}.${targetColumn.id}`,
           source: table.id,
+          sourceHandle: sourceColumnHandleId(column.id),
           target: targetTable.id,
+          targetHandle: targetColumnHandleId(targetColumn.id),
           type: 'smoothstep',
           markerEnd: { type: MarkerType.ArrowClosed },
           label: `${table.name}.${column.name} -> ${targetTable.name}.${targetColumn.name}`,
