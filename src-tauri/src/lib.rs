@@ -19,6 +19,11 @@ fn write_project_file(path: String, text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn path_exists(path: String) -> Result<bool, String> {
+  Ok(PathBuf::from(path).exists())
+}
+
+#[tauri::command]
 fn load_recent_project_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
   let path = recent_project_path_file(&app)?;
   if !path.exists() {
@@ -46,6 +51,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       read_project_file,
       write_project_file,
+      path_exists,
       load_recent_project_path,
       save_recent_project_path
     ])

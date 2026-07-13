@@ -1,8 +1,26 @@
 import { identityNamespace } from '../model/schemaUtils';
 import type { ConfigColumn, ProjectFile } from '../model/types';
 
+export type ExportJsonFile = {
+  fileName: string;
+  text: string;
+};
+
 export const safeFileName = (value: string) =>
   value.trim().replace(/[^a-z0-9_-]+/gi, '_') || 'table';
+
+const uniqueJsonFileName = (baseName: string, usedFileNames: Set<string>) => {
+  let suffix = 1;
+  let fileName = `${baseName}.json`;
+
+  while (usedFileNames.has(fileName.toLowerCase())) {
+    suffix += 1;
+    fileName = `${baseName}_${suffix}.json`;
+  }
+
+  usedFileNames.add(fileName.toLowerCase());
+  return fileName;
+};
 
 export const downloadTextFile = (fileName: string, text: string, mimeType = 'application/json') => {
   const blob = new Blob([text], { type: `${mimeType};charset=utf-8` });
@@ -68,6 +86,25 @@ export function exportIdRegistry(project: ProjectFile): Record<string, unknown> 
 
 export function idRegistryJson(project: ProjectFile) {
   return JSON.stringify(exportIdRegistry(project), null, 2);
+}
+
+export function projectJsonFiles(project: ProjectFile): ExportJsonFile[] {
+  const usedFileNames = new Set<string>();
+  const files: ExportJsonFile[] = [
+    {
+      fileName: uniqueJsonFileName('config_ids', usedFileNames),
+      text: idRegistryJson(project),
+    },
+  ];
+
+  for (const table of project.tables) {
+    files.push({
+      fileName: uniqueJsonFileName(safeFileName(table.name), usedFileNames),
+      text: tableJson(project, table.id),
+    });
+  }
+
+  return files;
 }
 
 export function downloadTableJson(project: ProjectFile, tableId: string) {

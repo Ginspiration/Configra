@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 export type ContextMenuItem =
   | {
@@ -24,6 +24,7 @@ type ContextMenuProps = {
 };
 
 export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
   const position = useMemo(() => {
     const menuWidth = 230;
     const rowHeight = 30;
@@ -36,18 +37,24 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   }, [items.length, x, y]);
 
   useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const menuElement = menuRef.current;
+      if (event.target instanceof Node && menuElement?.contains(event.target)) return;
+      onClose();
+    };
     const close = () => onClose();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
 
-    window.addEventListener('mousedown', close);
+    window.addEventListener('pointerdown', handlePointerDown, true);
     window.addEventListener('wheel', close, true);
     window.addEventListener('resize', close);
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      window.removeEventListener('mousedown', close);
+      window.removeEventListener('pointerdown', handlePointerDown, true);
       window.removeEventListener('wheel', close, true);
       window.removeEventListener('resize', close);
       window.removeEventListener('keydown', handleKeyDown);
@@ -56,6 +63,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
 
   return (
     <div
+      ref={menuRef}
       className="context-menu"
       style={position}
       role="menu"

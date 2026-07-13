@@ -25,6 +25,10 @@ export async function writeTextFile(path: string, text: string) {
   await invoke('write_project_file', { path, text });
 }
 
+export async function fileExists(path: string) {
+  return invoke<boolean>('path_exists', { path });
+}
+
 export async function writeProjectFileText(path: string, text: string) {
   await writeTextFile(path, text);
   await invoke('save_recent_project_path', { path });
@@ -73,4 +77,16 @@ export async function pickJsonSavePath(defaultPath: string) {
 
 export async function pickIdRegistrySavePath() {
   return pickJsonSavePath('config_ids.json');
+}
+
+export async function pickExportDirectoryPath() {
+  const selected = await open({
+    title: 'Export JSON',
+    directory: true,
+    multiple: false,
+  });
+
+  if (!selected || Array.isArray(selected)) return undefined;
+
+  return selected;
 }

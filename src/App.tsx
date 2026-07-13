@@ -10,15 +10,19 @@ import {
   downloadIdRegistry,
   downloadProjectFile,
   downloadTableJson,
+  downloadTextFile,
   idRegistryJson,
+  projectJsonFiles,
   safeFileName,
   tableJson,
 } from './export/exportTables';
 import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition } from './model/types';
 import {
+  fileExists,
   isDesktopRuntime,
   loadRecentProjectPath,
+  pickExportDirectoryPath,
   pickIdRegistrySavePath,
   pickProjectFileText,
   pickJsonSavePath,
@@ -43,6 +47,49 @@ type MenuState =
       y: number;
       graphPosition: GraphPosition;
     };
+
+type BrowserWritableFile = {
+  write: (contents: string) => Promise<void>;
+  close: () => Promise<void>;
+};
+
+type BrowserFileHandle = {
+  createWritable: () => Promise<BrowserWritableFile>;
+};
+
+type BrowserDirectoryHandle = {
+  getFileHandle: (name: string, options?: { create?: boolean }) => Promise<BrowserFileHandle>;
+};
+
+type DirectoryPickerWindow = Window & {
+  showDirectoryPicker?: () => Promise<BrowserDirectoryHandle>;
+};
+
+const joinFilePath = (directory: string, fileName: string) => {
+  const trimmedDirectory = directory.replace(/[\\/]+$/, '');
+  return `${trimmedDirectory || '/'}${trimmedDirectory ? '/' : ''}${fileName}`;
+};
+
+const writeBrowserDirectoryFile = async (
+  directory: BrowserDirectoryHandle,
+  fileName: string,
+  text: string,
+) => {
+  const fileHandle = await directory.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(text);
+  await writable.close();
+};
+
+const browserDirectoryFileExists = async (directory: BrowserDirectoryHandle, fileName: string) => {
+  try {
+    await directory.getFileHandle(fileName);
+    return true;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'NotFoundError') return false;
+    throw error;
+  }
+};
 
 export default function App() {
   const project = useEditorStore((state) => state.project);
@@ -235,6 +282,84 @@ export default function App() {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }, [project]);
+
+  const confirmOverwriteExport = useCallback(
+    async (count: number) => {
+      if (count <= 0) return true;
+
+      if (!isDesktopRuntime()) {
+        return window.confirm(t('confirmOverwriteExport', { count }));
+      }
+
+      const overwriteLabel = t('overwriteAndExport');
+      const result = await message(t('confirmOverwriteExport', { count }), {
+        title: t('overwriteExportTitle'),
+        kind: 'warning',
+        buttons: {
+          ok: overwriteLabel,
+          cancel: t('cancel'),
+        },
+      });
+
+      return result === overwriteLabel || result === 'Ok';
+    },
+    [t],
+  );
+
+  const exportAllJsonFiles = useCallback(async () => {
+    const files = projectJsonFiles(project);
+
+    if (isDesktopRuntime()) {
+      try {
+        const directory = await pickExportDirectoryPath();
+        if (!directory) return;
+
+        const filesWithPaths = files.map((file) => ({
+          ...file,
+          path: joinFilePath(directory, file.fileName),
+        }));
+        const existingFiles = await Promise.all(
+          filesWithPaths.map(async (file) => ((await fileExists(file.path)) ? file.fileName : '')),
+        );
+        const overwriteCount = existingFiles.filter(Boolean).length;
+        if (!(await confirmOverwriteExport(overwriteCount))) return;
+
+        await Promise.all(filesWithPaths.map((file) => writeTextFile(file.path, file.text)));
+        setStatus(t('exportedJsonFiles', { count: files.length }));
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    const directoryPicker = (window as DirectoryPickerWindow).showDirectoryPicker;
+    if (directoryPicker) {
+      try {
+        const directory = await directoryPicker.call(window);
+        const existingFiles: string[] = [];
+        for (const file of files) {
+          if (await browserDirectoryFileExists(directory, file.fileName)) {
+            existingFiles.push(file.fileName);
+          }
+        }
+        if (!(await confirmOverwriteExport(existingFiles.length))) return;
+
+        for (const file of files) {
+          await writeBrowserDirectoryFile(directory, file.fileName, file.text);
+        }
+        setStatus(t('exportedJsonFiles', { count: files.length }));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    for (const file of files) {
+      downloadTextFile(file.fileName, file.text);
+    }
+    setStatus(t('exportedJsonFiles', { count: files.length }));
+  }, [confirmOverwriteExport, project, t]);
 
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
@@ -575,6 +700,15 @@ export default function App() {
           </button>
           <button type="button" className="button" onClick={triggerLoadProject} title="O / Ctrl+O">
             {t('load')}
+          </button>
+          <button
+            type="button"
+            className="button button--primary"
+            onClick={() => {
+              void exportAllJsonFiles();
+            }}
+          >
+            {t('exportAll')}
           </button>
           <label className="toolbar-toggle" title="M">
             <input
