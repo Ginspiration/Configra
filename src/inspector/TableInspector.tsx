@@ -207,6 +207,17 @@ export default function TableInspector({ table, project, t, compact = false }: T
           onChange={(event) => updateTable(table.id, { name: event.target.value })}
         />
       </label>
+      <label className="field-stack">
+        <span>{t('tableRemark')}</span>
+        <textarea
+          rows={2}
+          value={table.remark ?? ''}
+          onChange={(event) => {
+            const remark = event.target.value;
+            updateTable(table.id, { remark: remark || undefined });
+          }}
+        />
+      </label>
 
       <div className="panel-heading panel-heading--spaced">
         <h3>{t('identityRegistry')}</h3>

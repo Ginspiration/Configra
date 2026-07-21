@@ -7,6 +7,32 @@ export function isDesktopRuntime() {
   return isTauri();
 }
 
+export type McpStatus = {
+  enabled: boolean;
+  running: boolean;
+  fullAccess: boolean;
+  port: number;
+  connectionUrl: string;
+  error?: string;
+};
+
+export type McpLogEntry = {
+  timestamp: string;
+  level: 'info' | 'warning' | 'error' | string;
+  message: string;
+  requestId?: string;
+  toolName?: string;
+  durationMs?: number;
+};
+
+export type McpEvents = {
+  version: number;
+  changeRevision: number;
+  projectPath?: string;
+  projectHash?: string;
+  changedAt?: string;
+};
+
 const projectFilters = [
   {
     name: 'Config Graph Project',
@@ -40,6 +66,43 @@ export async function loadRecentProjectPath() {
 
 export async function rememberRecentProjectPath(path: string) {
   await invoke('save_recent_project_path', { path });
+}
+
+export async function getMcpStatus() {
+  return invoke<McpStatus>('get_mcp_status');
+}
+
+export async function setMcpEnabled(enabled: boolean) {
+  return invoke<McpStatus>('set_mcp_enabled', { enabled });
+}
+
+export async function setMcpFullAccess(fullAccess: boolean) {
+  return invoke<McpStatus>('set_mcp_full_access', { fullAccess });
+}
+
+export async function updateMcpContext(
+  projectPath: string | undefined,
+  uiDirty: boolean,
+  dirtyScope: 'none' | 'layout' | 'content',
+  fullAccess: boolean,
+  revision: number,
+) {
+  await invoke('update_mcp_context', {
+    projectPath: projectPath ?? null,
+    uiDirty,
+    dirtyScope,
+    fullAccess,
+    revision,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export async function getMcpEvents() {
+  return invoke<McpEvents>('get_mcp_events');
+}
+
+export async function getMcpLogs() {
+  return invoke<McpLogEntry[]>('get_mcp_logs');
 }
 
 export async function pickProjectFileText() {

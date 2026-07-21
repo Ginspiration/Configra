@@ -43,7 +43,7 @@ Tauri
 当前界面结构：
 
 ```text
-顶部工具栏：保存 / 加载 / 小地图 / 语言
+顶部工具栏：保存 / 加载 / 导出 / 设置
 左侧面板：表列表
 中间区域：React Flow 蓝图画布
 编辑弹窗：表属性 + 字段 + 问题列表 + Glide Data Grid 行数据
@@ -91,8 +91,8 @@ Tauri
 
 - 保存。
 - 加载。
-- 小地图开关。
-- 语言选择器。
+- 导出。
+- 设置入口。设置面板按“界面”和“AI / MCP”分类，后续可继续扩展更多分类。
 
 默认语言是中文，可切换为英文。
 
@@ -569,7 +569,6 @@ npm run tauri:dev
 
 不要把以下内容当作当前功能：
 
-- AI 生成或 AI 编辑。
 - 撤销/重做。
 - CSV/Excel 导入。
 - 多人协作。
@@ -594,3 +593,64 @@ npm run tauri:dev
 - 如果用户后续明确需要，再把某种语言的代码生成作为独立导出层。
 
 扩展前请先保持最小闭环稳定：表结构、行数据、引用、校验、保存/加载、导出。
+## 19. Headless CLI and AI patch flow
+
+A Node CLI is now available and should be used for AI batch work without starting Vite or Tauri.
+
+Commands:
+
+- `npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]`
+- `npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]`
+- `npm run --silent cfg -- validate --project <file> [--json]`
+- `npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]`
+- `npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--report <file>] [--json]`
+- `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--overwrite] [--json]`
+- `npm run --silent cfg -- export all --project <file> --out <directory> [--overwrite] [--json]`
+- `npm run --silent cfg -- export ids --project <file> --out <file> [--overwrite] [--json]`
+
+Patch contract:
+
+- Schema: `schemas/data-patch.schema.json`
+- Stable IDs only: `tableId`, `columnId`, `_rowId`
+- Ordered operations only; later operations see earlier results
+- Reject unknown targets, conflicting matches, bad shapes, and stale hashes
+- `baseHash` is the SHA-256 of the original project file text
+- `patch check` returns a `confirmationHash`
+- `patch apply` must receive the matching `--confirm` value
+
+Recommended AI flow:
+
+1. Inspect the project.
+2. Generate a JSON patch.
+3. Run `patch check --json`.
+4. Review the diff, validation delta, and `confirmationHash`.
+5. Run `patch apply --confirm <hash> --json`.
+6. Run `validate --json`.
+7. Export the needed table(s) or `config_ids.json`.
+
+Exit codes:
+
+- `0` success
+- `1` validation failure or rejected patch
+- `2` argument, JSON, or target error
+- `3` hash conflict
+- `4` filesystem error
+
+## 20. Local MCP service
+
+The source desktop application now manages a local Streamable HTTP MCP service.
+
+- The toolbar Settings entry opens a categorized settings panel; its AI / MCP category starts/stops the service and persists its enabled state.
+- The service listens only on `127.0.0.1:37631` and uses a per-install token in the URL.
+- The connection URL is available through the toolbar copy button.
+- MCP is source desktop only; browser mode and packaged sidecars are not supported yet.
+- MCP tools operate only on the current saved project and invoke the headless CLI rather than mutating Zustand.
+- Dirty state is scoped: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads the project.
+- Unsaved content changes block MCP modification/export tools by default. The persisted Settings → AI / MCP → “Full Access” switch lets the user explicitly allow all MCP operations; an MCP apply may then replace unsaved content edits.
+- MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both.
+- While MCP is enabled, the desktop UI shows a minimizable AI/MCP activity log window. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
+- New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
+- Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.
+- MCP lifecycle/config files live in the Tauri application config directory as `mcp-settings.json`, `mcp-context.json`, `mcp-events.json`, and `mcp-logs.jsonl`.
+
+MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, service restart persistence, scoped dirty access, Full Access persistence, log-window minimize/restore, and process cleanup after disabling or closing the application.

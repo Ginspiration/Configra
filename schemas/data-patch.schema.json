@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://game-config-graph-editor.local/schemas/data-patch.schema.json",
+  "title": "Game Config Graph Editor Data Patch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "baseHash", "operations"],
+  "properties": {
+    "version": { "const": 1 },
+    "baseHash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "description": { "type": "string" },
+    "operations": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/addTable" },
+          { "$ref": "#/$defs/updateTable" },
+          { "$ref": "#/$defs/deleteTable" },
+          { "$ref": "#/$defs/addColumn" },
+          { "$ref": "#/$defs/updateColumn" },
+          { "$ref": "#/$defs/moveColumn" },
+          { "$ref": "#/$defs/deleteColumn" },
+          { "$ref": "#/$defs/updateRows" },
+          { "$ref": "#/$defs/upsertRows" },
+          { "$ref": "#/$defs/addRows" },
+          { "$ref": "#/$defs/deleteRows" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "nonBlankString": { "type": "string", "pattern": ".*\\S.*" },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "type": "string" },
+        "keyColumnId": { "type": "string" },
+        "valueColumnId": { "type": "string" }
+      }
+    },
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tableId", "columnId"],
+      "properties": {
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "columnId": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type", "remark"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "type": { "enum": ["int", "float", "string", "bool", "enum", "ref", "json"] },
+        "required": { "type": "boolean" },
+        "primary": { "type": "boolean" },
+        "autoIncrement": { "type": "boolean" },
+        "export": { "type": "boolean" },
+        "remark": { "$ref": "#/$defs/nonBlankString" },
+        "enumValues": { "type": "array", "items": { "type": "string" } },
+        "ref": { "$ref": "#/$defs/ref" }
+      }
+    },
+    "addTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "name", "remark"],
+      "properties": {
+        "op": { "const": "addTable" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "remark": { "$ref": "#/$defs/nonBlankString" },
+        "position": { "$ref": "#/$defs/position" },
+        "identity": { "$ref": "#/$defs/identity" }
+      }
+    },
+    "updateTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "changes"],
+      "properties": {
+        "op": { "const": "updateTable" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "changes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "remark": { "type": ["string", "null"] },
+            "position": { "$ref": "#/$defs/position" },
+            "identity": {
+              "oneOf": [
+                { "$ref": "#/$defs/identity" },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "deleteTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId"],
+      "properties": {
+        "op": { "const": "deleteTable" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "addColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "column"],
+      "properties": {
+        "op": { "const": "addColumn" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "column": { "$ref": "#/$defs/column" },
+        "index": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "updateColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "columnId", "changes"],
+      "properties": {
+        "op": { "const": "updateColumn" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "columnId": { "$ref": "#/$defs/nonEmptyString" },
+        "changes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "type": { "enum": ["int", "float", "string", "bool", "enum", "ref", "json"] },
+            "required": { "type": ["boolean", "null"] },
+            "primary": { "type": ["boolean", "null"] },
+            "autoIncrement": { "type": ["boolean", "null"] },
+            "export": { "type": ["boolean", "null"] },
+            "remark": { "type": ["string", "null"] },
+            "enumValues": {
+              "oneOf": [
+                { "type": "array", "items": { "type": "string" } },
+                { "type": "null" }
+              ]
+            },
+            "ref": {
+              "oneOf": [
+                { "$ref": "#/$defs/ref" },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "moveColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "columnId", "targetIndex"],
+      "properties": {
+        "op": { "const": "moveColumn" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "columnId": { "$ref": "#/$defs/nonEmptyString" },
+        "targetIndex": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "deleteColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "columnId"],
+      "properties": {
+        "op": { "const": "deleteColumn" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "columnId": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "updateRows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "rows"],
+      "properties": {
+        "op": { "const": "updateRows" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rowId", "values"],
+            "properties": {
+              "rowId": { "$ref": "#/$defs/nonEmptyString" },
+              "values": { "$ref": "#/$defs/rowValues" }
+            }
+          }
+        }
+      }
+    },
+    "upsertRows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "keyColumnId", "rows"],
+      "properties": {
+        "op": { "const": "upsertRows" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "keyColumnId": { "$ref": "#/$defs/nonEmptyString" },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "values"],
+            "properties": {
+              "key": { "$ref": "#/$defs/jsonValue" },
+              "values": { "$ref": "#/$defs/rowValues" }
+            }
+          }
+        }
+      }
+    },
+    "addRows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "rows"],
+      "properties": {
+        "op": { "const": "addRows" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["values"],
+            "properties": {
+              "values": { "$ref": "#/$defs/rowValues" }
+            }
+          }
+        }
+      }
+    },
+    "deleteRows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "rowIds"],
+      "properties": {
+        "op": { "const": "deleteRows" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "rowIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "rowValues": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/jsonValue" } }
+      ]
+    }
+  }
+}

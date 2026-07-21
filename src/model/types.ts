@@ -10,6 +10,7 @@ export type ProjectFile = {
 export type ConfigTable = {
   id: string;
   name: string;
+  remark?: string;
   position: GraphPosition;
   columns: ConfigColumn[];
   rows: ConfigRow[];

@@ -4,6 +4,8 @@ import { message } from '@tauri-apps/plugin-dialog';
 import GraphCanvas from './graph/GraphCanvas';
 import DataGridModal from './dataGrid/DataGridModal';
 import ContextMenu, { type ContextMenuItem } from './contextMenu/ContextMenu';
+import McpLogWindow from './mcp/McpLogWindow';
+import SettingsPanel from './settings/SettingsPanel';
 import { useEditorStore } from './store/editorStore';
 import { validateProject } from './validation/validateProject';
 import {
@@ -20,6 +22,9 @@ import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition } from './model/types';
 import {
   fileExists,
+  getMcpEvents,
+  getMcpLogs,
+  getMcpStatus,
   isDesktopRuntime,
   loadRecentProjectPath,
   pickExportDirectoryPath,
@@ -29,10 +34,16 @@ import {
   pickProjectSavePath,
   readProjectFileText,
   rememberRecentProjectPath,
+  setMcpEnabled,
+  setMcpFullAccess,
+  type McpEvents,
+  type McpLogEntry,
+  type McpStatus,
+  updateMcpContext,
   writeProjectFileText,
   writeTextFile,
 } from './file/desktopProjectFile';
-import { languageLabels, translate, type Language } from './i18n';
+import { translate, type Language } from './i18n';
 
 type MenuState =
   | {
@@ -99,24 +110,38 @@ export default function App() {
   const addColumn = useEditorStore((state) => state.addColumn);
   const deleteTable = useEditorStore((state) => state.deleteTable);
   const isDirty = useEditorStore((state) => state.isDirty);
+  const dirtyScope = useEditorStore((state) => state.dirtyScope);
   const loadProject = useEditorStore((state) => state.loadProject);
+  const reloadProject = useEditorStore((state) => state.reloadProject);
   const markClean = useEditorStore((state) => state.markClean);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [language, setLanguage] = useState<Language>('zh');
   const [showMiniMap, setShowMiniMap] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showDataGrid, setShowDataGrid] = useState(false);
   const [editingTableId, setEditingTableId] = useState<string>();
   const [projectPath, setProjectPath] = useState<string>();
   const [status, setStatus] = useState('');
   const [menu, setMenu] = useState<MenuState>();
+  const [mcpStatus, setMcpStatus] = useState<McpStatus>();
+  const [mcpLogs, setMcpLogs] = useState<McpLogEntry[]>([]);
+  const [mcpLogMinimized, setMcpLogMinimized] = useState(false);
+  const [mcpBusy, setMcpBusy] = useState(false);
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
+  const dirtyScopeRef = useRef(dirtyScope);
+  const mcpFullAccessRef = useRef(false);
   const allowCloseRef = useRef(false);
   const closePromptOpenRef = useRef(false);
   const recentProjectLoadedRef = useRef(false);
+  const mcpContextRevisionRef = useRef(0);
+  const lastMcpEventRevisionRef = useRef<number>();
+  const mcpEventPollActiveRef = useRef(false);
   const saveProjectRef = useRef<() => Promise<boolean>>(async () => false);
   const tRef = useRef(t);
   isDirtyRef.current = isDirty;
+  dirtyScopeRef.current = dirtyScope;
+  mcpFullAccessRef.current = mcpStatus?.fullAccess ?? false;
   tRef.current = t;
 
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
@@ -604,6 +629,98 @@ export default function App() {
   }, [loadProjectText]);
 
   useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    if (!mcpStatus) return;
+    const revision = mcpContextRevisionRef.current + 1;
+    mcpContextRevisionRef.current = revision;
+    void updateMcpContext(
+      projectPath,
+      isDirty,
+      dirtyScope,
+      mcpStatus?.fullAccess ?? false,
+      revision,
+    ).catch((error) => {
+      setStatus(error instanceof Error ? error.message : String(error));
+    });
+  }, [dirtyScope, isDirty, mcpStatus?.fullAccess, projectPath]);
+
+  const reloadProjectFromMcp = useCallback(
+    async (event: McpEvents) => {
+      if (!event.projectPath || event.projectPath !== projectPath) return;
+      if (dirtyScopeRef.current === 'content' && !mcpFullAccessRef.current) {
+        setStatus(t('mcpExternalConflict'));
+        return;
+      }
+
+      try {
+        const file = await readProjectFileText(event.projectPath);
+        const parsed = parseProjectFileText(file.text, t);
+        if (!parsed.ok) {
+          setStatus(parsed.error);
+          return;
+        }
+        const preserveLayout = dirtyScopeRef.current === 'layout';
+        const replacedUnsavedContent =
+          dirtyScopeRef.current === 'content' && mcpFullAccessRef.current;
+        reloadProject(parsed.project, preserveLayout);
+        if (editingTableId && !parsed.project.tables.some((table) => table.id === editingTableId)) {
+          setEditingTableId(undefined);
+          setShowDataGrid(false);
+        }
+        setStatus(
+          preserveLayout
+            ? t('mcpLayoutPreserved')
+            : replacedUnsavedContent
+              ? t('mcpProjectReloadedFullAccess')
+              : t('mcpProjectReloaded'),
+        );
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [editingTableId, projectPath, reloadProject, t],
+  );
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false;
+
+    const poll = async () => {
+      if (mcpEventPollActiveRef.current) return;
+      mcpEventPollActiveRef.current = true;
+      try {
+        const [nextStatus, event, logs] = await Promise.all([
+          getMcpStatus(),
+          getMcpEvents(),
+          getMcpLogs(),
+        ]);
+        if (disposed) return;
+        setMcpStatus(nextStatus);
+        setMcpLogs(logs);
+
+        const previousRevision = lastMcpEventRevisionRef.current;
+        lastMcpEventRevisionRef.current = event.changeRevision;
+        if (previousRevision !== undefined && event.changeRevision > previousRevision) {
+          await reloadProjectFromMcp(event);
+        }
+      } catch (error) {
+        if (!disposed) setStatus(error instanceof Error ? error.message : String(error));
+      } finally {
+        mcpEventPollActiveRef.current = false;
+      }
+    };
+
+    void poll();
+    const interval = window.setInterval(() => {
+      void poll();
+    }, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [reloadProjectFromMcp]);
+
+  useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return false;
       return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
@@ -611,6 +728,7 @@ export default function App() {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return;
+      if (showSettings) return;
 
       const key = event.key.toLowerCase();
       const commandKey = event.ctrlKey || event.metaKey;
@@ -664,6 +782,7 @@ export default function App() {
     downloadTableJsonFile,
     openRowsModal,
     saveProject,
+    showSettings,
     triggerLoadProject,
   ]);
 
@@ -678,6 +797,45 @@ export default function App() {
 
     event.preventDefault();
   }, []);
+
+  const closeSettings = useCallback(() => setShowSettings(false), []);
+
+  const changeMcpEnabled = useCallback((enabled: boolean) => {
+    setMcpBusy(true);
+    void setMcpEnabled(enabled)
+      .then((nextStatus) => {
+        setMcpStatus(nextStatus);
+        if (nextStatus.error) setStatus(nextStatus.error);
+      })
+      .catch((error) => {
+        setStatus(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setMcpBusy(false));
+  }, []);
+
+  const changeMcpFullAccess = useCallback(
+    (fullAccess: boolean) => {
+      setMcpBusy(true);
+      void setMcpFullAccess(fullAccess)
+        .then((nextStatus) => {
+          setMcpStatus(nextStatus);
+          if (fullAccess) setStatus(t('mcpFullAccessEnabled'));
+        })
+        .catch((error) => {
+          setStatus(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => setMcpBusy(false));
+    },
+    [t],
+  );
+
+  const copyMcpAddress = useCallback(() => {
+    if (!mcpStatus?.connectionUrl) return;
+    void navigator.clipboard.writeText(mcpStatus.connectionUrl).then(
+      () => setStatus(t('mcpAddressCopied')),
+      () => setStatus(t('clipboardDenied')),
+    );
+  }, [mcpStatus?.connectionUrl, t]);
 
   return (
     <div className="app-shell" onContextMenu={preventNativeContextMenu}>
@@ -710,27 +868,14 @@ export default function App() {
           >
             {t('exportAll')}
           </button>
-          <label className="toolbar-toggle" title="M">
-            <input
-              type="checkbox"
-              checked={showMiniMap}
-              onChange={(event) => setShowMiniMap(event.target.checked)}
-            />
-            {t('miniMap')}
-          </label>
-          <label className="language-select">
-            <span>{t('language')}</span>
-            <select
-              value={language}
-              onChange={(event) => setLanguage(event.target.value as Language)}
-            >
-              {Object.entries(languageLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <button
+            type="button"
+            className="button settings-button"
+            onClick={() => setShowSettings(true)}
+          >
+            <span aria-hidden="true">⚙</span>
+            {t('settings')}
+          </button>
         </div>
         <input
           ref={fileInputRef}
@@ -757,6 +902,7 @@ export default function App() {
                 key={table.id}
                 type="button"
                 className={`table-list-item ${table.id === selectedTableId ? 'is-active' : ''}`}
+                title={table.remark?.trim() || undefined}
                 onClick={() => selectTable(table.id)}
                 onDoubleClick={() => openRowsModal(table.id)}
                 onContextMenu={(event) => {
@@ -764,7 +910,10 @@ export default function App() {
                   openTableContextMenu(table.id, { x: event.clientX, y: event.clientY });
                 }}
               >
-                <span>{table.name}</span>
+                <span>
+                  {table.name}
+                  {table.remark?.trim() ? ` — ${table.remark.trim()}` : ''}
+                </span>
                 <small>
                   {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
                 </small>
@@ -793,6 +942,32 @@ export default function App() {
         onOpenTable={openRowsModal}
         onClose={() => setShowDataGrid(false)}
       />
+
+      <SettingsPanel
+        open={showSettings}
+        language={language}
+        showMiniMap={showMiniMap}
+        desktopAvailable={isDesktopRuntime()}
+        mcpBusy={mcpBusy}
+        mcpStatus={mcpStatus}
+        onClose={closeSettings}
+        onLanguageChange={setLanguage}
+        onMiniMapChange={setShowMiniMap}
+        onMcpEnabledChange={changeMcpEnabled}
+        onMcpFullAccessChange={changeMcpFullAccess}
+        onCopyMcpAddress={copyMcpAddress}
+        t={t}
+      />
+
+      {mcpStatus?.enabled ? (
+        <McpLogWindow
+          entries={mcpLogs}
+          minimized={mcpLogMinimized}
+          running={mcpStatus.running}
+          onToggleMinimized={() => setMcpLogMinimized((value) => !value)}
+          t={t}
+        />
+      ) : null}
 
       {menu ? (
         <ContextMenu

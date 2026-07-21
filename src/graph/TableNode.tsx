@@ -38,7 +38,12 @@ function TableNode({ data }: NodeProps) {
       className={`table-node ${selectedTableId === table.id ? 'is-selected' : ''}`}
       onClick={() => selectTable(table.id)}
     >
-      <div className="table-node__title">{table.name || table.id}</div>
+      <div className="table-node__title" title={table.remark?.trim() || undefined}>
+        {table.name || table.id}
+        {table.remark?.trim() ? (
+          <span className="table-node__remark"> {shortRemark(table.remark)}</span>
+        ) : null}
+      </div>
       <div className="table-node__fields">
         {table.columns.map((column) => {
           const remark = column.remark?.trim() ?? '';

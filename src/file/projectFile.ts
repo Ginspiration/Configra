@@ -30,6 +30,10 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
       return { ok: false, error: t('parseTableIdName', { index: tableIndex }) };
     }
 
+    if (table.remark !== undefined && typeof table.remark !== 'string') {
+      return { ok: false, error: t('parseTableRemark', { table: table.name }) };
+    }
+
     if (
       !isRecord(table.position) ||
       typeof table.position.x !== 'number' ||

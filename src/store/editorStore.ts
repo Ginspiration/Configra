@@ -1,11 +1,20 @@
 import { create } from 'zustand';
 import { createSampleProject } from '../model/sampleProject';
 import type { ConfigColumn, ConfigTable, GraphPosition, ProjectFile } from '../model/types';
+import {
+  createDefaultRow,
+  defaultValueForColumn,
+  makeId,
+  uniqueName,
+} from '../model/rowFactory';
+
+export type DirtyScope = 'none' | 'layout' | 'content';
 
 type EditorStore = {
   project: ProjectFile;
   selectedTableId?: string;
   isDirty: boolean;
+  dirtyScope: DirtyScope;
 
   selectTable(tableId: string): void;
   addTable(position?: GraphPosition): string;
@@ -25,72 +34,34 @@ type EditorStore = {
   deleteRows(tableId: string, rowIds: string[]): void;
 
   loadProject(project: ProjectFile): void;
+  reloadProject(project: ProjectFile, preserveLayout?: boolean): void;
   markClean(): void;
   resetProject(): void;
 };
 
-const makeId = (prefix: string) =>
-  `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
-
-const uniqueName = (base: string, existing: string[]) => {
-  let name = base;
-  let index = 1;
-  while (existing.includes(name)) {
-    index += 1;
-    name = `${base}${index}`;
-  }
-  return name;
-};
-
-const defaultValueForColumn = (column: ConfigColumn): unknown => {
-  if (column.type === 'bool') return false;
-  if (column.type === 'enum') return column.enumValues?.[0] ?? '';
-  if (column.type === 'json') return '{}';
-  return '';
-};
-
-const autoIncrementValue = (table: ConfigTable, column: ConfigColumn) => {
-  const lastValue = table.rows[table.rows.length - 1]?.values[column.id];
-  if (typeof lastValue === 'number' && Number.isFinite(lastValue)) return lastValue + 1;
-
-  const numericValues = table.rows
-    .map((row) => row.values[column.id])
-    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-
-  return numericValues.length === 0 ? 1 : Math.max(...numericValues) + 1;
-};
-
-const defaultValuesForTable = (table: ConfigTable) =>
-  Object.fromEntries(
-    table.columns.map((column) => [
-      column.id,
-      column.autoIncrement && column.type === 'int'
-        ? autoIncrementValue(table, column)
-        : defaultValueForColumn(column),
-    ]),
-  );
-
 const initialProject = createSampleProject();
-
-const changed = { isDirty: true };
 
 const sameValue = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 
 const samePosition = (left: GraphPosition, right: GraphPosition) =>
   Math.abs(left.x - right.x) < 0.5 && Math.abs(left.y - right.y) < 0.5;
 
-const markDirty = (reason: string) => {
+const markDirty = (reason: string, currentScope: DirtyScope, nextScope: DirtyScope = 'content') => {
   if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    console.debug(`[cfggraph] dirty: ${reason}`);
+    console.debug(`[cfggraph] dirty (${nextScope}): ${reason}`);
   }
 
-  return changed;
+  return {
+    isDirty: true,
+    dirtyScope: currentScope === 'content' || nextScope === 'content' ? 'content' : 'layout',
+  } as const;
 };
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
   project: initialProject,
   selectedTableId: initialProject.tables[0]?.id,
   isDirty: false,
+  dirtyScope: 'none',
 
   selectTable: (tableId) => set({ selectedTableId: tableId }),
 
@@ -112,7 +83,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return {
         project: { ...state.project, tables: [...state.project.tables, table] },
         selectedTableId: table.id,
-        ...markDirty('addTable'),
+        ...markDirty('addTable', state.dirtyScope),
       };
     });
 
@@ -137,7 +108,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ...state.project,
           tables,
         },
-        ...markDirty('updateTable'),
+        ...markDirty('updateTable', state.dirtyScope),
       };
     }),
 
@@ -158,7 +129,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ...state.project,
           tables,
         },
-        ...markDirty('moveTable'),
+        ...markDirty('moveTable', state.dirtyScope, 'layout'),
       };
     }),
 
@@ -171,7 +142,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       return {
         project: { ...state.project, tables },
         selectedTableId,
-        ...markDirty('deleteTable'),
+        ...markDirty('deleteTable', state.dirtyScope),
       };
     }),
 
@@ -199,7 +170,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           };
         }),
       },
-      ...markDirty('addColumn'),
+      ...markDirty('addColumn', state.dirtyScope),
     })),
 
   updateColumn: (tableId, columnId, patch) =>
@@ -235,7 +206,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ...state.project,
           tables,
         },
-        ...markDirty('updateColumn'),
+        ...markDirty('updateColumn', state.dirtyScope),
       };
     }),
 
@@ -269,7 +240,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ...state.project,
           tables,
         },
-        ...markDirty('moveColumn'),
+        ...markDirty('moveColumn', state.dirtyScope),
       };
     }),
 
@@ -291,7 +262,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           };
         }),
       },
-      ...markDirty('deleteColumn'),
+      ...markDirty('deleteColumn', state.dirtyScope),
     })),
 
   addRow: (tableId) => {
@@ -305,15 +276,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           if (table.id !== tableId) return table;
 
           added = true;
-          const values = defaultValuesForTable(table);
 
           return {
             ...table,
-            rows: [...table.rows, { _rowId: rowId, values }],
+            rows: [...table.rows, createDefaultRow(table, rowId)],
           };
         }),
       },
-      ...markDirty('addRow'),
+      ...markDirty('addRow', state.dirtyScope),
     }));
 
     return added ? rowId : undefined;
@@ -330,10 +300,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           if (table.id !== tableId) return table;
 
           inserted = true;
-          const values = defaultValuesForTable(table);
           const nextRows = [...table.rows];
           const insertAt = Math.max(0, Math.min(rowIndex, nextRows.length));
-          nextRows.splice(insertAt, 0, { _rowId: rowId, values });
+          nextRows.splice(insertAt, 0, createDefaultRow(table, rowId));
 
           return {
             ...table,
@@ -341,7 +310,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           };
         }),
       },
-      ...markDirty('insertRow'),
+      ...markDirty('insertRow', state.dirtyScope),
     }));
 
     return inserted ? rowId : undefined;
@@ -371,7 +340,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           ...state.project,
           tables,
         },
-        ...markDirty('updateCell'),
+        ...markDirty('updateCell', state.dirtyScope),
       };
     }),
 
@@ -385,7 +354,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             : table,
         ),
       },
-      ...markDirty('deleteRow'),
+      ...markDirty('deleteRow', state.dirtyScope),
     })),
 
   deleteRows: (tableId, rowIds) =>
@@ -401,7 +370,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
               : table,
           ),
         },
-        ...markDirty('deleteRows'),
+        ...markDirty('deleteRows', state.dirtyScope),
       };
     }),
 
@@ -410,13 +379,32 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       project,
       selectedTableId: project.tables[0]?.id,
       isDirty: false,
+      dirtyScope: 'none',
     }),
 
-  markClean: () => set({ isDirty: false }),
+  reloadProject: (project, preserveLayout = false) =>
+    set((state) => ({
+      project: preserveLayout
+        ? {
+            ...project,
+            tables: project.tables.map((table) => {
+              const currentTable = state.project.tables.find((item) => item.id === table.id);
+              return currentTable ? { ...table, position: currentTable.position } : table;
+            }),
+          }
+        : project,
+      selectedTableId: project.tables.some((table) => table.id === state.selectedTableId)
+        ? state.selectedTableId
+        : project.tables[0]?.id,
+      isDirty: preserveLayout,
+      dirtyScope: preserveLayout ? 'layout' : 'none',
+    })),
+
+  markClean: () => set({ isDirty: false, dirtyScope: 'none' }),
 
   resetProject: () => {
     const project = createSampleProject();
     get().loadProject(project);
-    set(markDirty('resetProject'));
+    set((state) => markDirty('resetProject', state.dirtyScope));
   },
 }));

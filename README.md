@@ -333,6 +333,12 @@ game-config-graph-editor/
 |   |   `-- editorStore.ts
 |   |-- validation/
 |   |   `-- validateProject.ts
+|   |-- cli/
+|   |   `-- cfg.ts
+|   |-- mcp/
+|   |   `-- server.ts
+|   |-- patch/
+|   |   `-- dataPatch.ts
 |   |-- i18n.ts
 |   `-- styles/
 |       `-- app.css
@@ -343,7 +349,6 @@ game-config-graph-editor/
 
 ## 当前不做的内容
 
-- AI 辅助编辑。
 - 撤销/重做。
 - CSV 或 Excel 导入。
 - 多人协作。
@@ -352,3 +357,59 @@ game-config-graph-editor/
 - 安装包、自动更新或发布流程打磨。
 
 项目应继续聚焦游戏配置编辑闭环：表结构、行数据、引用、校验、保存/加载和 JSON 导出。
+## Headless CLI
+
+Run batch edits without starting Vite or Tauri:
+
+```bash
+npm run --silent cfg -- inspect --project <file> --json
+npm run --silent cfg -- query rows --project <file> --query <file|-> --json
+npm run --silent cfg -- validate --project <file> --json
+npm run --silent cfg -- patch check --project <file> --patch <file|-> --json
+npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> --json
+npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> --json
+npm run --silent cfg -- export all --project <file> --out <directory> --json
+npm run --silent cfg -- export ids --project <file> --out <file> --json
+```
+
+Patch files use stable IDs only and follow `schemas/data-patch.schema.json`.
+
+Recommended AI flow:
+
+1. Inspect the project and table.
+2. Generate a JSON patch.
+3. Run `patch check` and review the diff plus `confirmationHash`.
+4. Run `patch apply` with the matching `--confirm` value.
+5. Run `validate`.
+6. Export the needed table(s) or `config_ids.json`.
+
+Exit codes:
+
+- `0` success
+- `1` validation failure or rejected patch
+- `2` argument, JSON, or target error
+- `3` hash conflict
+- `4` filesystem error
+
+## 本机 MCP
+
+源码桌面模式提供本机 Streamable HTTP MCP：
+
+1. 运行 `npm run tauri:dev`。
+2. 打开顶部“设置”，进入“AI / MCP”分类并开启本机 MCP 服务。
+3. 在设置面板中点击“复制 MCP 地址”，把地址配置到支持 Streamable HTTP 的 AI 客户端。
+
+服务只监听 `127.0.0.1:37631`，URL 包含本机生成的访问 Token。开关状态会持久化；开启后，下次启动桌面应用会自动恢复服务。
+
+MCP 只操作当前已保存工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。仅蓝图布局发生变化时不会阻断 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”明确放行所有 MCP 操作，此时 MCP 应用可能替换界面中未保存的内容。
+
+MCP 启用后，右下角会显示可最小化的 AI/MCP 活动日志窗口，展示连接和工具调用记录。日志保存在应用配置目录的 `mcp-logs.jsonl` 中。
+
+可用工具覆盖：
+
+- 工程/表分页检查和按字段查询。
+- 完整校验。
+- `preview_patch` / `apply_patch` 两阶段修改。
+- 单表、全部表和 ID 注册表导出。
+
+AI 新建表时必须提供表备注；AI 新建字段时必须提供字段备注。修改、移动或删除已有结构，以及所有行数据操作，不要求给已有无备注结构补备注。
