@@ -76,6 +76,16 @@ type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<BrowserDirectoryHandle>;
 };
 
+const MCP_LOG_VISIBLE_STORAGE_KEY = 'cfggraph:mcp-log-visible';
+
+const initialMcpLogVisible = () => {
+  try {
+    return window.localStorage.getItem(MCP_LOG_VISIBLE_STORAGE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+};
+
 const joinFilePath = (directory: string, fileName: string) => {
   const trimmedDirectory = directory.replace(/[\\/]+$/, '');
   return `${trimmedDirectory || '/'}${trimmedDirectory ? '/' : ''}${fileName}`;
@@ -125,7 +135,7 @@ export default function App() {
   const [menu, setMenu] = useState<MenuState>();
   const [mcpStatus, setMcpStatus] = useState<McpStatus>();
   const [mcpLogs, setMcpLogs] = useState<McpLogEntry[]>([]);
-  const [mcpLogMinimized, setMcpLogMinimized] = useState(false);
+  const [mcpLogVisible, setMcpLogVisible] = useState(initialMcpLogVisible);
   const [mcpBusy, setMcpBusy] = useState(false);
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
@@ -721,6 +731,14 @@ export default function App() {
   }, [reloadProjectFromMcp]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(MCP_LOG_VISIBLE_STORAGE_KEY, String(mcpLogVisible));
+    } catch {
+      // UI preferences may be unavailable in restricted browser contexts.
+    }
+  }, [mcpLogVisible]);
+
+  useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => {
       if (!(target instanceof HTMLElement)) return false;
       return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
@@ -950,21 +968,22 @@ export default function App() {
         desktopAvailable={isDesktopRuntime()}
         mcpBusy={mcpBusy}
         mcpStatus={mcpStatus}
+        showMcpLog={mcpLogVisible}
         onClose={closeSettings}
         onLanguageChange={setLanguage}
         onMiniMapChange={setShowMiniMap}
         onMcpEnabledChange={changeMcpEnabled}
         onMcpFullAccessChange={changeMcpFullAccess}
+        onMcpLogVisibilityChange={setMcpLogVisible}
         onCopyMcpAddress={copyMcpAddress}
         t={t}
       />
 
-      {mcpStatus?.enabled ? (
+      {mcpStatus?.enabled && mcpLogVisible ? (
         <McpLogWindow
           entries={mcpLogs}
-          minimized={mcpLogMinimized}
           running={mcpStatus.running}
-          onToggleMinimized={() => setMcpLogMinimized((value) => !value)}
+          onHide={() => setMcpLogVisible(false)}
           t={t}
         />
       ) : null}

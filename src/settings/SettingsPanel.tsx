@@ -13,11 +13,13 @@ type SettingsPanelProps = {
   desktopAvailable: boolean;
   mcpBusy: boolean;
   mcpStatus?: McpStatus;
+  showMcpLog: boolean;
   onClose(): void;
   onLanguageChange(language: Language): void;
   onMiniMapChange(show: boolean): void;
   onMcpEnabledChange(enabled: boolean): void;
   onMcpFullAccessChange(fullAccess: boolean): void;
+  onMcpLogVisibilityChange(show: boolean): void;
   onCopyMcpAddress(): void;
   t: Translator;
 };
@@ -29,11 +31,13 @@ export default function SettingsPanel({
   desktopAvailable,
   mcpBusy,
   mcpStatus,
+  showMcpLog,
   onClose,
   onLanguageChange,
   onMiniMapChange,
   onMcpEnabledChange,
   onMcpFullAccessChange,
+  onMcpLogVisibilityChange,
   onCopyMcpAddress,
   t,
 }: SettingsPanelProps) {
@@ -176,6 +180,22 @@ export default function SettingsPanel({
                       checked={mcpStatus?.enabled ?? false}
                       disabled={!desktopAvailable || mcpBusy}
                       onChange={(event) => onMcpEnabledChange(event.target.checked)}
+                    />
+                    <span aria-hidden="true" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row__copy">
+                    <strong>{t('settingsMcpLog')}</strong>
+                    <span>{t('settingsMcpLogDescription')}</span>
+                  </div>
+                  <label className="settings-switch">
+                    <input
+                      type="checkbox"
+                      checked={showMcpLog}
+                      disabled={!mcpStatus?.enabled}
+                      onChange={(event) => onMcpLogVisibilityChange(event.target.checked)}
                     />
                     <span aria-hidden="true" />
                   </label>

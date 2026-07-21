@@ -648,9 +648,9 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Dirty state is scoped: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads the project.
 - Unsaved content changes block MCP modification/export tools by default. The persisted Settings → AI / MCP → “Full Access” switch lets the user explicitly allow all MCP operations; an MCP apply may then replace unsaved content edits.
 - MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both.
-- While MCP is enabled, the desktop UI shows a minimizable AI/MCP activity log window. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
+- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Hiding it removes the window completely from the canvas; restore it through Settings → AI / MCP → Activity Log. Visibility persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.
 - MCP lifecycle/config files live in the Tauri application config directory as `mcp-settings.json`, `mcp-context.json`, `mcp-events.json`, and `mcp-logs.jsonl`.
 
-MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, service restart persistence, scoped dirty access, Full Access persistence, log-window minimize/restore, and process cleanup after disabling or closing the application.
+MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, service restart persistence, scoped dirty access, Full Access persistence, log-window hide/restore through Settings, and process cleanup after disabling or closing the application.

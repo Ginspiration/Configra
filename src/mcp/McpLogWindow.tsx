@@ -4,9 +4,8 @@ import type { Translator } from '../i18n';
 
 type McpLogWindowProps = {
   entries: McpLogEntry[];
-  minimized: boolean;
   running: boolean;
-  onToggleMinimized(): void;
+  onHide(): void;
   t: Translator;
 };
 
@@ -17,24 +16,18 @@ const formatLogTime = (timestamp: string) => {
 
 export default function McpLogWindow({
   entries,
-  minimized,
   running,
-  onToggleMinimized,
+  onHide,
   t,
 }: McpLogWindowProps) {
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!minimized) listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [entries, minimized]);
-
-  const latestEntry = entries[entries.length - 1];
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+  }, [entries]);
 
   return (
-    <section
-      className={`mcp-log-window ${minimized ? 'is-minimized' : ''}`}
-      aria-label={t('mcpLogTitle')}
-    >
+    <section className="mcp-log-window" aria-label={t('mcpLogTitle')}>
       <header className="mcp-log-window__header">
         <div className="mcp-log-window__title">
           <span className={`mcp-log-window__status ${running ? 'is-running' : ''}`} />
@@ -43,37 +36,31 @@ export default function McpLogWindow({
         </div>
         <button
           type="button"
-          className="mcp-log-window__minimize"
-          title={minimized ? t('mcpLogRestore') : t('mcpLogMinimize')}
-          aria-label={minimized ? t('mcpLogRestore') : t('mcpLogMinimize')}
-          onClick={onToggleMinimized}
+          className="mcp-log-window__hide"
+          title={t('mcpLogHide')}
+          aria-label={t('mcpLogHide')}
+          onClick={onHide}
         >
-          {minimized ? '▢' : '—'}
+          ×
         </button>
       </header>
 
-      {minimized ? (
-        <div className="mcp-log-window__latest">
-          {latestEntry?.message ?? t('mcpLogWaiting')}
-        </div>
-      ) : (
-        <div ref={listRef} className="mcp-log-window__entries" aria-live="polite">
-          {entries.length === 0 ? (
-            <div className="mcp-log-window__empty">{t('mcpLogWaiting')}</div>
-          ) : (
-            entries.map((entry, index) => (
-              <div
-                key={`${entry.timestamp}-${entry.requestId ?? 'service'}-${index}`}
-                className={`mcp-log-entry mcp-log-entry--${entry.level}`}
-              >
-                <time>{formatLogTime(entry.timestamp)}</time>
-                <span>{entry.message}</span>
-                {entry.durationMs !== undefined ? <small>{entry.durationMs} ms</small> : null}
-              </div>
-            ))
-          )}
-        </div>
-      )}
+      <div ref={listRef} className="mcp-log-window__entries" aria-live="polite">
+        {entries.length === 0 ? (
+          <div className="mcp-log-window__empty">{t('mcpLogWaiting')}</div>
+        ) : (
+          entries.map((entry, index) => (
+            <div
+              key={`${entry.timestamp}-${entry.requestId ?? 'service'}-${index}`}
+              className={`mcp-log-entry mcp-log-entry--${entry.level}`}
+            >
+              <time>{formatLogTime(entry.timestamp)}</time>
+              <span>{entry.message}</span>
+              {entry.durationMs !== undefined ? <small>{entry.durationMs} ms</small> : null}
+            </div>
+          ))
+        )}
+      </div>
     </section>
   );
 }
