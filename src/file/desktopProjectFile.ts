@@ -105,6 +105,10 @@ export async function getMcpLogs() {
   return invoke<McpLogEntry[]>('get_mcp_logs');
 }
 
+export async function clearMcpLogs() {
+  await invoke('clear_mcp_logs');
+}
+
 export async function pickProjectFileText() {
   const selected = await open({
     title: 'Open project',

@@ -21,6 +21,7 @@ import {
 import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition } from './model/types';
 import {
+  clearMcpLogs,
   fileExists,
   getMcpEvents,
   getMcpLogs,
@@ -44,6 +45,14 @@ import {
   writeTextFile,
 } from './file/desktopProjectFile';
 import { translate, type Language } from './i18n';
+import {
+  applyTheme,
+  getThemePreference,
+  resolveTheme,
+  saveThemePreference,
+  type ResolvedTheme,
+  type ThemePreference,
+} from './theme';
 
 type MenuState =
   | {
@@ -57,6 +66,11 @@ type MenuState =
       x: number;
       y: number;
       graphPosition: GraphPosition;
+    }
+  | {
+      kind: 'mcp-log';
+      x: number;
+      y: number;
     };
 
 type BrowserWritableFile = {
@@ -126,6 +140,8 @@ export default function App() {
   const markClean = useEditorStore((state) => state.markClean);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [language, setLanguage] = useState<Language>('zh');
+  const [themePreference, setThemePreference] = useState<ThemePreference>(getThemePreference);
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(getThemePreference()));
   const [showMiniMap, setShowMiniMap] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showDataGrid, setShowDataGrid] = useState(false);
@@ -147,12 +163,24 @@ export default function App() {
   const mcpContextRevisionRef = useRef(0);
   const lastMcpEventRevisionRef = useRef<number>();
   const mcpEventPollActiveRef = useRef(false);
+  const mcpLogsRevisionRef = useRef(0);
   const saveProjectRef = useRef<() => Promise<boolean>>(async () => false);
   const tRef = useRef(t);
   isDirtyRef.current = isDirty;
   dirtyScopeRef.current = dirtyScope;
   mcpFullAccessRef.current = mcpStatus?.fullAccess ?? false;
   tRef.current = t;
+
+  useEffect(() => {
+    const syncTheme = () => setResolvedTheme(applyTheme(themePreference));
+    syncTheme();
+    saveThemePreference(themePreference);
+
+    if (themePreference !== 'system') return;
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    mediaQuery.addEventListener('change', syncTheme);
+    return () => mediaQuery.removeEventListener('change', syncTheme);
+  }, [themePreference]);
 
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
   const editingTable = project.tables.find((table) => table.id === editingTableId) ?? selectedTable;
@@ -433,6 +461,21 @@ export default function App() {
     [],
   );
 
+  const openMcpLogContextMenu = useCallback((position: { x: number; y: number }) => {
+    setMenu({ kind: 'mcp-log', x: position.x, y: position.y });
+  }, []);
+
+  const clearMcpLogEntries = useCallback(async () => {
+    mcpLogsRevisionRef.current += 1;
+    try {
+      await clearMcpLogs();
+      setMcpLogs([]);
+      setStatus(t('mcpLogsCleared'));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }, [t]);
+
   const loadFile = async (file: File) => {
     loadProjectText(await file.text(), file.name);
   };
@@ -472,6 +515,18 @@ export default function App() {
           shortcut: 'Del',
           danger: true,
           onSelect: () => deleteTableById(table.id),
+        },
+      ];
+    }
+
+    if (menu.kind === 'mcp-log') {
+      return [
+        { id: 'mcp-log-label', type: 'label', label: t('mcpLogTitle') },
+        {
+          id: 'clear-mcp-log',
+          label: t('mcpLogClear'),
+          danger: true,
+          onSelect: clearMcpLogEntries,
         },
       ];
     }
@@ -526,6 +581,7 @@ export default function App() {
     ];
   }, [
     addTable,
+    clearMcpLogEntries,
     copyIdRegistryToClipboard,
     copyTableJsonToClipboard,
     deleteTableById,
@@ -698,6 +754,7 @@ export default function App() {
     const poll = async () => {
       if (mcpEventPollActiveRef.current) return;
       mcpEventPollActiveRef.current = true;
+      const logsRevision = mcpLogsRevisionRef.current;
       try {
         const [nextStatus, event, logs] = await Promise.all([
           getMcpStatus(),
@@ -706,7 +763,7 @@ export default function App() {
         ]);
         if (disposed) return;
         setMcpStatus(nextStatus);
-        setMcpLogs(logs);
+        if (logsRevision === mcpLogsRevisionRef.current) setMcpLogs(logs);
 
         const previousRevision = lastMcpEventRevisionRef.current;
         lastMcpEventRevisionRef.current = event.changeRevision;
@@ -944,6 +1001,7 @@ export default function App() {
         <section className="canvas-panel" aria-label="Graph canvas">
           <GraphCanvas
             showMiniMap={showMiniMap}
+            theme={resolvedTheme}
             onOpenTableData={openRowsModal}
             onOpenTableContext={openTableContextMenu}
             onOpenCanvasContext={openCanvasContextMenu}
@@ -956,6 +1014,7 @@ export default function App() {
         table={editingTable}
         project={project}
         issues={issues}
+        theme={resolvedTheme}
         t={t}
         onOpenTable={openRowsModal}
         onClose={() => setShowDataGrid(false)}
@@ -964,6 +1023,7 @@ export default function App() {
       <SettingsPanel
         open={showSettings}
         language={language}
+        themePreference={themePreference}
         showMiniMap={showMiniMap}
         desktopAvailable={isDesktopRuntime()}
         mcpBusy={mcpBusy}
@@ -971,6 +1031,7 @@ export default function App() {
         showMcpLog={mcpLogVisible}
         onClose={closeSettings}
         onLanguageChange={setLanguage}
+        onThemePreferenceChange={setThemePreference}
         onMiniMapChange={setShowMiniMap}
         onMcpEnabledChange={changeMcpEnabled}
         onMcpFullAccessChange={changeMcpFullAccess}
@@ -984,6 +1045,7 @@ export default function App() {
           entries={mcpLogs}
           running={mcpStatus.running}
           onHide={() => setMcpLogVisible(false)}
+          onOpenContextMenu={openMcpLogContextMenu}
           t={t}
         />
       ) : null}

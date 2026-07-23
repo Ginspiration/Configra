@@ -11,6 +11,7 @@ import {
 } from '@xyflow/react';
 import type { GraphPosition } from '../model/types';
 import { useEditorStore } from '../store/editorStore';
+import type { ResolvedTheme } from '../theme';
 import { projectToFlow, type TableFlowNode } from './graphMapping';
 import TableNode from './TableNode';
 
@@ -20,6 +21,7 @@ const nodeTypes: NodeTypes = {
 
 type GraphCanvasProps = {
   showMiniMap: boolean;
+  theme: ResolvedTheme;
   onOpenTableData(tableId: string): void;
   onOpenTableContext(tableId: string, position: { x: number; y: number }): void;
   onOpenCanvasContext(position: { x: number; y: number }, graphPosition: GraphPosition): void;
@@ -27,6 +29,7 @@ type GraphCanvasProps = {
 
 function GraphCanvasInner({
   showMiniMap,
+  theme,
   onOpenTableData,
   onOpenTableContext,
   onOpenCanvasContext,
@@ -73,19 +76,19 @@ function GraphCanvasInner({
         );
       }}
     >
-      <Background gap={18} size={1} />
+      <Background gap={18} size={1} color={theme === 'dark' ? '#41516a' : '#9aa7b6'} />
       <Controls position="bottom-left" />
       {showMiniMap ? (
         <MiniMap
           pannable
           zoomable
-          bgColor="#f8fafc"
-          maskColor="rgba(148, 163, 184, 0.18)"
-          maskStrokeColor="#2563eb"
+          bgColor={theme === 'dark' ? '#0e1625' : '#f8fafc'}
+          maskColor={theme === 'dark' ? 'rgba(15, 23, 42, 0.52)' : 'rgba(148, 163, 184, 0.18)'}
+          maskStrokeColor={theme === 'dark' ? '#60a5fa' : '#2563eb'}
           maskStrokeWidth={1}
           nodeBorderRadius={4}
-          nodeColor={(node) => (node.selected ? '#bfdbfe' : '#dbeafe')}
-          nodeStrokeColor={(node) => (node.selected ? '#2563eb' : '#64748b')}
+          nodeColor={(node) => (node.selected ? (theme === 'dark' ? '#1e3a5f' : '#bfdbfe') : theme === 'dark' ? '#24344f' : '#dbeafe')}
+          nodeStrokeColor={(node) => (node.selected ? (theme === 'dark' ? '#60a5fa' : '#2563eb') : theme === 'dark' ? '#64748b' : '#64748b')}
           nodeStrokeWidth={2}
           offsetScale={12}
         />

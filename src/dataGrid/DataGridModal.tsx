@@ -18,16 +18,19 @@ import {
 import '@glideapps/glide-data-grid/dist/index.css';
 import type { ConfigColumn, ConfigTable, ProjectFile, ValidationIssue } from '../model/types';
 import type { Translator } from '../i18n';
+import type { ResolvedTheme } from '../theme';
 import { useEditorStore } from '../store/editorStore';
 import { formatRefOptionLabel } from '../model/schemaUtils';
 import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
+import TablePreviewModal from './TablePreviewModal';
 
 type DataGridModalProps = {
   open: boolean;
   table?: ConfigTable;
   project: ProjectFile;
   issues: ValidationIssue[];
+  theme: ResolvedTheme;
   t: Translator;
   onClose(): void;
   onOpenTable(tableId: string): void;
@@ -299,10 +302,12 @@ export default function DataGridModal({
   table,
   project,
   issues,
+  theme,
   t,
   onClose,
   onOpenTable,
 }: DataGridModalProps) {
+  const isDarkTheme = theme === 'dark';
   const addRow = useEditorStore((state) => state.addRow);
   const insertRow = useEditorStore((state) => state.insertRow);
   const deleteRow = useEditorStore((state) => state.deleteRow);
@@ -315,6 +320,7 @@ export default function DataGridModal({
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [showSearch, setShowSearch] = useState(false);
+  const [showTablePreview, setShowTablePreview] = useState(false);
   const [searchStatus, setSearchStatus] = useState('');
   const [cellMenu, setCellMenu] = useState<CellMenuState>();
   const [headerMenu, setHeaderMenu] = useState<HeaderMenuState>();
@@ -329,6 +335,7 @@ export default function DataGridModal({
     setRemarkEditor(undefined);
     setHeaderTooltip(undefined);
     setShowSearch(false);
+    setShowTablePreview(false);
     setSearchStatus('');
     setColumnWidths(table ? readColumnWidths(table.id) : {});
   }, [table?.id]);
@@ -393,10 +400,14 @@ export default function DataGridModal({
       const value = row?.values[column.id] ?? '';
       const hasError = row ? errorCells.has(`${row._rowId}:${column.id}`) : false;
       const themeOverride = hasError
-        ? { bgCell: '#fff1ed', textDark: '#9a3412' }
+        ? isDarkTheme
+          ? { bgCell: '#3a2119', textDark: '#fed7aa' }
+          : { bgCell: '#fff1ed', textDark: '#9a3412' }
         : row
           ? undefined
-          : { bgCell: '#fbfcfe', textLight: '#cbd5e1' };
+          : isDarkTheme
+            ? { bgCell: '#172033', textLight: '#718096' }
+            : { bgCell: '#fbfcfe', textLight: '#cbd5e1' };
 
       if (column.type === 'bool') {
         return {
@@ -443,7 +454,7 @@ export default function DataGridModal({
         themeOverride,
       };
     },
-    [errorCells, project, table],
+    [errorCells, isDarkTheme, project, table],
   );
 
   const onCellEdited = useCallback(
@@ -917,6 +928,24 @@ export default function DataGridModal({
     [columns.length, gridRowCount],
   );
 
+  const focusGridColumn = useCallback(
+    (columnId: string) => {
+      const col = table?.columns.findIndex((column) => column.id === columnId) ?? -1;
+      if (col < 0 || col >= columns.length) return;
+
+      setShowTablePreview(false);
+      setSelection({
+        columns: CompactSelection.fromSingleSelection(col),
+        rows: CompactSelection.empty(),
+      });
+
+      requestAnimationFrame(() => {
+        gridRef.current?.scrollTo(col, 0, 'horizontal', 80, 0, { hAlign: 'center' });
+      });
+    },
+    [columns.length, table],
+  );
+
   const provideEditor = useMemo<ProvideEditorCallback<GridCell>>(
     () => (cell) => {
       if (cell.kind !== GridCellKind.Custom) return undefined;
@@ -1073,6 +1102,9 @@ export default function DataGridModal({
             </span>
           </div>
           <div className="data-modal__actions">
+            <button type="button" className="button" onClick={() => setShowTablePreview(true)}>
+              {t('tablePreview')}
+            </button>
             <button type="button" className="button" onClick={() => setShowSearch(true)} title="Ctrl+F">
               {t('search')}
             </button>
@@ -1167,11 +1199,28 @@ export default function DataGridModal({
               height="100%"
               getCellsForSelection
               theme={{
-                accentColor: '#2563eb',
-                accentLight: '#dbeafe',
-                bgHeader: '#eef2f5',
-                bgCell: '#ffffff',
-                borderColor: '#d5dce3',
+                accentColor: theme === 'dark' ? '#60a5fa' : '#2563eb',
+                accentFg: '#ffffff',
+                accentLight: theme === 'dark' ? '#1e3a5f' : '#dbeafe',
+                bgHeader: theme === 'dark' ? '#1e293b' : '#eef2f5',
+                bgHeaderHasFocus: theme === 'dark' ? '#29415f' : '#d9e4f4',
+                bgHeaderHovered: theme === 'dark' ? '#263852' : '#e4ebf5',
+                bgCell: theme === 'dark' ? '#111827' : '#ffffff',
+                bgCellMedium: theme === 'dark' ? '#172033' : '#fafafb',
+                bgBubble: theme === 'dark' ? '#263852' : '#e8eef6',
+                bgBubbleSelected: theme === 'dark' ? '#334d6d' : '#ffffff',
+                bgSearchResult: theme === 'dark' ? '#4a3a16' : '#fff9e3',
+                borderColor: theme === 'dark' ? '#3b4a60' : '#d5dce3',
+                drilldownBorder: 'transparent',
+                linkColor: theme === 'dark' ? '#93c5fd' : '#1d4ed8',
+                textDark: theme === 'dark' ? '#e5edf7' : '#18212c',
+                textMedium: theme === 'dark' ? '#a8b6c8' : '#657282',
+                textLight: theme === 'dark' ? '#7f8ea3' : '#7a8798',
+                textBubble: theme === 'dark' ? '#d7e2f0' : '#405063',
+                textHeader: theme === 'dark' ? '#d7e2f0' : '#405063',
+                textHeaderSelected: '#ffffff',
+                bgIconHeader: theme === 'dark' ? '#a8b6c8' : '#657282',
+                fgIconHeader: theme === 'dark' ? '#111827' : '#ffffff',
                 fontFamily:
                   'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
                 baseFontStyle: '12px',
@@ -1236,6 +1285,14 @@ export default function DataGridModal({
             </div>
           </form>
         </div>
+      ) : null}
+      {showTablePreview ? (
+        <TablePreviewModal
+          table={table}
+          t={t}
+          onClose={() => setShowTablePreview(false)}
+          onSelectColumn={focusGridColumn}
+        />
       ) : null}
     </div>
   );

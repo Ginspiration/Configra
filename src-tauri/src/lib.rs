@@ -251,6 +251,11 @@ fn logs_path(config_dir: &Path) -> PathBuf {
     config_dir.join("mcp-logs.jsonl")
 }
 
+fn clear_mcp_log_file(config_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
+    fs::write(logs_path(config_dir), "").map_err(|error| error.to_string())
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
@@ -409,6 +414,11 @@ fn get_mcp_logs(state: tauri::State<'_, McpState>) -> Result<Vec<McpLogEntry>, S
 }
 
 #[tauri::command]
+fn clear_mcp_logs(state: tauri::State<'_, McpState>) -> Result<(), String> {
+    clear_mcp_log_file(&state.config_dir)
+}
+
+#[tauri::command]
 fn get_mcp_events(state: tauri::State<'_, McpState>) -> Result<McpEvents, String> {
     let path = events_path(&state.config_dir);
     if !path.exists() {
@@ -435,7 +445,8 @@ pub fn run() {
             set_mcp_full_access,
             update_mcp_context,
             get_mcp_events,
-            get_mcp_logs
+            get_mcp_logs,
+            clear_mcp_logs
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -448,6 +459,7 @@ pub fn run() {
 
             let config_dir = app.path().app_config_dir()?;
             fs::create_dir_all(&config_dir)?;
+            clear_mcp_log_file(&config_dir).map_err(std::io::Error::other)?;
             let repo_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .ok_or_else(|| std::io::Error::other("Could not locate repository root."))?

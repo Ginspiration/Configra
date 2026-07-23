@@ -5,10 +5,12 @@ import {
   type Language,
   type Translator,
 } from '../i18n';
+import type { ThemePreference } from '../theme';
 
 type SettingsPanelProps = {
   open: boolean;
   language: Language;
+  themePreference: ThemePreference;
   showMiniMap: boolean;
   desktopAvailable: boolean;
   mcpBusy: boolean;
@@ -16,6 +18,7 @@ type SettingsPanelProps = {
   showMcpLog: boolean;
   onClose(): void;
   onLanguageChange(language: Language): void;
+  onThemePreferenceChange(themePreference: ThemePreference): void;
   onMiniMapChange(show: boolean): void;
   onMcpEnabledChange(enabled: boolean): void;
   onMcpFullAccessChange(fullAccess: boolean): void;
@@ -27,6 +30,7 @@ type SettingsPanelProps = {
 export default function SettingsPanel({
   open,
   language,
+  themePreference,
   showMiniMap,
   desktopAvailable,
   mcpBusy,
@@ -34,6 +38,7 @@ export default function SettingsPanel({
   showMcpLog,
   onClose,
   onLanguageChange,
+  onThemePreferenceChange,
   onMiniMapChange,
   onMcpEnabledChange,
   onMcpFullAccessChange,
@@ -113,6 +118,23 @@ export default function SettingsPanel({
                 <div className="settings-section__heading">
                   <h3>{t('settingsInterface')}</h3>
                   <p>{t('settingsInterfaceDescription')}</p>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row__copy">
+                    <strong>{t('theme')}</strong>
+                    <span>{t('settingsThemeDescription')}</span>
+                  </div>
+                  <select
+                    className="settings-theme-select"
+                    value={themePreference}
+                    aria-label={t('theme')}
+                    onChange={(event) => onThemePreferenceChange(event.target.value as ThemePreference)}
+                  >
+                    <option value="system">{t('themeSystem')}</option>
+                    <option value="light">{t('themeLight')}</option>
+                    <option value="dark">{t('themeDark')}</option>
+                  </select>
                 </div>
 
                 <div className="settings-row">

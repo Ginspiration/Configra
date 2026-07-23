@@ -6,6 +6,7 @@ type McpLogWindowProps = {
   entries: McpLogEntry[];
   running: boolean;
   onHide(): void;
+  onOpenContextMenu(position: { x: number; y: number }): void;
   t: Translator;
 };
 
@@ -18,6 +19,7 @@ export default function McpLogWindow({
   entries,
   running,
   onHide,
+  onOpenContextMenu,
   t,
 }: McpLogWindowProps) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -27,7 +29,15 @@ export default function McpLogWindow({
   }, [entries]);
 
   return (
-    <section className="mcp-log-window" aria-label={t('mcpLogTitle')}>
+    <section
+      className="mcp-log-window"
+      aria-label={t('mcpLogTitle')}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onOpenContextMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
       <header className="mcp-log-window__header">
         <div className="mcp-log-window__title">
           <span className={`mcp-log-window__status ${running ? 'is-running' : ''}`} />

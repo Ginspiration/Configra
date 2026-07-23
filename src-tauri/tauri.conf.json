@@ -15,6 +15,7 @@
         "title": "Game Config Graph Editor",
         "width": 1280,
         "height": 820,
+        "backgroundColor": "#101827",
         "resizable": true,
         "fullscreen": false
       }
