@@ -8,6 +8,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { z } from 'zod';
+import { REF_CELL_VALUE_DESCRIPTION } from '../model/referenceSemantics';
+import type { JsonValue } from '../patch/dataPatch';
 import {
   dataPatchOperationSchema,
   dataPatchSchema,
@@ -16,6 +18,7 @@ import {
   MCP_SUPPORTED_CAPABILITIES,
   MCP_VERSION,
   structuredError,
+  type DataPatchOperationInput,
   type McpStructuredError,
   type McpStructuredErrorCode,
 } from './protocol';
@@ -67,6 +70,76 @@ type CliResult = {
   exitCode: number;
   body: Record<string, unknown>;
   stderr: string;
+};
+
+type InspectedColumn = {
+  columnId: string;
+  name: string;
+  type: string;
+  primary: boolean;
+  ref?: { tableId: string; columnId: string };
+};
+
+type InspectedRow = {
+  rowId: string;
+  values: Record<string, JsonValue>;
+};
+
+type InspectedTable = {
+  tableId: string;
+  name: string;
+  columns: InspectedColumn[];
+  rows: InspectedRow[];
+  returnedRows: number;
+  totalRows: number;
+};
+
+type ReferenceChange =
+  | {
+      action: 'define';
+      source: { tableId: string; columnId: string };
+      target: { tableId: string; columnId: string };
+      cellValueMeaning: string;
+    }
+  | {
+      action: 'remove';
+      source: { tableId: string; columnId: string };
+    };
+
+const referenceChangesForOperations = (operations: DataPatchOperationInput[]) => {
+  const changes: ReferenceChange[] = [];
+  for (const operation of operations) {
+    if (operation.op === 'addColumn' && operation.column.type === 'ref' && operation.column.ref) {
+      changes.push({
+        action: 'define' as const,
+        source: { tableId: operation.tableId, columnId: operation.column.id },
+        target: operation.column.ref,
+        cellValueMeaning: REF_CELL_VALUE_DESCRIPTION,
+      });
+      continue;
+    }
+
+    if (operation.op !== 'updateColumn') continue;
+    if (operation.changes.ref) {
+      changes.push({
+        action: 'define' as const,
+        source: { tableId: operation.tableId, columnId: operation.columnId },
+        target: operation.changes.ref,
+        cellValueMeaning: REF_CELL_VALUE_DESCRIPTION,
+      });
+      continue;
+    }
+    if (
+      operation.changes.ref === null ||
+      (operation.changes.type !== undefined && operation.changes.type !== 'ref')
+    ) {
+      changes.push({
+        action: 'remove' as const,
+        source: { tableId: operation.tableId, columnId: operation.columnId },
+      });
+    }
+  }
+  return changes;
 };
 
 const parseArgs = (argv: string[]): ServerOptions => {
@@ -286,6 +359,54 @@ const createServer = (options: ServerOptions) => {
     }
   };
 
+  const requireInspectedTable = (result: CliResult): InspectedTable => {
+    const table = result.body.table;
+    if (typeof table !== 'object' || table === null || Array.isArray(table)) {
+      serviceError('INTERNAL_ERROR', 'Configra CLI inspect did not return a table object.');
+    }
+    const inspected = table as Partial<InspectedTable>;
+    if (
+      typeof inspected.tableId !== 'string' ||
+      typeof inspected.name !== 'string' ||
+      !Array.isArray(inspected.columns) ||
+      !Array.isArray(inspected.rows) ||
+      typeof inspected.returnedRows !== 'number' ||
+      typeof inspected.totalRows !== 'number'
+    ) {
+      serviceError('INTERNAL_ERROR', 'Configra CLI inspect returned an invalid table shape.');
+    }
+    return inspected as InspectedTable;
+  };
+
+  const previewDataPatch = async (
+    context: Awaited<ReturnType<typeof requireProject>>,
+    description: string | undefined,
+    operations: DataPatchOperationInput[],
+    extra: Record<string, unknown> = {},
+  ) => {
+    const inspected = await runCli(options, ['inspect', '--project', context.projectPath!]);
+    if (inspected.exitCode !== 0 || typeof inspected.body.projectHash !== 'string') {
+      return cliToolResult(inspected);
+    }
+    const patch = {
+      version: 1 as const,
+      baseHash: inspected.body.projectHash,
+      ...(description !== undefined ? { description } : {}),
+      operations,
+    };
+    const checked = await runCli(
+      options,
+      ['patch', 'check', '--project', context.projectPath!, '--patch', '-'],
+      patch,
+    );
+    return cliToolResult(checked, {
+      patch,
+      referenceChanges: referenceChangesForOperations(operations),
+      ...extra,
+      ...accessState(context),
+    });
+  };
+
   const publishProjectChange = async (
     context: Awaited<ReturnType<typeof requireProject>>,
     result: CliResult,
@@ -341,7 +462,8 @@ const createServer = (options: ServerOptions) => {
   server.registerTool(
     'configra_inspect_project',
     {
-      description: 'Inspect the active project and list stable table IDs, names, remarks and row/column counts.',
+      description:
+        'Inspect the active project and list stable table IDs, names, remarks, row/column counts, ref semantics, and resolved table relationships. Read referenceSemantics before creating or assigning refs.',
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     guarded(async () => {
@@ -354,9 +476,10 @@ const createServer = (options: ServerOptions) => {
   server.registerTool(
     'configra_inspect_table',
     {
-      description: 'Inspect one table by stable tableId, including schema remarks and paginated rows with stable row IDs.',
+      description:
+        'Inspect one table by stable tableId, including schema remarks, ref semantics, incoming/outgoing relationships, and paginated rows with stable row IDs.',
       inputSchema: {
-        tableId: z.string().min(1),
+        tableId: z.string().min(1).describe('Stable internal table ID, not its display name.'),
         offset: z.number().int().min(0).default(0),
         limit: z.number().int().min(0).max(500).default(100),
       },
@@ -432,7 +555,7 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_patch',
     {
       description:
-        'Preview an ordered project patch. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash without writing.',
+        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
       inputSchema: {
         description: z.string().optional(),
         operations: z.array(dataPatchOperationSchema),
@@ -442,22 +565,248 @@ const createServer = (options: ServerOptions) => {
     async ({ description, operations }) => {
       try {
         const context = await requireProject('write');
-        const inspected = await runCli(options, ['inspect', '--project', context.projectPath!]);
-        if (inspected.exitCode !== 0 || typeof inspected.body.projectHash !== 'string') {
-          return cliToolResult(inspected);
-        }
-        const patch = {
-          version: 1,
-          baseHash: inspected.body.projectHash,
-          ...(description !== undefined ? { description } : {}),
-          operations,
-        };
-        const checked = await runCli(
-          options,
-          ['patch', 'check', '--project', context.projectPath!, '--patch', '-'],
-          patch,
+        return await previewDataPatch(context, description, operations);
+      } catch (error) {
+        return caughtToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'configra_preview_define_ref',
+    {
+      description:
+        `Preview defining an existing source column as a ref to a target column. ${REF_CELL_VALUE_DESCRIPTION} Prefer a primary column or identity.valueColumnId. Returns a normal patch and confirmationHash for configra_apply_patch.`,
+      inputSchema: {
+        sourceTableId: z.string().min(1).describe('Stable ID of the table containing the ref column.'),
+        sourceColumnId: z.string().min(1).describe('Stable ID of the source column to make a ref.'),
+        targetTableId: z.string().min(1).describe('Stable ID of the referenced target table.'),
+        targetColumnId: z
+          .string()
+          .min(1)
+          .describe('Stable ID of the target column whose actual values will be stored in source cells.'),
+        description: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sourceTableId, sourceColumnId, targetTableId, targetColumnId, description }) => {
+      try {
+        const context = await requireProject('write');
+        return await previewDataPatch(
+          context,
+          description ?? `Define ${sourceTableId}.${sourceColumnId} as a ref to ${targetTableId}.${targetColumnId}`,
+          [
+            {
+              op: 'updateColumn',
+              tableId: sourceTableId,
+              columnId: sourceColumnId,
+              changes: {
+                type: 'ref',
+                ref: { tableId: targetTableId, columnId: targetColumnId },
+              },
+            },
+          ],
         );
-        return cliToolResult(checked, { patch, ...accessState(context) });
+      } catch (error) {
+        return caughtToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'configra_preview_assign_refs',
+    {
+      description:
+        `Preview assigning an existing ref column by stable source and target row IDs. Configra resolves each targetRowId to the target column's actual value; targetRowId itself is never stored. Use null targetRowId to clear a ref. Use configra_preview_define_ref first when needed. Returns a normal patch and confirmationHash for configra_apply_patch.`,
+      inputSchema: {
+        sourceTableId: z.string().min(1).describe('Stable ID of the source table.'),
+        sourceColumnId: z.string().min(1).describe('Stable ID of an existing ref column.'),
+        assignments: z
+          .array(
+            z.strictObject({
+              sourceRowId: z.string().min(1).describe('Stable _rowId of the source row to update.'),
+              targetRowId: z
+                .string()
+                .min(1)
+                .nullable()
+                .describe('Stable _rowId of the target row to resolve, or null to clear the ref.'),
+            }),
+          )
+          .min(1)
+          .max(500),
+        description: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sourceTableId, sourceColumnId, assignments, description }) => {
+      try {
+        const context = await requireProject('write');
+        const duplicateSourceRowId = assignments.find(
+          (assignment, index) =>
+            assignments.findIndex((candidate) => candidate.sourceRowId === assignment.sourceRowId) !== index,
+        )?.sourceRowId;
+        if (duplicateSourceRowId) {
+          serviceError(
+            'INVALID_ARGUMENT',
+            `sourceRowId "${duplicateSourceRowId}" appears more than once.`,
+          );
+        }
+
+        const sourceInspect = await runCli(options, [
+          'inspect',
+          '--project',
+          context.projectPath!,
+          '--table',
+          sourceTableId,
+          '--limit',
+          '0',
+        ]);
+        if (sourceInspect.exitCode !== 0) return cliToolResult(sourceInspect, accessState(context));
+        const sourceTable = requireInspectedTable(sourceInspect);
+        const sourceColumnCandidate = sourceTable.columns.find(
+          (column) => column.columnId === sourceColumnId,
+        );
+        if (!sourceColumnCandidate) {
+          serviceError(
+            'TARGET_NOT_FOUND',
+            `Unknown source columnId "${sourceColumnId}" in table "${sourceTableId}".`,
+          );
+        }
+        const existingSourceColumn = sourceColumnCandidate as InspectedColumn;
+        if (existingSourceColumn.type !== 'ref' || !existingSourceColumn.ref) {
+          serviceError(
+            'INVALID_ARGUMENT',
+            `Column "${sourceTableId}.${sourceColumnId}" is not a configured ref. Preview and apply configra_preview_define_ref first.`,
+          );
+        }
+        const sourceColumn = existingSourceColumn as InspectedColumn & {
+          type: 'ref';
+          ref: { tableId: string; columnId: string };
+        };
+
+        const requestedTargetRowIds = new Set(
+          assignments.flatMap((assignment) =>
+            assignment.targetRowId === null ? [] : [assignment.targetRowId],
+          ),
+        );
+        const targetMatches = new Map<
+          string,
+          { count: number; values: Record<string, JsonValue> }
+        >();
+        let targetTable: InspectedTable | undefined;
+        let offset = 0;
+        do {
+          const targetInspect = await runCli(options, [
+            'inspect',
+            '--project',
+            context.projectPath!,
+            '--table',
+            sourceColumn.ref.tableId,
+            '--offset',
+            String(offset),
+            '--limit',
+            '500',
+          ]);
+          if (targetInspect.exitCode !== 0) return cliToolResult(targetInspect, accessState(context));
+          targetTable = requireInspectedTable(targetInspect);
+          for (const row of targetTable.rows) {
+            if (!requestedTargetRowIds.has(row.rowId)) continue;
+            const previous = targetMatches.get(row.rowId);
+            targetMatches.set(row.rowId, {
+              count: (previous?.count ?? 0) + 1,
+              values: row.values,
+            });
+          }
+          offset += targetTable.returnedRows;
+          if (targetTable.returnedRows === 0) break;
+        } while (offset < targetTable.totalRows);
+
+        if (!targetTable) {
+          serviceError('INTERNAL_ERROR', 'Could not inspect the referenced target table.');
+        }
+        const resolvedTargetTable = targetTable as InspectedTable;
+        const targetColumnCandidate = resolvedTargetTable.columns.find(
+          (column) => column.columnId === sourceColumn.ref.columnId,
+        );
+        if (!targetColumnCandidate) {
+          serviceError(
+            'TARGET_NOT_FOUND',
+            `Unknown target columnId "${sourceColumn.ref.columnId}" in table "${sourceColumn.ref.tableId}".`,
+          );
+        }
+        const targetColumn = targetColumnCandidate as InspectedColumn;
+
+        const missingTargetRowIds = [...requestedTargetRowIds].filter(
+          (rowId) => !targetMatches.has(rowId),
+        );
+        if (missingTargetRowIds.length > 0) {
+          serviceError('TARGET_NOT_FOUND', 'One or more target row IDs do not exist.', {
+            targetTableId: resolvedTargetTable.tableId,
+            missingTargetRowIds,
+          });
+        }
+        const ambiguousTargetRowIds = [...targetMatches.entries()]
+          .filter(([, match]) => match.count > 1)
+          .map(([rowId]) => rowId);
+        if (ambiguousTargetRowIds.length > 0) {
+          serviceError('PATCH_REJECTED', 'One or more target row IDs are not unique.', {
+            targetTableId: resolvedTargetTable.tableId,
+            ambiguousTargetRowIds,
+          });
+        }
+
+        const resolvedAssignments: Array<{
+          sourceRowId: string;
+          targetRowId: string | null;
+          storedValue: JsonValue;
+        }> = assignments.map((assignment) => {
+          if (assignment.targetRowId === null) {
+            return { ...assignment, storedValue: null };
+          }
+          const storedValue = targetMatches.get(assignment.targetRowId)?.values[targetColumn.columnId];
+          if (storedValue === undefined || storedValue === null || storedValue === '') {
+            serviceError(
+              'PATCH_REJECTED',
+              `Target row "${assignment.targetRowId}" has no value in "${resolvedTargetTable.tableId}.${targetColumn.columnId}".`,
+            );
+          }
+          return { ...assignment, storedValue: storedValue as JsonValue };
+        });
+        const operations: DataPatchOperationInput[] = [
+          {
+            op: 'updateRows',
+            tableId: sourceTableId,
+            rows: resolvedAssignments.map((assignment) => ({
+              rowId: assignment.sourceRowId,
+              values: { [sourceColumnId]: assignment.storedValue },
+            })),
+          },
+        ];
+
+        return await previewDataPatch(
+          context,
+          description ?? `Assign ${resolvedAssignments.length} reference value(s) in ${sourceTableId}.${sourceColumnId}`,
+          operations,
+          {
+            referenceAssignments: {
+              source: {
+                tableId: sourceTable.tableId,
+                tableName: sourceTable.name,
+                columnId: sourceColumn.columnId,
+                columnName: sourceColumn.name,
+              },
+              target: {
+                tableId: resolvedTargetTable.tableId,
+                tableName: resolvedTargetTable.name,
+                columnId: targetColumn.columnId,
+                columnName: targetColumn.name,
+              },
+              assignmentCount: resolvedAssignments.length,
+              assignments: resolvedAssignments,
+              cellValueMeaning: REF_CELL_VALUE_DESCRIPTION,
+            },
+          },
+        );
       } catch (error) {
         return caughtToolError(error);
       }
@@ -467,7 +816,8 @@ const createServer = (options: ServerOptions) => {
   server.registerTool(
     'configra_apply_patch',
     {
-      description: 'Apply an exact patch previously returned by configra_preview_patch using its confirmationHash.',
+      description:
+        'Apply an exact patch previously returned by any configra_preview_* tool using its matching confirmationHash.',
       inputSchema: {
         patch: dataPatchSchema,
         confirmationHash: z.string().min(1),

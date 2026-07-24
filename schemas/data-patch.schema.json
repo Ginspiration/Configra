@@ -54,11 +54,18 @@
     },
     "ref": {
       "type": "object",
+      "description": "Schema-level reference target. A ref cell stores the referenced target column's actual value. tableId and columnId identify the target schema only; never store a tableId, columnId, or _rowId in the cell. Prefer a primary column or identity.valueColumnId.",
       "additionalProperties": false,
       "required": ["tableId", "columnId"],
       "properties": {
-        "tableId": { "$ref": "#/$defs/nonEmptyString" },
-        "columnId": { "$ref": "#/$defs/nonEmptyString" }
+        "tableId": {
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "Stable ID of the target table whose column values may be stored in this ref field."
+        },
+        "columnId": {
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "Stable ID of the target column. Source ref cells store values from this column, not this columnId."
+        }
       }
     },
     "column": {
@@ -269,6 +276,7 @@
     },
     "rowValues": {
       "type": "object",
+      "description": "Map stable source columnId keys to JSON cell values. A ref cell stores the target column's actual value, never tableId, columnId, or _rowId.",
       "additionalProperties": { "$ref": "#/$defs/jsonValue" }
     },
     "jsonValue": {

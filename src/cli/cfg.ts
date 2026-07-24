@@ -6,6 +6,10 @@ import { idRegistryJson, projectJsonFiles, tableJson } from '../export/exportTab
 import { parseProjectFileText } from '../file/projectFile';
 import type { ConfigTable, ProjectFile, ValidationIssue } from '../model/types';
 import {
+  REFERENCE_SEMANTICS,
+  summarizeProjectReferences,
+} from '../model/referenceSemantics';
+import {
   checkDataPatch,
   canonicalJson,
   confirmationHashForPatch,
@@ -574,6 +578,7 @@ const withProjectWriteLock = async <T>(projectPath: string, action: () => Promis
 const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const loaded = await loadProject(requiredOption(args, 'project'));
   const tableSelector = args.options.table;
+  const relationships = summarizeProjectReferences(loaded.project);
 
   if (!tableSelector) {
     const body = {
@@ -581,6 +586,8 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       projectHash: loaded.projectHash,
       version: loaded.project.version,
       tableCount: loaded.project.tables.length,
+      referenceSemantics: REFERENCE_SEMANTICS,
+      relationships,
       tables: loaded.project.tables.map((table) => ({
         tableId: table.id,
         name: table.name,
@@ -616,6 +623,11 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       name: table.name,
       remark: table.remark,
       identity: table.identity,
+      referenceSemantics: REFERENCE_SEMANTICS,
+      relationships: relationships.filter(
+        (relationship) =>
+          relationship.source.tableId === table.id || relationship.target.tableId === table.id,
+      ),
       columns: table.columns.map((column) => ({
         columnId: column.id,
         name: column.name,

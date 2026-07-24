@@ -61,8 +61,18 @@ const createProject = () => ({
       id: 'loot_table',
       name: 'Item',
       position: { x: 320, y: 0 },
-      columns: [{ id: 'value_column', name: 'value', type: 'string' }],
-      rows: [{ _rowId: 'row_3', values: { value_column: 'Loose' } }],
+      columns: [
+        { id: 'value_column', name: 'value', type: 'string' },
+        {
+          id: 'item_ref_column',
+          name: 'itemId',
+          type: 'ref',
+          ref: { tableId: 'item_table', columnId: 'id_column' },
+        },
+      ],
+      rows: [
+        { _rowId: 'row_3', values: { value_column: 'Loose', item_ref_column: 1 } },
+      ],
     },
   ],
 });
@@ -79,6 +89,19 @@ describe('cfg cli', () => {
     expect(inspectBody.ok).toBe(true);
     expect(inspectBody.projectHash).toBe(sha256Text(`${JSON.stringify(project, null, 2)}\n`));
     expect(inspectBody.tableCount).toBe(2);
+    expect(inspectBody.referenceSemantics.cellValue).toContain("target column's actual value");
+    expect(inspectBody.relationships).toEqual([
+      expect.objectContaining({
+        source: expect.objectContaining({ tableId: 'loot_table', columnId: 'item_ref_column' }),
+        target: expect.objectContaining({
+          tableId: 'item_table',
+          columnId: 'id_column',
+          exists: true,
+          isPrimary: true,
+        }),
+        status: 'valid',
+      }),
+    ]);
 
     const tableInspect = runCfg(['inspect', '--project', projectPath, '--table', 'item_table', '--offset', '1', '--limit', '1', '--json']);
     expect(tableInspect.code).toBe(0);
@@ -88,6 +111,7 @@ describe('cfg cli', () => {
     expect(tableBody.table.offset).toBe(1);
     expect(tableBody.table.returnedRows).toBe(1);
     expect(tableBody.table.rows[0].rowId).toBe('row_2');
+    expect(tableBody.table.relationships).toHaveLength(1);
 
     const validate = runCfg(['validate', '--project', projectPath, '--json']);
     expect(validate.code).toBe(0);

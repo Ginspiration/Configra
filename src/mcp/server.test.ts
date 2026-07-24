@@ -67,7 +67,26 @@ describe('Configra MCP server', () => {
             { id: 'id', name: 'id', type: 'int', primary: true, required: true },
             { id: 'name', name: 'name', type: 'string' },
           ],
-          rows: [{ _rowId: 'row_1', values: { id: 1, name: 'Sword' } }],
+          rows: [
+            { _rowId: 'row_1', values: { id: 1, name: 'Sword' } },
+            { _rowId: 'row_2', values: { id: 2, name: 'Shield' } },
+          ],
+        },
+        {
+          id: 'drops',
+          name: 'Drops',
+          position: { x: 320, y: 0 },
+          columns: [
+            { id: 'drop_id', name: 'id', type: 'int', primary: true, required: true },
+            {
+              id: 'item_id',
+              name: 'itemId',
+              type: 'ref',
+              ref: { tableId: 'items', columnId: 'id' },
+            },
+            { id: 'item_link', name: 'itemLink', type: 'string' },
+          ],
+          rows: [{ _rowId: 'drop_row_1', values: { drop_id: 1, item_id: 1 } }],
         },
       ],
     };
@@ -115,6 +134,8 @@ describe('Configra MCP server', () => {
         'configra_inspect_project',
         'configra_query_rows',
         'configra_preview_patch',
+        'configra_preview_define_ref',
+        'configra_preview_assign_refs',
         'configra_apply_patch',
         'configra_rollback_transaction',
         'configra_export_all',
@@ -138,6 +159,10 @@ describe('Configra MCP server', () => {
       expect(publicPatchSchema).toContain(`"const":"${operation}"`);
     }
     expect(publicPatchSchema).toContain('remark');
+    expect(publicPatchSchema).toContain("referenced target column's actual value");
+
+    const assignRefTool = tools.tools.find((tool) => tool.name === 'configra_preview_assign_refs');
+    expect(assignRefTool?.description).toContain('targetRowId itself is never stored');
 
     const status = parseToolText(await client.callTool({ name: 'configra_get_status', arguments: {} }));
     expect(status).toMatchObject({
@@ -149,7 +174,78 @@ describe('Configra MCP server', () => {
 
     const inspected = parseToolText(await client.callTool({ name: 'configra_inspect_table', arguments: { tableId: 'items' } }));
     expect(inspected).toHaveProperty('table');
-    expect((inspected.table as { rows: unknown[] }).rows).toHaveLength(1);
+    expect((inspected.table as { rows: unknown[] }).rows).toHaveLength(2);
+    expect((inspected.table as { relationships: unknown[] }).relationships).toHaveLength(1);
+
+    const definedRef = await client.callTool({
+      name: 'configra_preview_define_ref',
+      arguments: {
+        sourceTableId: 'drops',
+        sourceColumnId: 'item_link',
+        targetTableId: 'items',
+        targetColumnId: 'id',
+      },
+    });
+    expect(definedRef.isError).not.toBe(true);
+    expect(parseToolText(definedRef)).toMatchObject({
+      accepted: true,
+      referenceChanges: [
+        {
+          action: 'define',
+          source: { tableId: 'drops', columnId: 'item_link' },
+          target: { tableId: 'items', columnId: 'id' },
+        },
+      ],
+    });
+
+    const assignedRef = await client.callTool({
+      name: 'configra_preview_assign_refs',
+      arguments: {
+        sourceTableId: 'drops',
+        sourceColumnId: 'item_id',
+        assignments: [{ sourceRowId: 'drop_row_1', targetRowId: 'row_2' }],
+      },
+    });
+    expect(assignedRef.isError).not.toBe(true);
+    const assignedRefBody = parseToolText(assignedRef);
+    expect(assignedRefBody).toMatchObject({
+      accepted: true,
+      referenceAssignments: {
+        source: { tableId: 'drops', columnId: 'item_id' },
+        target: { tableId: 'items', columnId: 'id' },
+        assignmentCount: 1,
+        assignments: [
+          { sourceRowId: 'drop_row_1', targetRowId: 'row_2', storedValue: 2 },
+        ],
+      },
+    });
+    expect(assignedRefBody.patch).toMatchObject({
+      operations: [
+        {
+          op: 'updateRows',
+          tableId: 'drops',
+          rows: [{ rowId: 'drop_row_1', values: { item_id: 2 } }],
+        },
+      ],
+    });
+    const appliedRef = parseToolText(await client.callTool({
+      name: 'configra_apply_patch',
+      arguments: {
+        patch: assignedRefBody.patch,
+        confirmationHash: assignedRefBody.confirmationHash,
+      },
+    }));
+    expect(appliedRef.written).toBe(true);
+    expect(JSON.parse(readFileSync(projectPath, 'utf8')).tables[1].rows[0].values.item_id).toBe(2);
+    const rolledBackRef = parseToolText(await client.callTool({
+      name: 'configra_rollback_transaction',
+      arguments: {
+        transactionId: appliedRef.transactionId,
+        expectedProjectHash: appliedRef.resultingProjectHash,
+      },
+    }));
+    expect(rolledBackRef.rolledBack).toBe(true);
+    expect(JSON.parse(readFileSync(projectPath, 'utf8')).tables[1].rows[0].values.item_id).toBe(1);
 
     const queried = parseToolText(await client.callTool({
       name: 'configra_query_rows',
@@ -210,7 +306,7 @@ describe('Configra MCP server', () => {
     const updated = JSON.parse(readFileSync(projectPath, 'utf8'));
     expect(updated.tables[0].rows[0].values.name).toBe('Long Sword');
     const events = JSON.parse(readFileSync(join(configDir, 'mcp-events.json'), 'utf8'));
-    expect(events.changeRevision).toBe(1);
+    expect(events.changeRevision).toBe(3);
     expect(events.serverId).toBe('configra');
 
     const rolledBack = parseToolText(await client.callTool({

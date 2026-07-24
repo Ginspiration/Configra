@@ -652,6 +652,8 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Dirty state is scoped: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads the project.
 - Unsaved content changes block MCP modification/export tools by default. The persisted Settings → AI / MCP → “Full Access” switch lets the user explicitly allow all MCP operations; an MCP apply may then replace unsaved content edits.
 - MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both. The public tool schema expands every supported operation as a discriminated union.
+- MCP inspect results include `referenceSemantics` plus resolved incoming/outgoing `relationships`, so clients can distinguish schema IDs, row IDs, and the actual target-column values stored in `ref` cells.
+- `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs and resolves each target row to the referenced target-column value; both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
 - While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Hiding it removes the window completely from the canvas; restore it through Settings → AI / MCP → Activity Log. Visibility persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.

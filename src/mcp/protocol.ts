@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { REF_CELL_VALUE_DESCRIPTION } from '../model/referenceSemantics';
 
 export const MCP_SERVER_ID = 'configra';
 export const MCP_DISPLAY_NAME = 'Configra';
@@ -20,13 +21,27 @@ const identitySchema = z.strictObject({
   valueColumnId: z.string().optional(),
 });
 
-const refSchema = z.strictObject({
-  tableId: nonEmptyString,
-  columnId: nonEmptyString,
-});
+const refSchema = z
+  .strictObject({
+    tableId: nonEmptyString.describe(
+      'Stable ID of the target table whose column values may be stored in this ref field.',
+    ),
+    columnId: nonEmptyString.describe(
+      'Stable ID of the target column. Source ref cells store values from this column, not this columnId.',
+    ),
+  })
+  .describe(
+    `Schema-level reference target. ${REF_CELL_VALUE_DESCRIPTION} Prefer a primary column or identity.valueColumnId.`,
+  );
 
-const columnTypeSchema = z.enum(['int', 'float', 'string', 'bool', 'enum', 'ref', 'json']);
-const rowValuesSchema = z.record(z.string(), z.json());
+const columnTypeSchema = z
+  .enum(['int', 'float', 'string', 'bool', 'enum', 'ref', 'json'])
+  .describe('Column data type. A ref type also requires ref.tableId and ref.columnId.');
+const rowValuesSchema = z
+  .record(z.string(), z.json())
+  .describe(
+    `Map stable source columnId keys to JSON cell values. For ref columns: ${REF_CELL_VALUE_DESCRIPTION}`,
+  );
 
 const columnSchema = z.strictObject({
   id: nonEmptyString,
@@ -72,8 +87,8 @@ export const dataPatchOperationSchema = z.discriminatedUnion('op', [
   }),
   z.strictObject({
     op: z.literal('updateColumn'),
-    tableId: nonEmptyString,
-    columnId: nonEmptyString,
+    tableId: nonEmptyString.describe('Stable ID of the source table containing the column.'),
+    columnId: nonEmptyString.describe('Stable ID of the source column to update.'),
     changes: z.strictObject({
       name: z.string().optional(),
       type: columnTypeSchema.optional(),
@@ -83,8 +98,13 @@ export const dataPatchOperationSchema = z.discriminatedUnion('op', [
       export: nullableOptionalBoolean,
       remark: z.string().nullable().optional(),
       enumValues: z.array(z.string()).nullable().optional(),
-      ref: refSchema.nullable().optional(),
-    }),
+      ref: refSchema
+        .nullable()
+        .optional()
+        .describe('Set the schema-level target for a ref column, or null to remove it.'),
+    }).describe(
+      `Column changes. To define a relationship, set type to ref and set ref to the target schema. ${REF_CELL_VALUE_DESCRIPTION}`,
+    ),
   }),
   z.strictObject({
     op: z.literal('moveColumn'),
@@ -119,6 +139,8 @@ export const dataPatchOperationSchema = z.discriminatedUnion('op', [
     rowIds: z.array(nonEmptyString),
   }),
 ]);
+
+export type DataPatchOperationInput = z.infer<typeof dataPatchOperationSchema>;
 
 export const dataPatchSchema = z.strictObject({
   version: z.literal(1),
