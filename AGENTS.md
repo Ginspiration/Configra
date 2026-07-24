@@ -1,4 +1,4 @@
-# Game Config Graph Editor 开发交接文档
+# Configra 开发交接文档
 
 本文档用于交给后续 AI 或开发者继续接手本仓库。
 
@@ -352,7 +352,7 @@ type ValidationIssue = {
 
 浏览器模式行为：
 
-- 保存会下载 `game-config.cfggraph.json`。
+- 保存会下载 `project.configra.json`。
 - 加载使用隐藏的文件输入框。
 - 选中的文件会先解析并做结构校验，再替换当前工程。
 - 加载其他文件前，如果存在未保存修改，会提示保存。
@@ -471,7 +471,7 @@ Store action：
 ## 14. 源码结构
 
 ```text
-game-config-graph-editor/
+Configra/
 |-- AGENTS.md
 |-- README.md
 |-- package.json
@@ -645,7 +645,7 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 
 - The toolbar Settings entry opens a categorized settings panel; its AI / MCP category starts/stops the service and persists its enabled state.
 - The service listens only on `127.0.0.1:37631` and uses a per-install token in the URL.
-- The canonical server/source ID is `game-config-graph-editor`; initialization advertises tools only. Unsupported `resources/*` calls return `CAPABILITY_NOT_SUPPORTED`.
+- The canonical server/source ID is `configra`; initialization advertises tools only. Unsupported `resources/*` calls return `CAPABILITY_NOT_SUPPORTED`.
 - The connection URL is available through the toolbar copy button.
 - MCP is source desktop only; browser mode and packaged sidecars are not supported yet.
 - MCP tools operate only on the current saved project and invoke the headless CLI rather than mutating Zustand.

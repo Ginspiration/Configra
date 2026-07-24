@@ -403,7 +403,7 @@ const defaultBackupDirectory = () => {
     process.platform === 'win32'
       ? process.env.LOCALAPPDATA ?? process.env.APPDATA ?? path.join(homedir(), 'AppData', 'Local')
       : process.env.XDG_DATA_HOME ?? path.join(homedir(), '.local', 'share');
-  return path.join(dataRoot, 'game-config-graph-editor', 'backups');
+  return path.join(dataRoot, 'configra', 'backups');
 };
 
 const backupDirectory = (args: ParsedArgs) =>
@@ -554,7 +554,7 @@ const createBackup = async (
 };
 
 const withProjectWriteLock = async <T>(projectPath: string, action: () => Promise<T>): Promise<T> => {
-  const lockPath = path.join(path.dirname(projectPath), `.${path.basename(projectPath)}.cfggraph.lock`);
+  const lockPath = path.join(path.dirname(projectPath), `.${path.basename(projectPath)}.configra.lock`);
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
     handle = await fs.open(lockPath, 'wx');
@@ -1046,7 +1046,7 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       }
     }
 
-    const stageDir = await fs.mkdtemp(path.join(outDir, '.cfggraph-export-'));
+    const stageDir = await fs.mkdtemp(path.join(outDir, '.configra-export-'));
     const commits: Array<{
       finalPath: string;
       backupPath?: string;

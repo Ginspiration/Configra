@@ -48,7 +48,7 @@ const samePosition = (left: GraphPosition, right: GraphPosition) =>
 
 const markDirty = (reason: string, currentScope: DirtyScope, nextScope: DirtyScope = 'content') => {
   if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    console.debug(`[cfggraph] dirty (${nextScope}): ${reason}`);
+    console.debug(`[configra] dirty (${nextScope}): ${reason}`);
   }
 
   return {

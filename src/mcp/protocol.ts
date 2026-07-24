@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-export const MCP_SERVER_ID = 'game-config-graph-editor';
-export const MCP_DISPLAY_NAME = 'Game Config Graph Editor';
+export const MCP_SERVER_ID = 'configra';
+export const MCP_DISPLAY_NAME = 'Configra';
 export const MCP_VERSION = '0.1.0';
 export const MCP_SUPPORTED_CAPABILITIES = ['tools'] as const;
 

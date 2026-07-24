@@ -62,7 +62,7 @@ export default function McpLogWindow({
         ) : (
           entries.map((entry, index) => (
             <div
-              key={`${entry.sourceId ?? 'game-config-graph-editor'}-${entry.timestamp}-${entry.requestId ?? 'service'}-${index}`}
+              key={`${entry.sourceId ?? 'configra'}-${entry.timestamp}-${entry.requestId ?? 'service'}-${index}`}
               className={`mcp-log-entry mcp-log-entry--${entry.level}`}
             >
               <time>{formatLogTime(entry.timestamp)}</time>

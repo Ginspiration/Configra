@@ -1,7 +1,7 @@
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
 
-const THEME_PREFERENCE_STORAGE_KEY = 'cfggraph:theme-preference';
+const THEME_PREFERENCE_STORAGE_KEY = 'configra:theme-preference';
 
 export const getThemePreference = (): ThemePreference => {
   try {

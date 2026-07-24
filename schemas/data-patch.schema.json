@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://game-config-graph-editor.local/schemas/data-patch.schema.json",
-  "title": "Game Config Graph Editor Data Patch",
+  "$id": "https://configra.local/schemas/data-patch.schema.json",
+  "title": "Configra Data Patch",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "baseHash", "operations"],

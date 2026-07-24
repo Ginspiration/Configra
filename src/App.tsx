@@ -91,7 +91,7 @@ type DirectoryPickerWindow = Window & {
   showDirectoryPicker?: () => Promise<BrowserDirectoryHandle>;
 };
 
-const MCP_LOG_VISIBLE_STORAGE_KEY = 'cfggraph:mcp-log-visible';
+const MCP_LOG_VISIBLE_STORAGE_KEY = 'configra:mcp-log-visible';
 
 const initialMcpLogVisible = () => {
   try {
@@ -933,7 +933,7 @@ export default function App() {
     <div className="app-shell" onContextMenu={preventNativeContextMenu}>
       <header className="toolbar">
         <div className="brand-block">
-          <strong>Game Config Graph Editor</strong>
+          <strong>Configra</strong>
           <span>{t('errorCount', { count: errorCount })}</span>
           {warningCount > 0 ? <span>{t('warningCount', { count: warningCount })}</span> : null}
         </div>
@@ -972,7 +972,7 @@ export default function App() {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".cfggraph.json,application/json"
+          accept=".configra.json,application/json"
           className="hidden-input"
           onChange={(event) => {
             const file = event.target.files?.[0];

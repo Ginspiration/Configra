@@ -25,9 +25,9 @@ const parseToolText = (rawResult: unknown) => {
   return JSON.parse(block.text) as Record<string, unknown>;
 };
 
-describe('cfggraph MCP server', () => {
+describe('Configra MCP server', () => {
   it('keeps previous diagnostics and exposes a token-protected health check', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cfggraph-mcp-health-'));
+    const root = mkdtempSync(join(tmpdir(), 'configra-mcp-health-'));
     const configDir = join(root, 'config');
     const token = '0123456789abcdef0123456789abcdef';
     mkdirSync(configDir, { recursive: true });
@@ -42,7 +42,7 @@ describe('cfggraph MCP server', () => {
 
     const health = await fetch(`http://127.0.0.1:${started.port}${started.healthPath}`);
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toMatchObject({ ok: true, service: 'game-config-graph-editor' });
+    await expect(health.json()).resolves.toMatchObject({ ok: true, service: 'configra' });
 
     const unauthorized = await fetch(`http://127.0.0.1:${started.port}/health/not-the-token`);
     expect(unauthorized.status).toBe(404);
@@ -53,9 +53,9 @@ describe('cfggraph MCP server', () => {
   });
 
   it('serves tools, applies scoped dirty access and writes confirmed CLI patches', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cfggraph-mcp-'));
+    const root = mkdtempSync(join(tmpdir(), 'configra-mcp-'));
     const configDir = join(root, 'config');
-    const projectPath = join(root, 'project.cfggraph.json');
+    const projectPath = join(root, 'project.configra.json');
     const project = {
       version: 1,
       tables: [
@@ -96,15 +96,15 @@ describe('cfggraph MCP server', () => {
     const token = '0123456789abcdef0123456789abcdef';
     const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
     runningServers.push(started.httpServer);
-    const client = new Client({ name: 'cfggraph-test', version: '1.0.0' });
+    const client = new Client({ name: 'configra-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
     );
     await client.connect(transport);
 
     expect(client.getServerVersion()).toMatchObject({
-      name: 'game-config-graph-editor',
-      title: 'Game Config Graph Editor',
+      name: 'configra',
+      title: 'Configra',
     });
     expect(client.getServerCapabilities()).toHaveProperty('tools');
     expect(client.getServerCapabilities()).not.toHaveProperty('resources');
@@ -112,15 +112,15 @@ describe('cfggraph MCP server', () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
-        'cfggraph_inspect_project',
-        'cfggraph_query_rows',
-        'cfggraph_preview_patch',
-        'cfggraph_apply_patch',
-        'cfggraph_rollback_transaction',
-        'cfggraph_export_all',
+        'configra_inspect_project',
+        'configra_query_rows',
+        'configra_preview_patch',
+        'configra_apply_patch',
+        'configra_rollback_transaction',
+        'configra_export_all',
       ]),
     );
-    const previewTool = tools.tools.find((tool) => tool.name === 'cfggraph_preview_patch');
+    const previewTool = tools.tools.find((tool) => tool.name === 'configra_preview_patch');
     const publicPatchSchema = JSON.stringify(previewTool?.inputSchema);
     for (const operation of [
       'addTable',
@@ -139,20 +139,20 @@ describe('cfggraph MCP server', () => {
     }
     expect(publicPatchSchema).toContain('remark');
 
-    const status = parseToolText(await client.callTool({ name: 'cfggraph_get_status', arguments: {} }));
+    const status = parseToolText(await client.callTool({ name: 'configra_get_status', arguments: {} }));
     expect(status).toMatchObject({
-      serverId: 'game-config-graph-editor',
-      sourceId: 'game-config-graph-editor',
-      displayName: 'Game Config Graph Editor',
+      serverId: 'configra',
+      sourceId: 'configra',
+      displayName: 'Configra',
       supportedCapabilities: ['tools'],
     });
 
-    const inspected = parseToolText(await client.callTool({ name: 'cfggraph_inspect_table', arguments: { tableId: 'items' } }));
+    const inspected = parseToolText(await client.callTool({ name: 'configra_inspect_table', arguments: { tableId: 'items' } }));
     expect(inspected).toHaveProperty('table');
     expect((inspected.table as { rows: unknown[] }).rows).toHaveLength(1);
 
     const queried = parseToolText(await client.callTool({
-      name: 'cfggraph_query_rows',
+      name: 'configra_query_rows',
       arguments: {
         tableId: 'items',
         filters: [{ columnId: 'name', op: 'contains', value: 'swo' }],
@@ -162,26 +162,26 @@ describe('cfggraph MCP server', () => {
 
     writeContext('layout');
     const layoutPreview = await client.callTool({
-      name: 'cfggraph_preview_patch',
+      name: 'configra_preview_patch',
       arguments: { operations: [{ op: 'updateRows', tableId: 'items', rows: [] }] },
     });
     expect(layoutPreview.isError).not.toBe(true);
 
     writeContext('content');
     const blocked = await client.callTool({
-      name: 'cfggraph_preview_patch',
+      name: 'configra_preview_patch',
       arguments: { operations: [{ op: 'updateRows', tableId: 'items', rows: [] }] },
     });
     expect(blocked.isError).toBe(true);
     expect(parseToolText(blocked).error).toMatchObject({
       code: 'UI_DIRTY_CONFLICT',
-      serverId: 'game-config-graph-editor',
+      serverId: 'configra',
       supportedCapabilities: ['tools'],
     });
 
     writeContext('content', true);
     const fullAccessPreview = await client.callTool({
-      name: 'cfggraph_preview_patch',
+      name: 'configra_preview_patch',
       arguments: { operations: [{ op: 'updateRows', tableId: 'items', rows: [] }] },
     });
     expect(fullAccessPreview.isError).not.toBe(true);
@@ -189,7 +189,7 @@ describe('cfggraph MCP server', () => {
 
     writeContext('none');
     const previewResult = await client.callTool({
-      name: 'cfggraph_preview_patch',
+      name: 'configra_preview_patch',
       arguments: {
         description: 'Rename sword',
         operations: [
@@ -202,7 +202,7 @@ describe('cfggraph MCP server', () => {
     expect(preview.confirmationHash).toMatch(/^sha256:/);
 
     const applied = parseToolText(await client.callTool({
-      name: 'cfggraph_apply_patch',
+      name: 'configra_apply_patch',
       arguments: { patch: preview.patch, confirmationHash: preview.confirmationHash },
     }));
     expect(applied.written).toBe(true);
@@ -211,10 +211,10 @@ describe('cfggraph MCP server', () => {
     expect(updated.tables[0].rows[0].values.name).toBe('Long Sword');
     const events = JSON.parse(readFileSync(join(configDir, 'mcp-events.json'), 'utf8'));
     expect(events.changeRevision).toBe(1);
-    expect(events.serverId).toBe('game-config-graph-editor');
+    expect(events.serverId).toBe('configra');
 
     const rolledBack = parseToolText(await client.callTool({
-      name: 'cfggraph_rollback_transaction',
+      name: 'configra_rollback_transaction',
       arguments: {
         transactionId: applied.transactionId,
         expectedProjectHash: applied.resultingProjectHash,
@@ -223,13 +223,13 @@ describe('cfggraph MCP server', () => {
     expect(rolledBack).toMatchObject({ rolledBack: true, written: true });
     expect(JSON.parse(readFileSync(projectPath, 'utf8')).tables[0].rows[0].values.name).toBe('Sword');
 
-    const secondClient = new Client({ name: 'cfggraph-test-2', version: '1.0.0' });
+    const secondClient = new Client({ name: 'configra-test-2', version: '1.0.0' });
     await secondClient.connect(new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
     ));
     const [concurrentPreviewA, concurrentPreviewB] = await Promise.all([
       client.callTool({
-        name: 'cfggraph_preview_patch',
+        name: 'configra_preview_patch',
         arguments: {
           operations: [
             { op: 'updateRows', tableId: 'items', rows: [{ rowId: 'row_1', values: { name: 'Client A' } }] },
@@ -237,7 +237,7 @@ describe('cfggraph MCP server', () => {
         },
       }),
       secondClient.callTool({
-        name: 'cfggraph_preview_patch',
+        name: 'configra_preview_patch',
         arguments: {
           operations: [
             { op: 'updateRows', tableId: 'items', rows: [{ rowId: 'row_1', values: { name: 'Client B' } }] },
@@ -249,11 +249,11 @@ describe('cfggraph MCP server', () => {
     const previewB = parseToolText(concurrentPreviewB);
     const concurrentResults = await Promise.all([
       client.callTool({
-        name: 'cfggraph_apply_patch',
+        name: 'configra_apply_patch',
         arguments: { patch: previewA.patch, confirmationHash: previewA.confirmationHash },
       }),
       secondClient.callTool({
-        name: 'cfggraph_apply_patch',
+        name: 'configra_apply_patch',
         arguments: { patch: previewB.patch, confirmationHash: previewB.confirmationHash },
       }),
     ]);
@@ -265,7 +265,7 @@ describe('cfggraph MCP server', () => {
     }
     const concurrentSuccess = parseToolText(concurrentResults.find((result) => result.isError !== true));
     await client.callTool({
-      name: 'cfggraph_rollback_transaction',
+      name: 'configra_rollback_transaction',
       arguments: {
         transactionId: concurrentSuccess.transactionId,
         expectedProjectHash: concurrentSuccess.resultingProjectHash,
@@ -274,13 +274,13 @@ describe('cfggraph MCP server', () => {
     await secondClient.close();
 
     const missingRemark = await client.callTool({
-      name: 'cfggraph_preview_patch',
+      name: 'configra_preview_patch',
       arguments: { operations: [{ op: 'addTable', tableId: 'new_table', name: 'New', remark: ' ' }] },
     });
     expect(missingRemark.isError).toBe(true);
 
     const stalePreview = parseToolText(await client.callTool({
-      name: 'cfggraph_preview_patch',
+      name: 'configra_preview_patch',
       arguments: {
         operations: [
           { op: 'updateRows', tableId: 'items', rows: [{ rowId: 'row_1', values: { name: 'Axe' } }] },
@@ -289,7 +289,7 @@ describe('cfggraph MCP server', () => {
     }));
     writeFileSync(projectPath, `${readFileSync(projectPath, 'utf8')}\n`, 'utf8');
     const stale = await client.callTool({
-      name: 'cfggraph_apply_patch',
+      name: 'configra_apply_patch',
       arguments: { patch: stalePreview.patch, confirmationHash: stalePreview.confirmationHash },
     });
     expect(stale.isError).toBe(true);
@@ -306,7 +306,7 @@ describe('cfggraph MCP server', () => {
         code: -32601,
         data: {
           code: 'CAPABILITY_NOT_SUPPORTED',
-          serverId: 'game-config-graph-editor',
+          serverId: 'configra',
           supportedCapabilities: ['tools'],
         },
       },
@@ -314,27 +314,27 @@ describe('cfggraph MCP server', () => {
 
     await expect
       .poll(() => readFileSync(join(configDir, 'mcp-logs.jsonl'), 'utf8'), { timeout: 3000 })
-      .toContain('AI called cfggraph_preview_patch');
+      .toContain('AI called configra_preview_patch');
 
     await client.close();
   }, 60000);
 
   it('returns PROJECT_NOT_OPEN as a structured tool error', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cfggraph-mcp-no-project-'));
+    const root = mkdtempSync(join(tmpdir(), 'configra-mcp-no-project-'));
     const configDir = join(root, 'config');
     const token = '0123456789abcdef0123456789abcdef';
     const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
     runningServers.push(started.httpServer);
-    const client = new Client({ name: 'cfggraph-test', version: '1.0.0' });
+    const client = new Client({ name: 'configra-test', version: '1.0.0' });
     await client.connect(new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
     ));
 
-    const result = await client.callTool({ name: 'cfggraph_inspect_project', arguments: {} });
+    const result = await client.callTool({ name: 'configra_inspect_project', arguments: {} });
     expect(result.isError).toBe(true);
     expect(parseToolText(result).error).toMatchObject({
       code: 'PROJECT_NOT_OPEN',
-      serverId: 'game-config-graph-editor',
+      serverId: 'configra',
     });
     await client.close();
   });

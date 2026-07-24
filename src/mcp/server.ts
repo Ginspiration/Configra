@@ -81,7 +81,7 @@ const parseArgs = (argv: string[]): ServerOptions => {
   }
   const configDir = path.resolve(values.get('config-dir') ?? '.codex-run/mcp');
   const repoDir = path.resolve(values.get('repo') ?? process.cwd());
-  const token = values.get('token') ?? process.env.CFGGRAPH_MCP_TOKEN;
+  const token = values.get('token') ?? process.env.CONFIGRA_MCP_TOKEN;
   if (!token || token.length < 16) throw new Error('MCP token must contain at least 16 characters.');
   const port = Number(values.get('port') ?? '37631');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('MCP port is invalid.');
@@ -115,7 +115,7 @@ const createMcpLogger = (logPath: string): McpLogger => {
   const enqueue = (action: () => Promise<void>) => {
     writeQueue = writeQueue.then(action).catch((error) => {
       process.stderr.write(
-        `[cfggraph-mcp] Could not write MCP log: ${error instanceof Error ? error.message : String(error)}\n`,
+        `[configra-mcp] Could not write MCP log: ${error instanceof Error ? error.message : String(error)}\n`,
       );
     });
     return writeQueue;
@@ -308,7 +308,7 @@ const createServer = (options: ServerOptions) => {
   };
 
   server.registerTool(
-    'cfggraph_get_status',
+    'configra_get_status',
     {
       description: 'Return the local MCP service and active desktop project status.',
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -339,7 +339,7 @@ const createServer = (options: ServerOptions) => {
   );
 
   server.registerTool(
-    'cfggraph_inspect_project',
+    'configra_inspect_project',
     {
       description: 'Inspect the active project and list stable table IDs, names, remarks and row/column counts.',
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -352,7 +352,7 @@ const createServer = (options: ServerOptions) => {
   );
 
   server.registerTool(
-    'cfggraph_inspect_table',
+    'configra_inspect_table',
     {
       description: 'Inspect one table by stable tableId, including schema remarks and paginated rows with stable row IDs.',
       inputSchema: {
@@ -388,7 +388,7 @@ const createServer = (options: ServerOptions) => {
     z.object({ columnId: z.string().min(1), op: z.literal('contains'), value: z.string() }),
   ]);
   server.registerTool(
-    'cfggraph_query_rows',
+    'configra_query_rows',
     {
       description: 'Query rows in one table by stable column IDs using typed equality or case-insensitive string contains.',
       inputSchema: {
@@ -416,7 +416,7 @@ const createServer = (options: ServerOptions) => {
   );
 
   server.registerTool(
-    'cfggraph_validate',
+    'configra_validate',
     {
       description: 'Validate the active project and return all structured validation issues.',
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -429,7 +429,7 @@ const createServer = (options: ServerOptions) => {
   );
 
   server.registerTool(
-    'cfggraph_preview_patch',
+    'configra_preview_patch',
     {
       description:
         'Preview an ordered project patch. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash without writing.',
@@ -465,9 +465,9 @@ const createServer = (options: ServerOptions) => {
   );
 
   server.registerTool(
-    'cfggraph_apply_patch',
+    'configra_apply_patch',
     {
-      description: 'Apply an exact patch previously returned by cfggraph_preview_patch using its confirmationHash.',
+      description: 'Apply an exact patch previously returned by configra_preview_patch using its confirmationHash.',
       inputSchema: {
         patch: dataPatchSchema,
         confirmationHash: z.string().min(1),
@@ -506,7 +506,7 @@ const createServer = (options: ServerOptions) => {
   );
 
   server.registerTool(
-    'cfggraph_rollback_transaction',
+    'configra_rollback_transaction',
     {
       description:
         'Restore the byte-exact project snapshot captured before a transaction. Requires the current project hash to prevent stale rollback.',
@@ -564,7 +564,7 @@ const createServer = (options: ServerOptions) => {
   };
 
   server.registerTool(
-    'cfggraph_export_table',
+    'configra_export_table',
     {
       description: 'Export one table JSON to an absolute local file path.',
       inputSchema: {
@@ -577,7 +577,7 @@ const createServer = (options: ServerOptions) => {
     ({ tableId, outPath, overwrite }) => runExport('table', outPath, overwrite, tableId),
   );
   server.registerTool(
-    'cfggraph_export_all',
+    'configra_export_all',
     {
       description: 'Export every table and config_ids.json to an absolute local directory.',
       inputSchema: { outPath: z.string().min(1), overwrite: z.boolean().default(false) },
@@ -586,7 +586,7 @@ const createServer = (options: ServerOptions) => {
     ({ outPath, overwrite }) => runExport('all', outPath, overwrite),
   );
   server.registerTool(
-    'cfggraph_export_ids',
+    'configra_export_ids',
     {
       description: 'Export config_ids.json to an absolute local file path.',
       inputSchema: { outPath: z.string().min(1), overwrite: z.boolean().default(false) },
@@ -694,7 +694,7 @@ export async function startMcpHttpServer(options: ServerOptions) {
         toolName,
         durationMs: Date.now() - startedAt,
       });
-      process.stderr.write(`[cfggraph-mcp] ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      process.stderr.write(`[configra-mcp] ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
       if (!res.headersSent) {
         res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
       }
@@ -716,7 +716,7 @@ export async function startMcpHttpServer(options: ServerOptions) {
     level: 'info',
     message: `MCP service listening on 127.0.0.1:${address.port}`,
   });
-  process.stderr.write(`[cfggraph-mcp] listening on http://127.0.0.1:${address.port}${mcpPath}\n`);
+  process.stderr.write(`[configra-mcp] listening on http://127.0.0.1:${address.port}${mcpPath}\n`);
   if (options.parentPid !== undefined) {
     const parentWatch = setInterval(() => {
       try {

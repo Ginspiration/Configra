@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Game Config Graph Editor</title>
+    <title>Configra</title>
     <script>
       try {
-        const preference = localStorage.getItem('cfggraph:theme-preference') || 'system';
+        const preference = localStorage.getItem('configra:theme-preference') || 'system';
         const theme = preference === 'system'
           ? matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
           : preference;

@@ -42,8 +42,8 @@ export type McpEvents = {
 
 const projectFilters = [
   {
-    name: 'Config Graph Project',
-    extensions: ['cfggraph.json', 'json'],
+    name: 'Configra Project',
+    extensions: ['configra.json', 'json'],
   },
 ];
 
@@ -135,7 +135,7 @@ export async function pickProjectFileText() {
 export async function pickProjectSavePath() {
   return save({
     title: 'Save project',
-    defaultPath: 'game-config.cfggraph.json',
+    defaultPath: 'project.configra.json',
     filters: projectFilters,
   });
 }

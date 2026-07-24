@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Game Config Graph Editor",
+  "productName": "Configra",
   "version": "0.1.0",
-  "identifier": "com.local.game-config-graph-editor",
+  "identifier": "com.local.configra",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Game Config Graph Editor",
+        "title": "Configra",
         "width": 1280,
         "height": 820,
         "backgroundColor": "#101827",

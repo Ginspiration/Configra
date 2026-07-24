@@ -1,6 +1,8 @@
-# Game Config Graph Editor
+# Configra（配表匠）
 
-`Game Config Graph Editor` 是一个面向游戏配置数据的蓝图式表格编辑器。它用于编辑结构化配置表、可视化表之间的引用关系、校验数据，并导出运行时需要的 JSON。
+**中文名：配表匠**
+
+`Configra` 是一个面向游戏配置数据的蓝图式表格编辑器。它用于编辑结构化配置表、可视化表之间的引用关系、校验数据，并导出运行时需要的 JSON。
 
 当前应用同时支持两种运行形态：
 
@@ -25,7 +27,7 @@
 - 小地图可隐藏和显示。
 - 默认中文，支持切换英文。
 - 支持必填、类型、主键、引用、枚举、JSON、ID 注册表等校验。
-- 浏览器模式支持保存/加载 `.cfggraph.json`。
+- 浏览器模式支持保存/加载 `.configra.json`。
 - Tauri 桌面模式支持保存到当前工程文件。
 - 桌面模式会自动加载最近打开的工程。
 - 加载其他工程或关闭桌面应用前，如果存在未保存修改，会提示保存。
@@ -246,7 +248,7 @@ ID 注册表 JSON：
 
 浏览器模式：
 
-- 保存会下载 `game-config.cfggraph.json`。
+- 保存会下载 `project.configra.json`。
 - 加载会打开文件选择器，读取并校验后替换当前工程。
 
 桌面模式：
@@ -303,7 +305,7 @@ type ValidationIssue = {
 ## 源码结构
 
 ```text
-game-config-graph-editor/
+Configra/
 |-- AGENTS.md
 |-- README.md
 |-- package.json
@@ -404,7 +406,7 @@ Exit codes:
 
 服务只监听 `127.0.0.1:37631`，URL 包含本机生成的访问 Token。开关状态会持久化；开启后，下次启动桌面应用会自动恢复服务。
 
-服务的 canonical ID 是 `game-config-graph-editor`，初始化能力只声明 `tools`。不支持的 `resources/*` 请求会稳定返回 `CAPABILITY_NOT_SUPPORTED`，不会被伪装成另一个资源服务器。
+服务的 canonical ID 是 `configra`，初始化能力只声明 `tools`。不支持的 `resources/*` 请求会稳定返回 `CAPABILITY_NOT_SUPPORTED`，不会被伪装成另一个资源服务器。
 
 MCP 只操作当前已保存工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。仅蓝图布局发生变化时不会阻断 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”明确放行所有 MCP 操作，此时 MCP 应用可能替换界面中未保存的内容。
 

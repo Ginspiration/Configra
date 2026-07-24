@@ -144,7 +144,7 @@ const emptySelection = (): GridSelection => ({
   rows: CompactSelection.empty(),
 });
 
-const columnWidthStorageKey = (tableId: string) => `cfggraph:column-widths:${tableId}`;
+const columnWidthStorageKey = (tableId: string) => `configra:column-widths:${tableId}`;
 
 const defaultColumnWidth = (column: ConfigColumn) =>
   Math.max(DEFAULT_COLUMN_WIDTH, Math.min(260, (column.name || column.id).length * 10 + 64));

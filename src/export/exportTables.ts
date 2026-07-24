@@ -114,7 +114,7 @@ export function downloadTableJson(project: ProjectFile, tableId: string) {
 }
 
 export function downloadProjectFile(project: ProjectFile) {
-  downloadTextFile('game-config.cfggraph.json', JSON.stringify(project, null, 2));
+  downloadTextFile('project.configra.json', JSON.stringify(project, null, 2));
 }
 
 export function downloadIdRegistry(project: ProjectFile) {

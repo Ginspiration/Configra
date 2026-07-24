@@ -14,8 +14,8 @@ use tauri::Manager;
 use uuid::Uuid;
 
 const MCP_PORT: u16 = 37631;
-const MCP_SERVER_ID: &str = "game-config-graph-editor";
-const MCP_DISPLAY_NAME: &str = "Game Config Graph Editor";
+const MCP_SERVER_ID: &str = "configra";
+const MCP_DISPLAY_NAME: &str = "Configra";
 const MCP_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const MCP_STARTUP_DIAGNOSTIC_LIMIT: usize = 8_000;
 
