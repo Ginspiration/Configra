@@ -217,6 +217,29 @@ describe('data patch engine', () => {
     expect(table.rows[1]?.values.active_column).toBe(false);
   });
 
+  it('treats compensating ordered operations as a semantic no-op', () => {
+    const project = createBaseProject();
+    const projectHash = createProjectHash(project);
+    const checked = checkDataPatch(
+      project,
+      {
+        version: 1,
+        baseHash: projectHash,
+        operations: [
+          { op: 'addTable', tableId: 'temporary', name: 'Temporary', remark: 'Temporary test table' },
+          { op: 'deleteTable', tableId: 'temporary' },
+        ],
+      },
+      { projectHash, validate: (next) => validateProject(next, t) },
+    );
+
+    expect(checked.ok).toBe(true);
+    if (!checked.ok) return;
+    expect(checked.diff).toHaveLength(0);
+    expect(checked.changed).toBe(false);
+    expect(canonicalJson(checked.project)).toBe(canonicalJson(project));
+  });
+
   it('parses malformed patches and refuses unknown or conflicting targets', () => {
     const project = createBaseProject();
     const projectHash = createProjectHash(project);

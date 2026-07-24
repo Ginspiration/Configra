@@ -11,7 +11,8 @@ type McpLogWindowProps = {
 };
 
 const formatLogTime = (timestamp: string) => {
-  const value = new Date(timestamp);
+  const numericTimestamp = Number(timestamp);
+  const value = new Date(Number.isFinite(numericTimestamp) ? numericTimestamp : timestamp);
   return Number.isNaN(value.getTime()) ? timestamp : value.toLocaleTimeString();
 };
 
@@ -61,7 +62,7 @@ export default function McpLogWindow({
         ) : (
           entries.map((entry, index) => (
             <div
-              key={`${entry.timestamp}-${entry.requestId ?? 'service'}-${index}`}
+              key={`${entry.sourceId ?? 'game-config-graph-editor'}-${entry.timestamp}-${entry.requestId ?? 'service'}-${index}`}
               className={`mcp-log-entry mcp-log-entry--${entry.level}`}
             >
               <time>{formatLogTime(entry.timestamp)}</time>

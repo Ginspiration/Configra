@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,8 +7,6 @@ import { describe, expect, it } from 'vitest';
 import { sha256Text } from '../patch/dataPatch';
 
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
-const npmCommand = 'npm';
-
 const createTempDir = () => mkdtempSync(join(tmpdir(), 'cfg-cli-'));
 
 const writeProjectFile = (dir: string, fileName: string, project: unknown) => {
@@ -18,12 +16,11 @@ const writeProjectFile = (dir: string, fileName: string, project: unknown) => {
 };
 
 const runCfg = (args: string[], input?: string) => {
-  const command = `${npmCommand} run --silent cfg -- ${args.join(' ')}`;
-  const result = spawnSync(command, {
+  const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli/cfg.ts', ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
     input,
-    shell: true,
+    shell: false,
     maxBuffer: 10 * 1024 * 1024,
   });
 
@@ -135,6 +132,7 @@ describe('cfg cli', () => {
     const dir = createTempDir();
     const project = createProject();
     const projectPath = writeProjectFile(dir, 'project.json', project);
+    const backupDir = join(dir, 'backups');
     const originalText = readFileSync(projectPath, 'utf8');
 
     const patch = {
@@ -176,18 +174,53 @@ describe('cfg cli', () => {
       '-',
       '--confirm',
       checkBody.confirmationHash,
+      '--transaction-id',
+      'cli-batch-edit',
+      '--backup-dir',
+      backupDir,
       '--json',
     ], JSON.stringify(patch));
     expect(apply.code).toBe(0);
     const applyBody = parseJson(apply.stdout);
     expect(applyBody.applied).toBe(true);
     expect(applyBody.written).toBe(true);
-    expect(readFileSync(`${projectPath}.bak`, 'utf8')).toBe(originalText);
+    expect(readFileSync(applyBody.backupPath, 'utf8')).toBe(originalText);
+    expect(applyBody.backupPath.startsWith(backupDir)).toBe(true);
 
     const updated = JSON.parse(readFileSync(projectPath, 'utf8'));
     expect(updated.tables[0].rows).toHaveLength(2);
     expect(updated.tables[0].rows[0].values.name_column).toBe('Long Sword');
     expect(updated.tables[0].rows.some((row: { values: { name_column: string } }) => row.values.name_column === 'Potion')).toBe(true);
+
+    const beforeReportFailure = readFileSync(projectPath, 'utf8');
+    const reportFailurePatch = {
+      version: 1,
+      baseHash: sha256Text(beforeReportFailure),
+      operations: [
+        {
+          op: 'updateRows',
+          tableId: 'item_table',
+          rows: [{ rowId: 'row_1', values: { name_column: 'Must Roll Back' } }],
+        },
+      ],
+    };
+    const reportFailureCheck = parseJson(runCfg([
+      'patch', 'check', '--project', projectPath, '--patch', '-', '--json',
+    ], JSON.stringify(reportFailurePatch)).stdout);
+    const invalidReportPath = join(dir, 'report-is-a-directory');
+    mkdirSync(invalidReportPath);
+    const reportFailure = runCfg([
+      'patch', 'apply',
+      '--project', projectPath,
+      '--patch', '-',
+      '--confirm', reportFailureCheck.confirmationHash,
+      '--report', invalidReportPath,
+      '--transaction-id', 'report-failure',
+      '--backup-dir', backupDir,
+      '--json',
+    ], JSON.stringify(reportFailurePatch));
+    expect(reportFailure.code).toBe(4);
+    expect(readFileSync(projectPath, 'utf8')).toBe(beforeReportFailure);
 
     const staleApply = runCfg([
       'patch',
@@ -226,6 +259,69 @@ describe('cfg cli', () => {
     ], JSON.stringify(patch));
     expect(rejected.code).toBe(3);
     expect(readFileSync(projectPath, 'utf8')).toBe(beforeRejected);
+  });
+
+  it('restores byte-identical content across a transaction and supports rollback with unique snapshots', () => {
+    const dir = createTempDir();
+    const backupDir = join(dir, 'app-data-backups');
+    const projectPath = join(dir, 'project.json');
+    const originalText = JSON.stringify(createProject(), null, 2);
+    writeFileSync(projectPath, originalText, 'utf8');
+
+    const applyOperations = (transactionId: string, operations: unknown[]) => {
+      const currentText = readFileSync(projectPath, 'utf8');
+      const patch = { version: 1, baseHash: sha256Text(currentText), operations };
+      const check = parseJson(runCfg([
+        'patch', 'check', '--project', projectPath, '--patch', '-', '--json',
+      ], JSON.stringify(patch)).stdout);
+      const applied = runCfg([
+        'patch', 'apply',
+        '--project', projectPath,
+        '--patch', '-',
+        '--confirm', check.confirmationHash,
+        '--transaction-id', transactionId,
+        '--backup-dir', backupDir,
+        '--json',
+      ], JSON.stringify(patch));
+      expect(applied.code).toBe(0);
+      return parseJson(applied.stdout);
+    };
+
+    const first = applyOperations('round-trip', [
+      { op: 'addTable', tableId: 'temporary', name: 'Temporary', remark: 'Temporary AI table' },
+    ]);
+    applyOperations('round-trip', [{ op: 'deleteTable', tableId: 'temporary' }]);
+    expect(readFileSync(projectPath, 'utf8')).toBe(originalText);
+
+    const second = applyOperations('rollback-case', [
+      { op: 'addTable', tableId: 'rollback_me', name: 'RollbackMe', remark: 'Rollback test table' },
+    ]);
+    expect(second.backupPath).not.toBe(first.backupPath);
+    const beforeRollbackHash = sha256Text(readFileSync(projectPath, 'utf8'));
+    const rollback = runCfg([
+      'patch', 'rollback',
+      '--project', projectPath,
+      '--transaction-id', 'rollback-case',
+      '--confirm', beforeRollbackHash,
+      '--backup-dir', backupDir,
+      '--json',
+    ]);
+    expect(rollback.code).toBe(0);
+    expect(parseJson(rollback.stdout)).toMatchObject({ rolledBack: true, written: true });
+    expect(readFileSync(projectPath, 'utf8')).toBe(originalText);
+  });
+
+  it('handles Windows-style absolute paths and UTF-8 project content', () => {
+    const dir = createTempDir();
+    const unicodeDir = join(dir, '中文 配置');
+    mkdirSync(unicodeDir, { recursive: true });
+    const project = createProject();
+    project.tables[0].remark = '中文备注：掉落与装备';
+    const projectPath = writeProjectFile(unicodeDir, '游戏配置.json', project);
+
+    const inspected = runCfg(['inspect', '--project', projectPath, '--json']);
+    expect(inspected.code).toBe(0);
+    expect(parseJson(inspected.stdout).tables[0].remark).toBe('中文备注：掉落与装备');
   });
 
   it('exports tables, ids and all files without overwriting by default', () => {
@@ -299,5 +395,22 @@ describe('cfg cli', () => {
       '--json',
     ]);
     expect(overwrite.code).toBe(0);
+
+    const failedDir = join(dir, 'failed-all');
+    mkdirSync(failedDir);
+    writeFileSync(join(failedDir, 'config_ids.json'), 'original ids', 'utf8');
+    mkdirSync(join(failedDir, 'Item.json'));
+    const atomicFailure = runCfg([
+      'export',
+      'all',
+      '--project',
+      projectPath,
+      '--out',
+      failedDir,
+      '--overwrite',
+      '--json',
+    ]);
+    expect(atomicFailure.code).toBe(4);
+    expect(readFileSync(join(failedDir, 'config_ids.json'), 'utf8')).toBe('original ids');
   }, 20000);
 });

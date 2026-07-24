@@ -603,7 +603,8 @@ Commands:
 - `npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]`
 - `npm run --silent cfg -- validate --project <file> [--json]`
 - `npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]`
-- `npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--report <file>] [--json]`
+- `npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]`
+- `npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]`
 - `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--overwrite] [--json]`
 - `npm run --silent cfg -- export all --project <file> --out <directory> [--overwrite] [--json]`
 - `npm run --silent cfg -- export ids --project <file> --out <file> [--overwrite] [--json]`
@@ -617,6 +618,8 @@ Patch contract:
 - `baseHash` is the SHA-256 of the original project file text
 - `patch check` returns a `confirmationHash`
 - `patch apply` must receive the matching `--confirm` value
+- Patch writes use a project write lock and recheck the byte hash immediately before replacement.
+- Backups are unique rotating snapshots in application data, not a project-adjacent `.bak`; related writes may share a `transactionId` and can be rolled back with a current-hash guard. The latest 20 transaction snapshots are retained.
 
 Recommended AI flow:
 
@@ -642,12 +645,14 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 
 - The toolbar Settings entry opens a categorized settings panel; its AI / MCP category starts/stops the service and persists its enabled state.
 - The service listens only on `127.0.0.1:37631` and uses a per-install token in the URL.
+- The canonical server/source ID is `game-config-graph-editor`; initialization advertises tools only. Unsupported `resources/*` calls return `CAPABILITY_NOT_SUPPORTED`.
 - The connection URL is available through the toolbar copy button.
 - MCP is source desktop only; browser mode and packaged sidecars are not supported yet.
 - MCP tools operate only on the current saved project and invoke the headless CLI rather than mutating Zustand.
 - Dirty state is scoped: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads the project.
 - Unsaved content changes block MCP modification/export tools by default. The persisted Settings → AI / MCP → “Full Access” switch lets the user explicitly allow all MCP operations; an MCP apply may then replace unsaved content edits.
-- MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both.
+- MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both. The public tool schema expands every supported operation as a discriminated union.
+- MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
 - While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Hiding it removes the window completely from the canvas; restore it through Settings → AI / MCP → Activity Log. Visibility persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.

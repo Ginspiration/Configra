@@ -366,7 +366,8 @@ npm run --silent cfg -- inspect --project <file> --json
 npm run --silent cfg -- query rows --project <file> --query <file|-> --json
 npm run --silent cfg -- validate --project <file> --json
 npm run --silent cfg -- patch check --project <file> --patch <file|-> --json
-npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> --json
+npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] --json
+npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> --json
 npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> --json
 npm run --silent cfg -- export all --project <file> --out <directory> --json
 npm run --silent cfg -- export ids --project <file> --out <file> --json
@@ -382,6 +383,8 @@ Recommended AI flow:
 4. Run `patch apply` with the matching `--confirm` value.
 5. Run `validate`.
 6. Export the needed table(s) or `config_ids.json`.
+
+`patch apply` creates a unique original snapshot in the application data backup directory. Reuse an explicit `transactionId` for related writes; compensating writes in that transaction restore the original bytes. `patch rollback` requires both the transaction ID and the current project hash, so it cannot silently roll back a stale revision. The latest 20 transaction snapshots are retained.
 
 Exit codes:
 
@@ -401,6 +404,8 @@ Exit codes:
 
 服务只监听 `127.0.0.1:37631`，URL 包含本机生成的访问 Token。开关状态会持久化；开启后，下次启动桌面应用会自动恢复服务。
 
+服务的 canonical ID 是 `game-config-graph-editor`，初始化能力只声明 `tools`。不支持的 `resources/*` 请求会稳定返回 `CAPABILITY_NOT_SUPPORTED`，不会被伪装成另一个资源服务器。
+
 MCP 只操作当前已保存工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。仅蓝图布局发生变化时不会阻断 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”明确放行所有 MCP 操作，此时 MCP 应用可能替换界面中未保存的内容。
 
 MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接和工具调用记录。隐藏后窗口会完全离开画布，可在“设置 → AI / MCP → 活动日志”中重新显示；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中。
@@ -409,7 +414,8 @@ MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接和�
 
 - 工程/表分页检查和按字段查询。
 - 完整校验。
-- `preview_patch` / `apply_patch` 两阶段修改。
+- `preview_patch` / `apply_patch` 两阶段修改；公开输入 Schema 会展开全部补丁操作。
+- 带当前项目哈希保护的事务回滚。
 - 单表、全部表和 ID 注册表导出。
 
 AI 新建表时必须提供表备注；AI 新建字段时必须提供字段备注。修改、移动或删除已有结构，以及所有行数据操作，不要求给已有无备注结构补备注。

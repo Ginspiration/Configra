@@ -47,4 +47,17 @@ describe('editor dirty scopes', () => {
     expect(reloadedTable?.position).toEqual(localPosition);
     expect(useEditorStore.getState()).toMatchObject({ isDirty: true, dirtyScope: 'layout' });
   });
+
+  it('clears a stale layout dirty flag when the reloaded positions match disk', () => {
+    const project = createSampleProject();
+    const table = project.tables[0];
+    useEditorStore.getState().loadProject(project);
+    useEditorStore.getState().moveTable(table.id, { x: table.position.x + 10, y: table.position.y });
+
+    const externalProject = createSampleProject();
+    externalProject.tables[0].position = { x: table.position.x + 10, y: table.position.y };
+    useEditorStore.getState().reloadProject(externalProject, true);
+
+    expect(useEditorStore.getState()).toMatchObject({ isDirty: false, dirtyScope: 'none' });
+  });
 });

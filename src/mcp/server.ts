@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
@@ -7,6 +8,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { z } from 'zod';
+import {
+  dataPatchOperationSchema,
+  dataPatchSchema,
+  MCP_DISPLAY_NAME,
+  MCP_SERVER_ID,
+  MCP_SUPPORTED_CAPABILITIES,
+  MCP_VERSION,
+  structuredError,
+  type McpStructuredError,
+  type McpStructuredErrorCode,
+} from './protocol';
 
 export type ServerOptions = {
   configDir: string;
@@ -28,6 +40,7 @@ type McpContext = {
 
 type McpLogEntry = {
   timestamp: string;
+  sourceId?: string;
   level: 'info' | 'warning' | 'error';
   message: string;
   requestId?: string;
@@ -36,7 +49,6 @@ type McpLogEntry = {
 };
 
 type McpLogger = {
-  reset(): Promise<void>;
   log(entry: Omit<McpLogEntry, 'timestamp'>): Promise<void>;
   nextRequestId(): string;
 };
@@ -47,6 +59,8 @@ type McpEvents = {
   projectPath?: string;
   projectHash?: string;
   changedAt?: string;
+  serverId?: string;
+  transactionId?: string;
 };
 
 type CliResult = {
@@ -108,16 +122,11 @@ const createMcpLogger = (logPath: string): McpLogger => {
   };
 
   return {
-    reset: () =>
-      enqueue(async () => {
-        await fs.mkdir(path.dirname(logPath), { recursive: true });
-        await fs.writeFile(logPath, '', 'utf8');
-      }),
     log: (entry) =>
       enqueue(() =>
         fs.appendFile(
           logPath,
-          `${JSON.stringify({ timestamp: new Date().toISOString(), ...entry } satisfies McpLogEntry)}\n`,
+          `${JSON.stringify({ timestamp: new Date().toISOString(), sourceId: MCP_SERVER_ID, ...entry } satisfies McpLogEntry)}\n`,
           'utf8',
         ),
       ),
@@ -176,14 +185,64 @@ const toolResult = (value: Record<string, unknown>, isError = false) => ({
 });
 
 const cliToolResult = (result: CliResult, extra: Record<string, unknown> = {}) => {
-  const value = { ...result.body, cliExitCode: result.exitCode, ...extra };
+  const problem = result.body.problem ?? result.body.error;
+  const problemKind =
+    typeof problem === 'object' && problem !== null && 'kind' in problem
+      ? String((problem as { kind: unknown }).kind)
+      : undefined;
+  const code: McpStructuredErrorCode =
+    result.exitCode === 3 || problemKind === 'hash'
+      ? 'STALE_BASE_HASH'
+      : result.exitCode === 4
+        ? 'FILESYSTEM_ERROR'
+        : problemKind === 'target'
+          ? 'TARGET_NOT_FOUND'
+          : result.exitCode >= 2
+            ? 'INVALID_ARGUMENT'
+            : 'PATCH_REJECTED';
+  const message =
+    typeof problem === 'object' && problem !== null && 'message' in problem
+      ? String((problem as { message: unknown }).message)
+      : `CLI command failed with exit code ${result.exitCode}.`;
+  const value = {
+    ...result.body,
+    cliExitCode: result.exitCode,
+    ...(result.exitCode >= 2 ? { error: structuredError(code, message, problem) } : {}),
+    ...extra,
+  };
   return toolResult(value, result.exitCode >= 2);
 };
 
+class McpServiceError extends Error {
+  constructor(readonly structured: McpStructuredError) {
+    super(structured.message);
+  }
+}
+
+const serviceError = (code: McpStructuredErrorCode, message: string, details?: unknown): never => {
+  throw new McpServiceError(structuredError(code, message, details));
+};
+
+const caughtToolError = (error: unknown) =>
+  toolResult(
+    {
+      ok: false,
+      error:
+        error instanceof McpServiceError
+          ? error.structured
+          : structuredError('INTERNAL_ERROR', error instanceof Error ? error.message : String(error)),
+    },
+    true,
+  );
+
 const createServer = (options: ServerOptions) => {
-  const server = new McpServer({ name: 'game-config-graph-editor', version: '0.1.0' });
+  const server = new McpServer(
+    { name: MCP_SERVER_ID, title: MCP_DISPLAY_NAME, version: MCP_VERSION },
+    { capabilities: {} },
+  );
   const contextPath = path.join(options.configDir, 'mcp-context.json');
   const eventsPath = path.join(options.configDir, 'mcp-events.json');
+  const backupDir = path.join(options.configDir, 'backups');
 
   const readContext = () =>
     readJsonFile<McpContext>(contextPath, {
@@ -195,10 +254,13 @@ const createServer = (options: ServerOptions) => {
 
   const requireProject = async (mode: 'read' | 'write') => {
     const context = await readContext();
-    if (!context.projectPath) throw new Error('No saved project is active in the desktop editor.');
+    if (!context.projectPath) {
+      serviceError('PROJECT_NOT_OPEN', 'No saved project is active in the desktop editor.');
+    }
     const dirtyScope = context.dirtyScope ?? (context.uiDirty ? 'content' : 'none');
     if (mode === 'write' && dirtyScope === 'content' && !context.fullAccess) {
-      throw new Error(
+      serviceError(
+        'UI_DIRTY_CONFLICT',
         'The desktop editor has unsaved content changes. Save or discard them, or explicitly enable MCP Full Access before using this tool.',
       );
     }
@@ -206,17 +268,43 @@ const createServer = (options: ServerOptions) => {
   };
 
   const accessState = (context: Awaited<ReturnType<typeof requireProject>>) => ({
+    serverId: MCP_SERVER_ID,
+    sourceId: MCP_SERVER_ID,
+    displayName: MCP_DISPLAY_NAME,
+    supportedCapabilities: MCP_SUPPORTED_CAPABILITIES,
     uiDirty: context.uiDirty,
     dirtyScope: context.dirtyScope,
     fullAccess: context.fullAccess,
+    contextRevision: context.revision,
   });
 
   const guarded = <T>(handler: () => Promise<T>) => async () => {
     try {
       return await handler();
     } catch (error) {
-      return toolResult({ ok: false, error: error instanceof Error ? error.message : String(error) }, true);
+      return caughtToolError(error);
     }
+  };
+
+  const publishProjectChange = async (
+    context: Awaited<ReturnType<typeof requireProject>>,
+    result: CliResult,
+    transactionId: string,
+  ) => {
+    if (result.exitCode !== 0 || result.body.written !== true) return;
+    const previous = await readJsonFile<McpEvents>(eventsPath, { version: 1, changeRevision: 0 });
+    await atomicWriteJson(eventsPath, {
+      version: 1,
+      changeRevision: previous.changeRevision + 1,
+      projectPath: context.projectPath,
+      projectHash:
+        typeof result.body.resultingProjectHash === 'string'
+          ? result.body.resultingProjectHash
+          : undefined,
+      changedAt: new Date().toISOString(),
+      serverId: MCP_SERVER_ID,
+      transactionId,
+    } satisfies McpEvents);
   };
 
   server.registerTool(
@@ -234,6 +322,10 @@ const createServer = (options: ServerOptions) => {
       }
       return toolResult({
         ok: true,
+        serverId: MCP_SERVER_ID,
+        sourceId: MCP_SERVER_ID,
+        displayName: MCP_DISPLAY_NAME,
+        supportedCapabilities: MCP_SUPPORTED_CAPABILITIES,
         running: true,
         port: options.port,
         activeProjectPath: context.projectPath,
@@ -286,7 +378,7 @@ const createServer = (options: ServerOptions) => {
         ]);
         return cliToolResult(result, accessState(context));
       } catch (error) {
-        return toolResult({ ok: false, error: error instanceof Error ? error.message : String(error) }, true);
+        return caughtToolError(error);
       }
     },
   );
@@ -318,7 +410,7 @@ const createServer = (options: ServerOptions) => {
         );
         return cliToolResult(result, accessState(context));
       } catch (error) {
-        return toolResult({ ok: false, error: error instanceof Error ? error.message : String(error) }, true);
+        return caughtToolError(error);
       }
     },
   );
@@ -336,7 +428,6 @@ const createServer = (options: ServerOptions) => {
     }),
   );
 
-  const operationSchema = z.record(z.string(), z.unknown());
   server.registerTool(
     'cfggraph_preview_patch',
     {
@@ -344,7 +435,7 @@ const createServer = (options: ServerOptions) => {
         'Preview an ordered project patch. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash without writing.',
       inputSchema: {
         description: z.string().optional(),
-        operations: z.array(operationSchema),
+        operations: z.array(dataPatchOperationSchema),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -368,30 +459,26 @@ const createServer = (options: ServerOptions) => {
         );
         return cliToolResult(checked, { patch, ...accessState(context) });
       } catch (error) {
-        return toolResult({ ok: false, error: error instanceof Error ? error.message : String(error) }, true);
+        return caughtToolError(error);
       }
     },
   );
 
-  const patchSchema = z.object({
-    version: z.literal(1),
-    baseHash: z.string(),
-    description: z.string().optional(),
-    operations: z.array(operationSchema),
-  });
   server.registerTool(
     'cfggraph_apply_patch',
     {
       description: 'Apply an exact patch previously returned by cfggraph_preview_patch using its confirmationHash.',
       inputSchema: {
-        patch: patchSchema,
+        patch: dataPatchSchema,
         confirmationHash: z.string().min(1),
+        transactionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/).optional(),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    async ({ patch, confirmationHash }) => {
+    async ({ patch, confirmationHash, transactionId }) => {
       try {
         const context = await requireProject('write');
+        const effectiveTransactionId = transactionId ?? randomUUID();
         const result = await runCli(
           options,
           [
@@ -403,31 +490,59 @@ const createServer = (options: ServerOptions) => {
             '-',
             '--confirm',
             confirmationHash,
+            '--transaction-id',
+            effectiveTransactionId,
+            '--backup-dir',
+            backupDir,
           ],
           patch,
         );
-        if (result.exitCode === 0 && result.body.written === true) {
-          const previous = await readJsonFile<McpEvents>(eventsPath, { version: 1, changeRevision: 0 });
-          await atomicWriteJson(eventsPath, {
-            version: 1,
-            changeRevision: previous.changeRevision + 1,
-            projectPath: context.projectPath,
-            projectHash:
-              typeof result.body.resultingProjectHash === 'string'
-                ? result.body.resultingProjectHash
-                : undefined,
-            changedAt: new Date().toISOString(),
-          } satisfies McpEvents);
-        }
+        await publishProjectChange(context, result, effectiveTransactionId);
+        return cliToolResult(result, { transactionId: effectiveTransactionId, ...accessState(context) });
+      } catch (error) {
+        return caughtToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'cfggraph_rollback_transaction',
+    {
+      description:
+        'Restore the byte-exact project snapshot captured before a transaction. Requires the current project hash to prevent stale rollback.',
+      inputSchema: {
+        transactionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+        expectedProjectHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      },
+      annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ transactionId, expectedProjectHash }) => {
+      try {
+        const context = await requireProject('write');
+        const result = await runCli(options, [
+          'patch',
+          'rollback',
+          '--project',
+          context.projectPath!,
+          '--transaction-id',
+          transactionId,
+          '--confirm',
+          expectedProjectHash,
+          '--backup-dir',
+          backupDir,
+        ]);
+        await publishProjectChange(context, result, transactionId);
         return cliToolResult(result, accessState(context));
       } catch (error) {
-        return toolResult({ ok: false, error: error instanceof Error ? error.message : String(error) }, true);
+        return caughtToolError(error);
       }
     },
   );
 
   const ensureAbsolute = (outputPath: string) => {
-    if (!path.isAbsolute(outputPath)) throw new Error('Export output path must be absolute.');
+    if (!path.isAbsolute(outputPath)) {
+      serviceError('INVALID_ARGUMENT', 'Export output path must be absolute.', { outputPath });
+    }
   };
   const runExport = async (
     mode: 'table' | 'all' | 'ids',
@@ -444,7 +559,7 @@ const createServer = (options: ServerOptions) => {
       if (overwrite) cliArgs.push('--overwrite');
       return cliToolResult(await runCli(options, cliArgs), accessState(context));
     } catch (error) {
-      return toolResult({ ok: false, error: error instanceof Error ? error.message : String(error) }, true);
+      return caughtToolError(error);
     }
   };
 
@@ -489,7 +604,6 @@ const isLoopback = (address: string | undefined) =>
 export async function startMcpHttpServer(options: ServerOptions) {
   await fs.mkdir(options.configDir, { recursive: true });
   const logger = createMcpLogger(path.join(options.configDir, 'mcp-logs.jsonl'));
-  await logger.reset();
   const app = createMcpExpressApp({ host: '127.0.0.1' });
   const encodedToken = encodeURIComponent(options.token);
   const mcpPath = `/mcp/${encodedToken}`;
@@ -515,11 +629,20 @@ export async function startMcpHttpServer(options: ServerOptions) {
   });
 
   app.get(healthPath, (_req, res) => {
-    res.json({ ok: true, service: 'game-config-graph-editor', port: options.port });
+    res.json({
+      ok: true,
+      service: MCP_SERVER_ID,
+      serverId: MCP_SERVER_ID,
+      sourceId: MCP_SERVER_ID,
+      displayName: MCP_DISPLAY_NAME,
+      supportedCapabilities: MCP_SUPPORTED_CAPABILITIES,
+      port: options.port,
+    });
   });
   app.post(mcpPath, async (req, res) => {
     const requestId = logger.nextRequestId();
     const requestBody = req.body as {
+      id?: string | number | null;
       method?: string;
       params?: { name?: string };
     };
@@ -537,6 +660,23 @@ export async function startMcpHttpServer(options: ServerOptions) {
         durationMs: Date.now() - startedAt,
       });
     });
+    if (
+      method === 'resources/list' ||
+      method === 'resources/templates/list' ||
+      method === 'resources/read'
+    ) {
+      const error = structuredError(
+        'CAPABILITY_NOT_SUPPORTED',
+        'This server does not expose MCP resources.',
+        { requestedMethod: method },
+      );
+      res.json({
+        jsonrpc: '2.0',
+        id: requestBody.id ?? null,
+        error: { code: -32601, message: error.message, data: error },
+      });
+      return;
+    }
     const server = createServer(options);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {

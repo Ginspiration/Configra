@@ -35,6 +35,7 @@ import {
   pickProjectSavePath,
   readProjectFileText,
   rememberRecentProjectPath,
+  restartMcp,
   setMcpEnabled,
   setMcpFullAccess,
   type McpEvents,
@@ -767,7 +768,10 @@ export default function App() {
 
         const previousRevision = lastMcpEventRevisionRef.current;
         lastMcpEventRevisionRef.current = event.changeRevision;
-        if (previousRevision !== undefined && event.changeRevision > previousRevision) {
+        if (
+          event.changeRevision > 0 &&
+          (previousRevision === undefined || event.changeRevision > previousRevision)
+        ) {
           await reloadProjectFromMcp(event);
         }
       } catch (error) {
@@ -887,6 +891,19 @@ export default function App() {
       })
       .finally(() => setMcpBusy(false));
   }, []);
+
+  const restartMcpService = useCallback(() => {
+    setMcpBusy(true);
+    void restartMcp()
+      .then((nextStatus) => {
+        setMcpStatus(nextStatus);
+        setStatus(nextStatus.error ?? (nextStatus.running ? t('mcpRestarted') : ''));
+      })
+      .catch((error) => {
+        setStatus(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setMcpBusy(false));
+  }, [t]);
 
   const changeMcpFullAccess = useCallback(
     (fullAccess: boolean) => {
@@ -1034,6 +1051,7 @@ export default function App() {
         onThemePreferenceChange={setThemePreference}
         onMiniMapChange={setShowMiniMap}
         onMcpEnabledChange={changeMcpEnabled}
+        onMcpRestart={restartMcpService}
         onMcpFullAccessChange={changeMcpFullAccess}
         onMcpLogVisibilityChange={setMcpLogVisible}
         onCopyMcpAddress={copyMcpAddress}

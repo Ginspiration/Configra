@@ -1748,7 +1748,7 @@ export function checkDataPatch(
     projectHash: options.projectHash,
     patchBaseHash: patch.baseHash,
     confirmationHash,
-    changed: applied.diff.length > 0,
+    changed: canonicalJson(applied.project) !== canonicalJson(project),
     project: applied.project,
     diff: applied.diff,
     validation,

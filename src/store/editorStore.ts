@@ -383,8 +383,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }),
 
   reloadProject: (project, preserveLayout = false) =>
-    set((state) => ({
-      project: preserveLayout
+    set((state) => {
+      const reloadedProject = preserveLayout
         ? {
             ...project,
             tables: project.tables.map((table) => {
@@ -392,13 +392,23 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
               return currentTable ? { ...table, position: currentTable.position } : table;
             }),
           }
-        : project,
-      selectedTableId: project.tables.some((table) => table.id === state.selectedTableId)
-        ? state.selectedTableId
-        : project.tables[0]?.id,
-      isDirty: preserveLayout,
-      dirtyScope: preserveLayout ? 'layout' : 'none',
-    })),
+        : project;
+      const hasUnsavedLayout =
+        preserveLayout &&
+        reloadedProject.tables.some((table) => {
+          const savedTable = project.tables.find((item) => item.id === table.id);
+          return savedTable !== undefined && !samePosition(table.position, savedTable.position);
+        });
+
+      return {
+        project: reloadedProject,
+        selectedTableId: project.tables.some((table) => table.id === state.selectedTableId)
+          ? state.selectedTableId
+          : project.tables[0]?.id,
+        isDirty: hasUnsavedLayout,
+        dirtyScope: hasUnsavedLayout ? 'layout' : 'none',
+      };
+    }),
 
   markClean: () => set({ isDirty: false, dirtyScope: 'none' }),
 

@@ -8,6 +8,10 @@ export function isDesktopRuntime() {
 }
 
 export type McpStatus = {
+  serverId: string;
+  sourceId: string;
+  displayName: string;
+  supportedCapabilities: string[];
   enabled: boolean;
   running: boolean;
   fullAccess: boolean;
@@ -18,6 +22,7 @@ export type McpStatus = {
 
 export type McpLogEntry = {
   timestamp: string;
+  sourceId?: string;
   level: 'info' | 'warning' | 'error' | string;
   message: string;
   requestId?: string;
@@ -31,6 +36,8 @@ export type McpEvents = {
   projectPath?: string;
   projectHash?: string;
   changedAt?: string;
+  serverId?: string;
+  transactionId?: string;
 };
 
 const projectFilters = [
@@ -74,6 +81,10 @@ export async function getMcpStatus() {
 
 export async function setMcpEnabled(enabled: boolean) {
   return invoke<McpStatus>('set_mcp_enabled', { enabled });
+}
+
+export async function restartMcp() {
+  return invoke<McpStatus>('restart_mcp');
 }
 
 export async function setMcpFullAccess(fullAccess: boolean) {

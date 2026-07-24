@@ -468,6 +468,7 @@ button:focus-visible {
   border-color: var(--danger);
   background: var(--danger-bg);
   color: var(--danger);
+  white-space: pre-wrap;
 }
 
 .settings-connection {
@@ -573,6 +574,11 @@ button:focus-visible {
 
 .mcp-log-entry:hover {
   background: rgb(255 255 255 / 4%);
+}
+
+.mcp-log-entry span {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .mcp-log-entry time,

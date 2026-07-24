@@ -1,4 +1,6 @@
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { idRegistryJson, projectJsonFiles, tableJson } from '../export/exportTables';
 import { parseProjectFileText } from '../file/projectFile';
@@ -50,6 +52,8 @@ const VALUE_OPTIONS = new Set([
   'confirm',
   'out',
   'query',
+  'backup-dir',
+  'transaction-id',
 ]);
 
 const FLAG_OPTIONS = new Set(['json', 'overwrite', 'help']);
@@ -59,7 +63,8 @@ const usage = `Usage:
   npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]
   npm run --silent cfg -- validate --project <file> [--json]
   npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]
-  npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--report <file>] [--json]
+  npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]
+  npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]
   npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--overwrite] [--json]
   npm run --silent cfg -- export all --project <file> --out <directory> [--overwrite] [--json]
   npm run --silent cfg -- export ids --project <file> --out <file> [--overwrite] [--json]`;
@@ -322,11 +327,17 @@ const writeReport = async (reportPathOption: string | undefined, body: unknown) 
   if (!reportPathOption) return undefined;
 
   const reportPath = toAbsolutePath(reportPathOption);
+  const tempPath = path.join(
+    path.dirname(reportPath),
+    `.${path.basename(reportPath)}.${process.pid}.${Date.now()}.tmp`,
+  );
   try {
     await fs.mkdir(path.dirname(reportPath), { recursive: true });
-    await fs.writeFile(reportPath, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
+    await fs.writeFile(tempPath, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
+    await fs.rename(tempPath, reportPath);
     return reportPath;
   } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
     fail(4, 'filesystem', `Could not write report: ${reportPath}`, reportPath, String(error));
   }
 };
@@ -344,9 +355,13 @@ const pathExists = async (filePath: string) => {
 const writeTextFile = async (filePath: string, text: string, overwrite: boolean) => {
   try {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
+    if (overwrite) {
+      await atomicReplace(filePath, text);
+      return;
+    }
     await fs.writeFile(filePath, text, {
       encoding: 'utf8',
-      flag: overwrite ? 'w' : 'wx',
+      flag: 'wx',
     });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -374,13 +389,185 @@ const atomicReplace = async (filePath: string, text: string) => {
   }
 };
 
-const createBackup = async (projectPath: string) => {
-  const backupPath = `${projectPath}.bak`;
+type TransactionBackup = {
+  version: 1;
+  transactionId: string;
+  projectPath: string;
+  originalProjectHash: string;
+  backupPath: string;
+  createdAt: string;
+};
+
+const defaultBackupDirectory = () => {
+  const dataRoot =
+    process.platform === 'win32'
+      ? process.env.LOCALAPPDATA ?? process.env.APPDATA ?? path.join(homedir(), 'AppData', 'Local')
+      : process.env.XDG_DATA_HOME ?? path.join(homedir(), '.local', 'share');
+  return path.join(dataRoot, 'game-config-graph-editor', 'backups');
+};
+
+const backupDirectory = (args: ParsedArgs) =>
+  args.options['backup-dir'] ? toAbsolutePath(args.options['backup-dir']) : defaultBackupDirectory();
+
+const readTransactionId = (args: ParsedArgs) => {
+  const transactionId = args.options['transaction-id'];
+  if (
+    transactionId !== undefined &&
+    (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(transactionId) || transactionId === '.' || transactionId === '..')
+  ) {
+    fail(2, 'arguments', '--transaction-id must be 1-128 URL-safe characters.', '--transaction-id');
+  }
+  return transactionId;
+};
+
+const transactionMetadataPath = (backupDir: string, projectPath: string, transactionId: string) => {
+  const key = sha256Text(`${projectPath}\0${transactionId}`).slice('sha256:'.length, 'sha256:'.length + 32);
+  return path.join(backupDir, `transaction-${key}.json`);
+};
+
+const readTransactionBackup = async (
+  backupDir: string,
+  projectPath: string,
+  transactionId: string,
+): Promise<TransactionBackup | undefined> => {
+  const metadataPath = transactionMetadataPath(backupDir, projectPath, transactionId);
   try {
-    await fs.copyFile(projectPath, backupPath);
-    return backupPath;
+    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as TransactionBackup;
+    if (
+      metadata.version !== 1 ||
+      metadata.transactionId !== transactionId ||
+      path.resolve(metadata.projectPath) !== path.resolve(projectPath) ||
+      typeof metadata.backupPath !== 'string' ||
+      typeof metadata.originalProjectHash !== 'string'
+    ) {
+      fail(4, 'filesystem', `Transaction metadata is invalid: ${metadataPath}`, metadataPath);
+    }
+    return metadata;
   } catch (error) {
-    fail(4, 'filesystem', `Could not create backup: ${backupPath}`, backupPath, String(error));
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    if (isCliFailure(error)) throw error;
+    fail(4, 'filesystem', `Could not read transaction metadata: ${metadataPath}`, metadataPath, String(error));
+  }
+};
+
+const rotateSnapshots = async (backupDir: string, maximum = 20) => {
+  const entries = await fs.readdir(backupDir, { withFileTypes: true });
+  const snapshots = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith('snapshot-') && entry.name.endsWith('.bak'))
+      .map(async (entry) => {
+        const filePath = path.join(backupDir, entry.name);
+        return { filePath, mtimeMs: (await fs.stat(filePath)).mtimeMs };
+      }),
+  );
+  snapshots.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  await Promise.all(snapshots.slice(maximum).map(({ filePath }) => fs.rm(filePath, { force: true })));
+};
+
+const rotateTransactionBackups = async (backupDir: string, maximum = 20) => {
+  const entries = await fs.readdir(backupDir, { withFileTypes: true });
+  const transactions: Array<{
+    metadataPath: string;
+    backupPath: string;
+    mtimeMs: number;
+  }> = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith('transaction-') || !entry.name.endsWith('.json')) continue;
+    const metadataPath = path.join(backupDir, entry.name);
+    try {
+      const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as TransactionBackup;
+      const resolvedBackupPath = path.resolve(metadata.backupPath);
+      if (
+        path.dirname(resolvedBackupPath) !== path.resolve(backupDir) ||
+        !path.basename(resolvedBackupPath).startsWith('transaction-') ||
+        !path.basename(resolvedBackupPath).endsWith('.bak')
+      ) {
+        continue;
+      }
+      transactions.push({
+        metadataPath,
+        backupPath: resolvedBackupPath,
+        mtimeMs: (await fs.stat(metadataPath)).mtimeMs,
+      });
+    } catch {
+      // Preserve malformed metadata for manual inspection instead of deleting an uncertain target.
+    }
+  }
+  transactions.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  for (const transaction of transactions.slice(maximum)) {
+    await fs.rm(transaction.backupPath, { force: true });
+    await fs.rm(transaction.metadataPath, { force: true });
+  }
+};
+
+const createBackup = async (
+  args: ParsedArgs,
+  projectPath: string,
+  originalText: string,
+  originalProjectHash: string,
+): Promise<TransactionBackup> => {
+  const backupDir = backupDirectory(args);
+  const transactionId = readTransactionId(args);
+  try {
+    await fs.mkdir(backupDir, { recursive: true });
+    if (transactionId) {
+      const existing = await readTransactionBackup(backupDir, projectPath, transactionId);
+      if (existing) return existing;
+
+      const backupPath = path.join(
+        backupDir,
+        `transaction-${Date.now()}-${randomUUID()}.bak`,
+      );
+      const metadata: TransactionBackup = {
+        version: 1,
+        transactionId,
+        projectPath,
+        originalProjectHash,
+        backupPath,
+        createdAt: new Date().toISOString(),
+      };
+      await fs.writeFile(backupPath, originalText, { encoding: 'utf8', flag: 'wx' });
+      const metadataPath = transactionMetadataPath(backupDir, projectPath, transactionId);
+      await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+      await rotateTransactionBackups(backupDir);
+      return metadata;
+    }
+
+    const backupPath = path.join(backupDir, `snapshot-${Date.now()}-${randomUUID()}.bak`);
+    await fs.writeFile(backupPath, originalText, { encoding: 'utf8', flag: 'wx' });
+    await rotateSnapshots(backupDir);
+    return {
+      version: 1,
+      transactionId: randomUUID(),
+      projectPath,
+      originalProjectHash,
+      backupPath,
+      createdAt: new Date().toISOString(),
+    } satisfies TransactionBackup;
+  } catch (error) {
+    if (isCliFailure(error)) throw error;
+    return fail(4, 'filesystem', `Could not create backup in ${backupDir}`, backupDir, String(error));
+  }
+};
+
+const withProjectWriteLock = async <T>(projectPath: string, action: () => Promise<T>): Promise<T> => {
+  const lockPath = path.join(path.dirname(projectPath), `.${path.basename(projectPath)}.cfggraph.lock`);
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(lockPath, 'wx');
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, 'utf8');
+    return await action();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      fail(3, 'hash', 'Another writer is currently modifying this project.', projectPath);
+    }
+    throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+    if (handle) await fs.rm(lockPath, { force: true }).catch(() => undefined);
   }
 };
 
@@ -613,14 +800,53 @@ const patchApplyCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   }
 
   let backupPath: string | undefined;
+  const transactionId = readTransactionId(args);
   let written = false;
   let resultingProjectHash = loaded.projectHash;
+  let previousProjectText: string | undefined;
   if (result.changed) {
-    backupPath = await createBackup(loaded.projectPath);
-    const nextText = `${JSON.stringify(result.project, null, 2)}\n`;
-    await atomicReplace(loaded.projectPath, nextText);
-    resultingProjectHash = sha256Text(nextText);
-    written = true;
+    await withProjectWriteLock(loaded.projectPath, async () => {
+      const currentText = await readFileText(loaded.projectPath, 'project file');
+      const currentHash = sha256Text(currentText);
+      if (currentHash !== loaded.projectHash) {
+        fail(
+          3,
+          'hash',
+          `Project changed after patch validation. Expected ${loaded.projectHash}, found ${currentHash}.`,
+          loaded.projectPath,
+        );
+      }
+      previousProjectText = currentText;
+
+      const backup = await createBackup(
+        args,
+        loaded.projectPath,
+        currentText,
+        loaded.projectHash,
+      );
+      backupPath = backup.backupPath;
+      let nextText = `${JSON.stringify(result.project, null, 2)}\n`;
+
+      if (transactionId) {
+        const originalText = await readFileText(backup.backupPath, 'transaction backup');
+        if (sha256Text(originalText) !== backup.originalProjectHash) {
+          fail(4, 'filesystem', 'Transaction backup hash does not match its metadata.', backup.backupPath);
+        }
+        const originalParsed = parseProjectFileText(originalText, (key, vars) => translate('en', key, vars));
+        if (!originalParsed.ok) {
+          return fail(4, 'filesystem', `Transaction backup is not a valid project: ${originalParsed.error}`, backup.backupPath);
+        }
+        if (canonicalJson(originalParsed.project) === canonicalJson(result.project)) {
+          nextText = originalText;
+        }
+      }
+
+      if (nextText !== currentText) {
+        await atomicReplace(loaded.projectPath, nextText);
+        written = true;
+      }
+      resultingProjectHash = sha256Text(nextText);
+    });
   }
 
   const body = {
@@ -630,8 +856,28 @@ const patchApplyCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     projectPath: loaded.projectPath,
     resultingProjectHash,
     backupPath,
+    transactionId,
   };
-  const reportPath = await writeReport(args.options.report, body);
+  let reportPath: string | undefined;
+  try {
+    reportPath = await writeReport(args.options.report, body);
+  } catch (error) {
+    if (written && previousProjectText !== undefined) {
+      await withProjectWriteLock(loaded.projectPath, async () => {
+        const currentText = await readFileText(loaded.projectPath, 'project file');
+        if (sha256Text(currentText) !== resultingProjectHash) {
+          fail(
+            3,
+            'hash',
+            'Project changed after patch write while recovering from a report failure.',
+            loaded.projectPath,
+          );
+        }
+        await atomicReplace(loaded.projectPath, previousProjectText!);
+      });
+    }
+    throw error;
+  }
 
   return {
     exitCode: 0,
@@ -642,6 +888,75 @@ const patchApplyCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       backupPath ? `Backup: ${backupPath}` : '',
       reportPath ? `Report: ${reportPath}` : '',
     ].filter(Boolean).join('\n'),
+  };
+};
+
+const patchRollbackCommand = async (args: ParsedArgs): Promise<CliOutput> => {
+  const loaded = await loadProject(requiredOption(args, 'project'));
+  const transactionId = requiredOption(args, 'transaction-id');
+  readTransactionId(args);
+  const confirm = requiredOption(args, 'confirm');
+  if (confirm !== loaded.projectHash) {
+    return {
+      exitCode: 3,
+      body: {
+        ok: false,
+        rolledBack: false,
+        projectHash: loaded.projectHash,
+        providedProjectHash: confirm,
+        problem: {
+          kind: 'hash',
+          message: 'Rollback confirmation hash does not match the current project.',
+          path: '--confirm',
+        },
+      },
+      text: `Hash conflict: expected ${loaded.projectHash}, got ${confirm}`,
+    };
+  }
+
+  const backupDir = backupDirectory(args);
+  const transaction = await readTransactionBackup(backupDir, loaded.projectPath, transactionId);
+  if (!transaction) {
+    return fail(2, 'target', `Unknown transactionId "${transactionId}".`, '--transaction-id');
+  }
+
+  let written = false;
+  await withProjectWriteLock(loaded.projectPath, async () => {
+    const currentText = await readFileText(loaded.projectPath, 'project file');
+    const currentHash = sha256Text(currentText);
+    if (currentHash !== loaded.projectHash) {
+      fail(
+        3,
+        'hash',
+        `Project changed before rollback. Expected ${loaded.projectHash}, found ${currentHash}.`,
+        loaded.projectPath,
+      );
+    }
+    const originalText = await readFileText(transaction.backupPath, 'transaction backup');
+    if (sha256Text(originalText) !== transaction.originalProjectHash) {
+      fail(4, 'filesystem', 'Transaction backup hash does not match its metadata.', transaction.backupPath);
+    }
+    if (originalText !== currentText) {
+      await atomicReplace(loaded.projectPath, originalText);
+      written = true;
+    }
+  });
+
+  return {
+    exitCode: 0,
+    body: {
+      ok: true,
+      rolledBack: true,
+      written,
+      transactionId,
+      projectPath: loaded.projectPath,
+      previousProjectHash: loaded.projectHash,
+      resultingProjectHash: transaction.originalProjectHash,
+      backupPath: transaction.backupPath,
+    },
+    text: written
+      ? `Rolled back transaction ${transactionId}.`
+      : `Transaction ${transactionId} was already at its original project bytes.`,
   };
 };
 
@@ -706,6 +1021,19 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       await fs.mkdir(outDir, { recursive: true });
     }
 
+    for (const file of files) {
+      if (path.basename(file.fileName) !== file.fileName) {
+        fail(4, 'filesystem', `Unsafe export file name: ${file.fileName}`, outDir);
+      }
+      const filePath = path.join(outDir, file.fileName);
+      if (await pathExists(filePath)) {
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile()) {
+          fail(4, 'filesystem', `Export target is not a regular file: ${filePath}`, filePath);
+        }
+      }
+    }
+
     if (!overwrite) {
       const conflicts: string[] = [];
       for (const file of files) {
@@ -718,8 +1046,45 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       }
     }
 
-    for (const file of files) {
-      await fs.writeFile(path.join(outDir, file.fileName), `${file.text}\n`, 'utf8');
+    const stageDir = await fs.mkdtemp(path.join(outDir, '.cfggraph-export-'));
+    const commits: Array<{
+      finalPath: string;
+      backupPath?: string;
+      installed: boolean;
+    }> = [];
+    try {
+      for (const [index, file] of files.entries()) {
+        await fs.writeFile(path.join(stageDir, `new-${index}`), `${file.text}\n`, 'utf8');
+      }
+
+      for (const [index, file] of files.entries()) {
+        const finalPath = path.join(outDir, file.fileName);
+        const finalExists = await pathExists(finalPath);
+        if (finalExists && !overwrite) {
+          fail(4, 'filesystem', `Refusing to overwrite existing export file: ${finalPath}`, finalPath);
+        }
+        const commit: { finalPath: string; backupPath?: string; installed: boolean } = {
+          finalPath,
+          installed: false,
+        };
+        commits.push(commit);
+        if (finalExists) {
+          commit.backupPath = path.join(stageDir, `original-${index}`);
+          await fs.rename(finalPath, commit.backupPath);
+        }
+        await fs.rename(path.join(stageDir, `new-${index}`), finalPath);
+        commit.installed = true;
+      }
+    } catch (error) {
+      for (const commit of [...commits].reverse()) {
+        if (commit.installed) await fs.rm(commit.finalPath, { force: true }).catch(() => undefined);
+        if (commit.backupPath && (await pathExists(commit.backupPath))) {
+          await fs.rename(commit.backupPath, commit.finalPath).catch(() => undefined);
+        }
+      }
+      throw error;
+    } finally {
+      await fs.rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
     }
   } catch (error) {
     if (isCliFailure(error)) throw error;
@@ -754,6 +1119,7 @@ const dispatch = async (args: ParsedArgs): Promise<CliOutput> => {
 
   if (command === 'patch' && subcommand === 'check') return patchCheckCommand(args);
   if (command === 'patch' && subcommand === 'apply') return patchApplyCommand(args);
+  if (command === 'patch' && subcommand === 'rollback') return patchRollbackCommand(args);
 
   if (command === 'export' && subcommand === 'table') return exportTableCommand(args);
   if (command === 'export' && subcommand === 'all') return exportAllCommand(args);

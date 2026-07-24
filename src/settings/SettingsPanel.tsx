@@ -21,6 +21,7 @@ type SettingsPanelProps = {
   onThemePreferenceChange(themePreference: ThemePreference): void;
   onMiniMapChange(show: boolean): void;
   onMcpEnabledChange(enabled: boolean): void;
+  onMcpRestart(): void;
   onMcpFullAccessChange(fullAccess: boolean): void;
   onMcpLogVisibilityChange(show: boolean): void;
   onCopyMcpAddress(): void;
@@ -41,6 +42,7 @@ export default function SettingsPanel({
   onThemePreferenceChange,
   onMiniMapChange,
   onMcpEnabledChange,
+  onMcpRestart,
   onMcpFullAccessChange,
   onMcpLogVisibilityChange,
   onCopyMcpAddress,
@@ -249,7 +251,15 @@ export default function SettingsPanel({
                   <button
                     type="button"
                     className="button"
-                    disabled={!mcpRunning}
+                    disabled={!mcpStatus?.enabled || mcpBusy}
+                    onClick={onMcpRestart}
+                  >
+                    {t('settingsMcpRestart')}
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={!mcpRunning || mcpBusy}
                     onClick={onCopyMcpAddress}
                   >
                     {t('copyMcpAddress')}
