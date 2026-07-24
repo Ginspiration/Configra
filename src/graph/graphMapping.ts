@@ -45,7 +45,6 @@ export function projectToFlow(project: ProjectFile): {
           targetHandle: targetColumnHandleId(targetColumn.id),
           type: 'smoothstep',
           markerEnd: { type: MarkerType.ArrowClosed },
-          label: `${table.name}.${column.name} -> ${targetTable.name}.${targetColumn.name}`,
           className: 'ref-edge',
         },
       ];

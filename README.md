@@ -33,6 +33,9 @@
 - 加载其他工程或关闭桌面应用前，如果存在未保存修改，会提示保存。
 - 支持导出当前表 JSON。
 - 支持导出语言无关的 `config_ids.json` ID 注册表。
+- 提供 Headless CLI，支持检查、查询、校验、两阶段 patch、事务回滚和导出。
+- Tauri 源码桌面模式可启动本机 MCP，供外部 AI 安全操作当前已保存工程。
+- MCP inspect 会返回 `ref` 语义和已解析的表关系，并提供定义、分配引用的专用预览工具。
 
 ## 运行
 
@@ -89,6 +92,23 @@ Dialogue.speaker_id -> Speaker.id
 5. 根据问题列表修复校验错误。
 6. 右键表节点，复制或导出该表 JSON。
 7. 右键画布空白处，保存/加载工程、新建表、切换小地图，或导出 `config_ids.json`。
+
+## `ref` 引用语义
+
+`ref` 包含两个不同层次的信息：
+
+- 字段结构通过稳定的目标 `tableId` 和 `columnId` 定义引用关系。
+- 源表的每个 `ref` 单元格保存目标字段的实际值。
+
+例如 `Dialogue.speaker_id -> Speaker.id` 时，字段结构保存目标表和目标字段的稳定 ID；某一行的 `speaker_id` 单元格保存的是对应 `Speaker.id` 值，例如 `1001`。单元格不会保存目标表 ID、目标字段 ID 或目标行 `_rowId`。
+
+目标字段优先选择：
+
+1. 目标表主键。
+2. 目标表的 `identity.valueColumnId` 运行时 ID 字段。
+3. 其他值唯一且稳定的字段。
+
+如果目标表配置了 identity，`identity.keyColumnId` 是便于代码和界面识别的符号名，`identity.valueColumnId` 通常才是引用单元格保存的运行时值。
 
 ## 快捷键
 
@@ -150,6 +170,7 @@ export type ProjectFile = {
 export type ConfigTable = {
   id: string;
   name: string;
+  remark?: string;
   position: GraphPosition;
   columns: ConfigColumn[];
   rows: ConfigRow[];
@@ -169,6 +190,8 @@ export type ConfigColumn = {
   required?: boolean;
   primary?: boolean;
   autoIncrement?: boolean;
+  export?: boolean;
+  remark?: string;
   enumValues?: string[];
   ref?: {
     tableId: string;
@@ -309,8 +332,12 @@ Configra/
 |-- AGENTS.md
 |-- README.md
 |-- package.json
+|-- schemas/
+|   `-- data-patch.schema.json
 |-- src/
 |   |-- App.tsx
+|   |-- cli/
+|   |   `-- cfg.ts
 |   |-- contextMenu/
 |   |   `-- ContextMenu.tsx
 |   |-- dataGrid/
@@ -328,19 +355,19 @@ Configra/
 |   |   |-- ColumnEditor.tsx
 |   |   `-- TableInspector.tsx
 |   |-- model/
+|   |   |-- referenceSemantics.ts
 |   |   |-- sampleProject.ts
 |   |   |-- schemaUtils.ts
 |   |   `-- types.ts
+|   |-- mcp/
+|   |   |-- protocol.ts
+|   |   `-- server.ts
+|   |-- patch/
+|   |   `-- dataPatch.ts
 |   |-- store/
 |   |   `-- editorStore.ts
 |   |-- validation/
 |   |   `-- validateProject.ts
-|   |-- cli/
-|   |   `-- cfg.ts
-|   |-- mcp/
-|   |   `-- server.ts
-|   |-- patch/
-|   |   `-- dataPatch.ts
 |   |-- i18n.ts
 |   `-- styles/
 |       `-- app.css
@@ -359,6 +386,7 @@ Configra/
 - 安装包、自动更新或发布流程打磨。
 
 项目应继续聚焦游戏配置编辑闭环：表结构、行数据、引用、校验、保存/加载和 JSON 导出。
+
 ## Headless CLI
 
 Run batch edits without starting Vite or Tauri:
@@ -376,6 +404,8 @@ npm run --silent cfg -- export ids --project <file> --out <file> --json
 ```
 
 Patch files use stable IDs only and follow `schemas/data-patch.schema.json`.
+
+不指定 `--table` 的 inspect 会返回工程级 `referenceSemantics` 和 `relationships`；表级 inspect 会返回与该表有关的传入、传出关系。关系摘要包含源/目标稳定 ID、展示名、目标是否存在，以及目标字段是否为主键或 identity 运行时值字段。
 
 Recommended AI flow:
 
@@ -412,11 +442,38 @@ MCP 只操作当前已保存工程，并通过 Headless CLI 完成检查、两�
 
 MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接和工具调用记录。隐藏后窗口会完全离开画布，可在“设置 → AI / MCP → 活动日志”中重新显示；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中。
 
-可用工具覆盖：
+### MCP 自解释契约
+
+支持 MCP 的 AI 客户端会直接获得工具描述和完整输入 Schema。实时 MCP schema 是具体调用方式的权威来源，`README.md` 和 `AGENTS.md` 只记录产品语义、开发约束与总体工作流，不要求 AI 依靠文档猜测工具参数。
+
+inspect 结果中的 `referenceSemantics` 会说明 `ref` 单元格保存目标字段实际值；`relationships` 会解析当前工程的传入、传出关系。通用 `configra_preview_patch` 还会为结构引用变更返回 `referenceChanges`。
+
+当前工具分组：
+
+- 状态：`configra_get_status`。
+- 读取：`configra_inspect_project`、`configra_inspect_table`、`configra_query_rows`。
+- 校验：`configra_validate`。
+- 通用修改预览：`configra_preview_patch`。
+- 引用预览：`configra_preview_define_ref`、`configra_preview_assign_refs`。
+- 应用与恢复：`configra_apply_patch`、`configra_rollback_transaction`。
+- 导出：`configra_export_table`、`configra_export_ids`、`configra_export_all`。
+
+所有修改仍采用两阶段流程：preview 返回精确 `patch` 和 `confirmationHash`，apply 必须原样提交二者。ref 专用工具不会绕过 patch 校验、当前工程哈希、写锁、事务快照或校验增量。
+
+### AI 使用 `ref` 的推荐流程
+
+1. 调用 `configra_inspect_project`，再检查源表和目标表，读取 `referenceSemantics`、`relationships`、稳定字段 ID 和行 `_rowId`。
+2. 对已有字段调用 `configra_preview_define_ref`，传入源表、源字段、目标表和目标字段的稳定 ID。
+3. 审查 diff、关系摘要和 `confirmationHash`，使用 `configra_apply_patch` 应用原样返回的 patch。
+4. 调用 `configra_preview_assign_refs`，按 `{ sourceRowId, targetRowId }` 表达“源行关联目标行”。服务会读取目标字段的实际值并生成普通 `updateRows` patch；不会把 `targetRowId` 写进单元格。
+5. 传入 `targetRowId: null` 可以清除该源行的引用。
+6. 应用后重新 inspect 并调用 `configra_validate`，最后导出受影响的表；identity 有变化时同时导出 `config_ids.json`。
+
+其他 MCP 能力包括：
 
 - 工程/表分页检查和按字段查询。
 - 完整校验。
-- `preview_patch` / `apply_patch` 两阶段修改；公开输入 Schema 会展开全部补丁操作。
+- 通用两阶段 patch；公开输入 Schema 会展开全部补丁操作。
 - 带当前项目哈希保护的事务回滚。
 - 单表、全部表和 ID 注册表导出。
 

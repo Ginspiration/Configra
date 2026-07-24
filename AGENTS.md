@@ -24,7 +24,7 @@
 
 这个工具不是 Excel。它应该继续围绕结构化游戏配置表、稳定内部 ID、引用关系、校验和导出展开。
 
-当前没有实现 AI 功能。后续如果加入 AI，也不应该让 AI 直接改 store；推荐流程是生成 patch、展示 diff、等待用户确认、应用 patch、重新校验。
+当前没有内置生成式 AI，但源码桌面应用已经提供本机 MCP，供外部 AI 检查、修改、校验和导出当前已保存工程。AI 不直接修改 Zustand store；所有修改继续采用生成 patch、展示 diff、等待确认、应用 patch、重新校验的流程。
 
 ## 2. 当前实现概览
 
@@ -54,6 +54,8 @@ Tauri
 
 - Web 模式：`npm run dev`
 - 桌面模式：`npm run tauri:dev`
+- Headless CLI：`npm run --silent cfg -- ...`
+- 源码桌面 MCP：设置 → AI / MCP
 
 ## 3. 逐项对照
 
@@ -82,6 +84,9 @@ Tauri
 | 19 | 快捷键 | 已完成 | `src/App.tsx` |
 | 20 | 桌面端最近工程和关闭前保存提示 | 已完成 | `src/App.tsx`, `src/file/desktopProjectFile.ts`, `src-tauri/src/lib.rs` |
 | 21 | 用 ID 注册表连接代码和配置 | 已完成 | `src/model/types.ts`, `src/inspector/TableInspector.tsx`, `src/export/exportTables.ts`, `src/validation/validateProject.ts` |
+| 22 | Headless CLI、两阶段 patch 和事务回滚 | 已完成 | `src/cli/cfg.ts`, `src/patch/dataPatch.ts`, `schemas/data-patch.schema.json` |
+| 23 | 本机 MCP 和外部 AI 安全工作流 | 已完成，包含 scoped dirty、Full Access、日志和导出 | `src/mcp/server.ts`, `src/mcp/protocol.ts`, `src-tauri/src/lib.rs` |
+| 24 | MCP 自解释 `ref` 关系与专用预览工具 | 已完成 | `src/model/referenceSemantics.ts`, `src/mcp/server.ts`, `src/cli/cfg.ts` |
 
 ## 4. 当前界面行为
 
@@ -204,6 +209,7 @@ export type ProjectFile = {
 export type ConfigTable = {
   id: string;
   name: string;
+  remark?: string;
   position: GraphPosition;
   columns: ConfigColumn[];
   rows: ConfigRow[];
@@ -223,6 +229,8 @@ export type ConfigColumn = {
   required?: boolean;
   primary?: boolean;
   autoIncrement?: boolean;
+  export?: boolean;
+  remark?: string;
   enumValues?: string[];
   ref?: ColumnRef;
 };
@@ -475,8 +483,13 @@ Configra/
 |-- AGENTS.md
 |-- README.md
 |-- package.json
+|-- schemas/
+|   `-- data-patch.schema.json
 |-- src/
 |   |-- App.tsx
+|   |-- cli/
+|   |   |-- cfg.test.ts
+|   |   `-- cfg.ts
 |   |-- contextMenu/
 |   |   `-- ContextMenu.tsx
 |   |-- dataGrid/
@@ -494,9 +507,17 @@ Configra/
 |   |   |-- ColumnEditor.tsx
 |   |   `-- TableInspector.tsx
 |   |-- model/
+|   |   |-- referenceSemantics.ts
 |   |   |-- sampleProject.ts
 |   |   |-- schemaUtils.ts
 |   |   `-- types.ts
+|   |-- mcp/
+|   |   |-- protocol.ts
+|   |   |-- server.test.ts
+|   |   `-- server.ts
+|   |-- patch/
+|   |   |-- dataPatch.test.ts
+|   |   `-- dataPatch.ts
 |   |-- store/
 |   |   `-- editorStore.ts
 |   |-- validation/
@@ -529,7 +550,9 @@ Configra/
 - 除非用户明确要求，否则不要添加某种特定语言的常量生成；优先使用语言无关 JSON。
 - 不要添加偏离游戏配置编辑的大型电子表格功能。
 - 不要默默引入商业授权复杂的 UI 或表格依赖。
-- 后续 AI 功能不要直接改 store；应采用 patch/diff/confirm/apply 流程。
+- 外部 AI 和后续 AI 功能不要直接改 store；应采用 patch/diff/confirm/apply 流程。
+- 实时 MCP 工具描述、输入 schema 和调用结果是 MCP 具体调用方式的权威来源；`AGENTS.md` 只记录产品语义、开发约束和总体流程，不复制容易过期的完整 API 手册。
+- `ref` 单元格保存目标字段的实际值，不保存目标 `tableId`、`columnId` 或目标行 `_rowId`；相关共享语义集中在 `src/model/referenceSemantics.ts`。
 
 ## 16. 验证命令
 
@@ -593,6 +616,7 @@ npm run tauri:dev
 - 如果用户后续明确需要，再把某种语言的代码生成作为独立导出层。
 
 扩展前请先保持最小闭环稳定：表结构、行数据、引用、校验、保存/加载、导出。
+
 ## 19. Headless CLI and AI patch flow
 
 A Node CLI is now available and should be used for AI batch work without starting Vite or Tauri.
@@ -631,6 +655,13 @@ Recommended AI flow:
 6. Run `validate --json`.
 7. Export the needed table(s) or `config_ids.json`.
 
+Inspect behavior relevant to references:
+
+- Project inspect returns shared `referenceSemantics` and all resolved `relationships`.
+- Table inspect returns the incoming and outgoing relationships involving that table.
+- Relationship summaries contain source/target stable IDs and names, target existence, primary status, identity runtime-value status, and cell-value meaning.
+- Headless patch row values for `ref` columns still contain the referenced target-column value; schema IDs and `_rowId` values are identifiers only.
+
 Exit codes:
 
 - `0` success
@@ -652,8 +683,10 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Dirty state is scoped: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads the project.
 - Unsaved content changes block MCP modification/export tools by default. The persisted Settings → AI / MCP → “Full Access” switch lets the user explicitly allow all MCP operations; an MCP apply may then replace unsaved content edits.
 - MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both. The public tool schema expands every supported operation as a discriminated union.
+- Live MCP tool descriptions, input schemas, and results are the authoritative client contract. External AI clients should not need `AGENTS.md` to reconstruct tool parameters.
 - MCP inspect results include `referenceSemantics` plus resolved incoming/outgoing `relationships`, so clients can distinguish schema IDs, row IDs, and the actual target-column values stored in `ref` cells.
-- `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs and resolves each target row to the referenced target-column value; both return a normal patch and `confirmationHash` for `configra_apply_patch`.
+- Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
+- `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
 - While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Hiding it removes the window completely from the canvas; restore it through Settings → AI / MCP → Activity Log. Visibility persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
