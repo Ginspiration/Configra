@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createSampleProject } from '../model/sampleProject';
+import { createEmptyProject } from '../model/projectFactory';
 import type { ConfigColumn, ConfigTable, GraphPosition, ProjectFile } from '../model/types';
 import {
   createDefaultRow,
@@ -36,7 +37,7 @@ type EditorStore = {
   loadProject(project: ProjectFile): void;
   reloadProject(project: ProjectFile, preserveLayout?: boolean): void;
   markClean(): void;
-  resetProject(): void;
+  newProject(): void;
 };
 
 const initialProject = createSampleProject();
@@ -57,7 +58,7 @@ const markDirty = (reason: string, currentScope: DirtyScope, nextScope: DirtySco
   } as const;
 };
 
-export const useEditorStore = create<EditorStore>((set, get) => ({
+export const useEditorStore = create<EditorStore>((set) => ({
   project: initialProject,
   selectedTableId: initialProject.tables[0]?.id,
   isDirty: false,
@@ -412,9 +413,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   markClean: () => set({ isDirty: false, dirtyScope: 'none' }),
 
-  resetProject: () => {
-    const project = createSampleProject();
-    get().loadProject(project);
-    set((state) => markDirty('resetProject', state.dirtyScope));
-  },
+  newProject: () =>
+    set({
+      project: createEmptyProject(),
+      selectedTableId: undefined,
+      isDirty: false,
+      dirtyScope: 'none',
+    }),
 }));

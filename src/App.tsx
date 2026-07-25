@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { message } from '@tauri-apps/plugin-dialog';
+import { confirm as confirmDialog, message } from '@tauri-apps/plugin-dialog';
+import AppMenu from './appMenu/AppMenu';
 import GraphCanvas from './graph/GraphCanvas';
 import DataGridModal from './dataGrid/DataGridModal';
 import ContextMenu, { type ContextMenuItem } from './contextMenu/ContextMenu';
@@ -18,6 +19,10 @@ import {
   safeFileName,
   tableJson,
 } from './export/exportTables';
+import {
+  DesktopExportFileError,
+  exportDesktopFiles,
+} from './export/desktopExport';
 import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition } from './model/types';
 import {
@@ -33,6 +38,7 @@ import {
   pickProjectFileText,
   pickJsonSavePath,
   pickProjectSavePath,
+  readTextFile,
   readProjectFileText,
   rememberRecentProjectPath,
   restartMcp,
@@ -101,11 +107,6 @@ const initialMcpLogVisible = () => {
   }
 };
 
-const joinFilePath = (directory: string, fileName: string) => {
-  const trimmedDirectory = directory.replace(/[\\/]+$/, '');
-  return `${trimmedDirectory || '/'}${trimmedDirectory ? '/' : ''}${fileName}`;
-};
-
 const writeBrowserDirectoryFile = async (
   directory: BrowserDirectoryHandle,
   fileName: string,
@@ -139,12 +140,14 @@ export default function App() {
   const loadProject = useEditorStore((state) => state.loadProject);
   const reloadProject = useEditorStore((state) => state.reloadProject);
   const markClean = useEditorStore((state) => state.markClean);
+  const newProject = useEditorStore((state) => state.newProject);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [language, setLanguage] = useState<Language>('zh');
   const [themePreference, setThemePreference] = useState<ThemePreference>(getThemePreference);
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(getThemePreference()));
   const [showMiniMap, setShowMiniMap] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAppMenu, setShowAppMenu] = useState(false);
   const [showDataGrid, setShowDataGrid] = useState(false);
   const [editingTableId, setEditingTableId] = useState<string>();
   const [projectPath, setProjectPath] = useState<string>();
@@ -154,6 +157,7 @@ export default function App() {
   const [mcpLogs, setMcpLogs] = useState<McpLogEntry[]>([]);
   const [mcpLogVisible, setMcpLogVisible] = useState(initialMcpLogVisible);
   const [mcpBusy, setMcpBusy] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
   const dirtyScopeRef = useRef(dirtyScope);
@@ -166,6 +170,7 @@ export default function App() {
   const mcpEventPollActiveRef = useRef(false);
   const mcpLogsRevisionRef = useRef(0);
   const saveProjectRef = useRef<() => Promise<boolean>>(async () => false);
+  const exportingRef = useRef(false);
   const tRef = useRef(t);
   isDirtyRef.current = isDirty;
   dirtyScopeRef.current = dirtyScope;
@@ -199,7 +204,7 @@ export default function App() {
 
       loadProject(result.project);
       setProjectPath(path);
-      setStatus(t('loadedFile', { name }));
+      setStatus(t('importedFile', { name }));
       return true;
     },
     [loadProject, t],
@@ -231,17 +236,17 @@ export default function App() {
     saveProjectRef.current = saveProject;
   }, [saveProject]);
 
-  const confirmReplaceProject = useCallback(async () => {
+  const confirmReplaceProject = useCallback(async (prompt: string) => {
     if (!isDirtyRef.current) return true;
 
     if (!isDesktopRuntime()) {
-      if (!window.confirm(t('unsavedChangesLoadMessage'))) return false;
+      if (!window.confirm(prompt)) return false;
       return saveProject();
     }
 
     const saveLabel = t('saveAndContinue');
     const discardLabel = t('discardAndContinue');
-    const result = await message(t('unsavedChangesLoadMessage'), {
+    const result = await message(prompt, {
       title: t('unsavedChangesTitle'),
       kind: 'warning',
       buttons: {
@@ -258,11 +263,23 @@ export default function App() {
     return result === discardLabel || result === 'No';
   }, [saveProject, t]);
 
-  const openDesktopProjectFile = useCallback(async () => {
-    try {
-      if (!(await confirmReplaceProject())) return;
+  const createNewProject = useCallback(async () => {
+    if (!(await confirmReplaceProject(t('unsavedChangesNewMessage')))) return;
 
-      const selected = await pickProjectFileText();
+    newProject();
+    setProjectPath(undefined);
+    setEditingTableId(undefined);
+    setShowDataGrid(false);
+    setMenu(undefined);
+    setShowAppMenu(false);
+    setStatus(t('newProjectCreated'));
+  }, [confirmReplaceProject, newProject, t]);
+
+  const importDesktopProjectFile = useCallback(async () => {
+    try {
+      if (!(await confirmReplaceProject(t('unsavedChangesImportMessage')))) return;
+
+      const selected = await pickProjectFileText(t('importProject'));
       if (!selected) return;
       if (loadProjectText(selected.text, selected.name, selected.path)) {
         await rememberRecentProjectPath(selected.path);
@@ -270,20 +287,20 @@ export default function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [confirmReplaceProject, loadProjectText]);
+  }, [confirmReplaceProject, loadProjectText, t]);
 
-  const triggerLoadProject = useCallback(() => {
+  const triggerImportProject = useCallback(() => {
     if (isDesktopRuntime()) {
-      void openDesktopProjectFile();
+      void importDesktopProjectFile();
       return;
     }
 
     void (async () => {
-      if (await confirmReplaceProject()) {
+      if (await confirmReplaceProject(t('unsavedChangesImportMessage'))) {
         fileInputRef.current?.click();
       }
     })();
-  }, [confirmReplaceProject, openDesktopProjectFile]);
+  }, [confirmReplaceProject, importDesktopProjectFile, t]);
 
   const copyTableJsonToClipboard = useCallback(async (tableId = selectedTable?.id) => {
     if (!tableId) return;
@@ -355,50 +372,43 @@ export default function App() {
         return window.confirm(t('confirmOverwriteExport', { count }));
       }
 
-      const overwriteLabel = t('overwriteAndExport');
-      const result = await message(t('confirmOverwriteExport', { count }), {
+      return confirmDialog(t('confirmOverwriteExport', { count }), {
         title: t('overwriteExportTitle'),
         kind: 'warning',
-        buttons: {
-          ok: overwriteLabel,
-          cancel: t('cancel'),
-        },
+        okLabel: t('overwriteAndExport'),
+        cancelLabel: t('cancel'),
       });
-
-      return result === overwriteLabel || result === 'Ok';
     },
     [t],
   );
 
   const exportAllJsonFiles = useCallback(async () => {
-    const files = projectJsonFiles(project);
+    if (exportingRef.current) return;
+    exportingRef.current = true;
+    setIsExporting(true);
 
-    if (isDesktopRuntime()) {
-      try {
+    try {
+      const currentProject = useEditorStore.getState().project;
+      const files = projectJsonFiles(structuredClone(currentProject));
+
+      if (isDesktopRuntime()) {
         const directory = await pickExportDirectoryPath();
         if (!directory) return;
 
-        const filesWithPaths = files.map((file) => ({
-          ...file,
-          path: joinFilePath(directory, file.fileName),
-        }));
-        const existingFiles = await Promise.all(
-          filesWithPaths.map(async (file) => ((await fileExists(file.path)) ? file.fileName : '')),
-        );
-        const overwriteCount = existingFiles.filter(Boolean).length;
-        if (!(await confirmOverwriteExport(overwriteCount))) return;
-
-        await Promise.all(filesWithPaths.map((file) => writeTextFile(file.path, file.text)));
-        setStatus(t('exportedJsonFiles', { count: files.length }));
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error));
+        const result = await exportDesktopFiles(directory, files, {
+          fileExists,
+          confirmOverwrite: confirmOverwriteExport,
+          writeTextFile,
+          readTextFile,
+        });
+        if (result.status === 'exported') {
+          setStatus(t('exportedJsonFiles', { count: result.count }));
+        }
+        return;
       }
-      return;
-    }
 
-    const directoryPicker = (window as DirectoryPickerWindow).showDirectoryPicker;
-    if (directoryPicker) {
-      try {
+      const directoryPicker = (window as DirectoryPickerWindow).showDirectoryPicker;
+      if (directoryPicker) {
         const directory = await directoryPicker.call(window);
         const existingFiles: string[] = [];
         for (const file of files) {
@@ -412,18 +422,35 @@ export default function App() {
           await writeBrowserDirectoryFile(directory, file.fileName, file.text);
         }
         setStatus(t('exportedJsonFiles', { count: files.length }));
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        setStatus(error instanceof Error ? error.message : String(error));
+        return;
       }
-      return;
-    }
 
-    for (const file of files) {
-      downloadTextFile(file.fileName, file.text);
+      for (const file of files) {
+        downloadTextFile(file.fileName, file.text);
+      }
+      setStatus(t('exportedJsonFiles', { count: files.length }));
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (error instanceof DesktopExportFileError) {
+        setStatus(
+          error.reason === 'verify'
+            ? t('exportVerificationFailed', { name: error.fileName })
+            : t('exportFileFailed', {
+                name: error.fileName,
+                error:
+                  error.originalError instanceof Error
+                    ? error.originalError.message
+                    : String(error.originalError),
+              }),
+        );
+        return;
+      }
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      exportingRef.current = false;
+      setIsExporting(false);
     }
-    setStatus(t('exportedJsonFiles', { count: files.length }));
-  }, [confirmOverwriteExport, project, t]);
+  }, [confirmOverwriteExport, t]);
 
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
@@ -477,7 +504,7 @@ export default function App() {
     }
   }, [t]);
 
-  const loadFile = async (file: File) => {
+  const importFile = async (file: File) => {
     loadProjectText(await file.text(), file.name);
   };
 
@@ -542,21 +569,6 @@ export default function App() {
           addTable(menu.graphPosition);
         },
       },
-      { id: 'canvas-separator-project', type: 'separator' },
-      {
-        id: 'save-project',
-        label: t('save'),
-        shortcut: 'Ctrl+S',
-        onSelect: () => {
-          void saveProject();
-        },
-      },
-      {
-        id: 'load-project',
-        label: t('load'),
-        shortcut: 'Ctrl+O',
-        onSelect: triggerLoadProject,
-      },
       { id: 'canvas-separator-id-registry', type: 'separator' },
       {
         id: 'copy-id-registry',
@@ -591,11 +603,46 @@ export default function App() {
     menu,
     openRowsModal,
     project.tables,
-    saveProject,
     showMiniMap,
     t,
-    triggerLoadProject,
   ]);
+
+  const appMenuItems = useMemo<ContextMenuItem[]>(
+    () => [
+      {
+        id: 'new-project',
+        label: t('newProject'),
+        shortcut: 'Ctrl+Shift+N',
+        onSelect: createNewProject,
+      },
+      { id: 'app-menu-separator-file', type: 'separator' },
+      {
+        id: 'save-project',
+        label: t('save'),
+        shortcut: 'Ctrl+S',
+        onSelect: saveProject,
+      },
+      {
+        id: 'import-project',
+        label: t('importProject'),
+        shortcut: 'Ctrl+O',
+        onSelect: triggerImportProject,
+      },
+      {
+        id: 'export-project',
+        label: isExporting ? t('exporting') : t('exportAll'),
+        disabled: isExporting,
+        onSelect: exportAllJsonFiles,
+      },
+      { id: 'app-menu-separator-settings', type: 'separator' },
+      {
+        id: 'open-settings',
+        label: t('settings'),
+        onSelect: () => setShowSettings(true),
+      },
+    ],
+    [createNewProject, exportAllJsonFiles, isExporting, saveProject, t, triggerImportProject],
+  );
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -812,13 +859,24 @@ export default function App() {
       const key = event.key.toLowerCase();
       const commandKey = event.ctrlKey || event.metaKey;
 
-      if (commandKey && !event.altKey && !event.shiftKey) {
+      if (commandKey && !event.altKey) {
+        if (key === 'n' && event.shiftKey) {
+          event.preventDefault();
+          setShowAppMenu(false);
+          void createNewProject();
+          return;
+        }
+
+        if (event.shiftKey) return;
+
         if (key === 's') {
           event.preventDefault();
+          setShowAppMenu(false);
           void saveProject();
         } else if (key === 'o') {
           event.preventDefault();
-          triggerLoadProject();
+          setShowAppMenu(false);
+          triggerImportProject();
         } else if (key === 'n') {
           event.preventDefault();
           addTable();
@@ -838,7 +896,7 @@ export default function App() {
         n: () => {
           addTable();
         },
-        o: triggerLoadProject,
+        o: triggerImportProject,
         r: () => openRowsModal(),
         s: saveProject,
         delete: deleteTableById,
@@ -857,12 +915,13 @@ export default function App() {
     addFieldToSelectedTable,
     addTable,
     copyTableJsonToClipboard,
+    createNewProject,
     deleteTableById,
     downloadTableJsonFile,
     openRowsModal,
     saveProject,
     showSettings,
-    triggerLoadProject,
+    triggerImportProject,
   ]);
 
   const preventNativeContextMenu = useCallback((event: React.MouseEvent) => {
@@ -932,42 +991,16 @@ export default function App() {
   return (
     <div className="app-shell" onContextMenu={preventNativeContextMenu}>
       <header className="toolbar">
+        <AppMenu
+          open={showAppMenu}
+          items={appMenuItems}
+          label={t('appMenu')}
+          onOpenChange={setShowAppMenu}
+        />
         <div className="brand-block">
           <strong>Configra</strong>
           <span>{t('errorCount', { count: errorCount })}</span>
           {warningCount > 0 ? <span>{t('warningCount', { count: warningCount })}</span> : null}
-        </div>
-        <div className="toolbar-actions">
-          <button
-            type="button"
-            className="button"
-            onClick={() => {
-              void saveProject();
-            }}
-            title="S / Ctrl+S"
-          >
-            {t('save')}
-          </button>
-          <button type="button" className="button" onClick={triggerLoadProject} title="O / Ctrl+O">
-            {t('load')}
-          </button>
-          <button
-            type="button"
-            className="button button--primary"
-            onClick={() => {
-              void exportAllJsonFiles();
-            }}
-          >
-            {t('exportAll')}
-          </button>
-          <button
-            type="button"
-            className="button settings-button"
-            onClick={() => setShowSettings(true)}
-          >
-            <span aria-hidden="true">⚙</span>
-            {t('settings')}
-          </button>
         </div>
         <input
           ref={fileInputRef}
@@ -976,7 +1009,7 @@ export default function App() {
           className="hidden-input"
           onChange={(event) => {
             const file = event.target.files?.[0];
-            if (file) void loadFile(file);
+            if (file) void importFile(file);
             event.target.value = '';
           }}
         />
@@ -1023,6 +1056,14 @@ export default function App() {
             onOpenTableContext={openTableContextMenu}
             onOpenCanvasContext={openCanvasContextMenu}
           />
+          {project.tables.length === 0 ? (
+            <div className="empty-project" role="status">
+              <p>{t('emptyProject')}</p>
+              <button type="button" className="button button--primary" onClick={() => addTable()}>
+                {t('createFirstTable')}
+              </button>
+            </div>
+          ) : null}
         </section>
       </main>
 

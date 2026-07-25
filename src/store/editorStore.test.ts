@@ -60,4 +60,18 @@ describe('editor dirty scopes', () => {
 
     expect(useEditorStore.getState()).toMatchObject({ isDirty: false, dirtyScope: 'none' });
   });
+
+  it('creates a clean empty project with no selected table', () => {
+    const table = useEditorStore.getState().project.tables[0];
+    useEditorStore.getState().updateTable(table.id, { name: 'UnsavedName' });
+
+    useEditorStore.getState().newProject();
+
+    expect(useEditorStore.getState()).toMatchObject({
+      project: { version: 1, tables: [] },
+      selectedTableId: undefined,
+      isDirty: false,
+      dirtyScope: 'none',
+    });
+  });
 });

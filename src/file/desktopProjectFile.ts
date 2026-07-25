@@ -50,8 +50,12 @@ const projectFilters = [
 const fileNameFromPath = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 export async function readProjectFileText(path: string) {
-  const text = await invoke<string>('read_project_file', { path });
+  const text = await readTextFile(path);
   return { path, name: fileNameFromPath(path), text };
+}
+
+export async function readTextFile(path: string) {
+  return invoke<string>('read_project_file', { path });
 }
 
 export async function writeTextFile(path: string, text: string) {
@@ -120,9 +124,9 @@ export async function clearMcpLogs() {
   await invoke('clear_mcp_logs');
 }
 
-export async function pickProjectFileText() {
+export async function pickProjectFileText(title: string) {
   const selected = await open({
-    title: 'Open project',
+    title,
     multiple: false,
     filters: projectFilters,
   });
