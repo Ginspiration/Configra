@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   CompactSelection,
   DataEditor as GlideDataEditor,
   GridCellKind,
   type CellClickedEventArgs,
+  type CustomCell,
+  type CustomRenderer,
   type DataEditorProps,
   type DataEditorRef,
   type EditableGridCell,
@@ -24,6 +26,7 @@ import { formatRefOptionLabel } from '../model/schemaUtils';
 import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
 import TablePreviewModal from './TablePreviewModal';
+import { filterChoiceOptions, type ChoiceOption } from './choiceSearch';
 
 type DataGridModalProps = {
   open: boolean;
@@ -37,10 +40,16 @@ type DataGridModalProps = {
 };
 
 type ChoiceCellData = {
+  kind: 'choice-cell';
   value: unknown;
   display: string;
-  options: Array<{ key: string; label: string; value: unknown }>;
+  options: ChoiceOption[];
+  searchPlaceholder: string;
+  noMatchesLabel: string;
+  clearLabel: string;
 };
+
+type ChoiceCell = CustomCell<ChoiceCellData>;
 
 const GHOST_ROW_COUNT = 16;
 const DEFAULT_COLUMN_WIDTH = 120;
@@ -260,42 +269,186 @@ function ChoiceEditor({
   onChange(newValue: GridCell): void;
   onFinishedEditing(newValue?: GridCell): void;
 }) {
-  const [draftCell, setDraftCell] = useState(value);
-  const [changed, setChanged] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const optionsRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
+  const choiceValue = value as ChoiceCell;
+  const data = choiceValue.data;
+  const selectedKey = valueKey(data.value);
+  const filteredOptions = useMemo(
+    () => filterChoiceOptions(data.options, query),
+    [data.options, query],
+  );
 
-  if (draftCell.kind !== GridCellKind.Custom) return null;
+  useEffect(() => {
+    const selectedIndex = filteredOptions.findIndex((option) => option.key === selectedKey);
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [filteredOptions, selectedKey]);
 
-  const data = draftCell.data as ChoiceCellData;
+  useEffect(() => {
+    optionsRef.current
+      ?.querySelector<HTMLElement>(`[data-option-index="${activeIndex}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
+  const finishWithOption = (option?: ChoiceOption) => {
+    const nextValue = option?.value ?? '';
+    const nextCell: ChoiceCell = {
+      ...choiceValue,
+      copyData: toInputValue(nextValue),
+      data: {
+        ...data,
+        value: nextValue,
+        display: option?.label ?? '',
+      },
+    };
+    onChange(nextCell);
+    onFinishedEditing(nextCell);
+  };
 
   return (
-    <select
-      autoFocus
-      className="glide-choice-editor"
-      value={valueKey(data.value)}
-      onBlur={() => onFinishedEditing(changed ? draftCell : undefined)}
-      onChange={(event) => {
-        const selected = data.options.find((item) => item.key === event.target.value);
-        const nextValue = selected?.value ?? '';
-        const nextCell: GridCell = {
-          ...draftCell,
-          copyData: toInputValue(nextValue),
-          data: { ...data, value: nextValue },
-        };
-        setDraftCell(nextCell);
-        setChanged(true);
-        onChange(nextCell);
-        onFinishedEditing(nextCell);
+    <div
+      className="choice-editor"
+      onKeyDown={(event) => {
+        if (event.key === 'Tab') return;
+        event.stopPropagation();
+
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          setActiveIndex((current) =>
+            Math.min(Math.max(0, filteredOptions.length - 1), current + 1),
+          );
+          return;
+        }
+
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          setActiveIndex((current) => Math.max(0, current - 1));
+          return;
+        }
+
+        if (event.key === 'Home') {
+          event.preventDefault();
+          setActiveIndex(0);
+          return;
+        }
+
+        if (event.key === 'End') {
+          event.preventDefault();
+          setActiveIndex(Math.max(0, filteredOptions.length - 1));
+          return;
+        }
+
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          const option = filteredOptions[activeIndex];
+          if (option) finishWithOption(option);
+          return;
+        }
+
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          onFinishedEditing(undefined);
+        }
       }}
     >
-      <option value={valueKey('')}></option>
-      {data.options.map((option, index) => (
-        <option key={`${option.key}-${index}`} value={option.key}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      <div className="choice-editor__search">
+        <input
+          autoFocus
+          type="search"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded="true"
+          aria-controls={listboxId}
+          aria-activedescendant={
+            filteredOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined
+          }
+          value={query}
+          placeholder={data.searchPlaceholder}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        {data.value !== null && data.value !== undefined && data.value !== '' ? (
+          <button
+            type="button"
+            className="choice-editor__clear"
+            title={data.clearLabel}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => finishWithOption()}
+          >
+            {data.clearLabel}
+          </button>
+        ) : null}
+      </div>
+      <div id={listboxId} ref={optionsRef} className="choice-editor__options" role="listbox">
+        {filteredOptions.length > 0 ? (
+          filteredOptions.map((option, index) => {
+            const selected = option.key === selectedKey;
+            return (
+              <button
+                id={`${listboxId}-option-${index}`}
+                key={`${option.key}-${index}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                data-option-index={index}
+                className={`choice-editor__option ${index === activeIndex ? 'is-active' : ''} ${selected ? 'is-selected' : ''}`}
+                title={option.label}
+                onMouseEnter={() => setActiveIndex(index)}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => finishWithOption(option)}
+              >
+                <span>{option.label}</span>
+                {selected ? <span className="choice-editor__check">✓</span> : null}
+              </button>
+            );
+          })
+        ) : (
+          <div className="choice-editor__empty">{data.noMatchesLabel}</div>
+        )}
+      </div>
+    </div>
   );
 }
+
+const choiceCellRenderer: CustomRenderer<ChoiceCell> = {
+  kind: GridCellKind.Custom,
+  isMatch: (cell): cell is ChoiceCell =>
+    (cell.data as { kind?: unknown } | undefined)?.kind === 'choice-cell',
+  draw: ({ ctx, rect, theme, cell }) => {
+    const horizontalPadding = theme.cellHorizontalPadding;
+    const arrowWidth = 18;
+    const textWidth = Math.max(0, rect.width - horizontalPadding * 2 - arrowWidth);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x, rect.y, rect.width, rect.height);
+    ctx.clip();
+
+    ctx.font = theme.baseFontFull;
+    ctx.fillStyle = theme.textDark;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      ellipsizeCanvasText(ctx, cell.data.display, textWidth),
+      rect.x + horizontalPadding,
+      rect.y + rect.height / 2,
+    );
+
+    const arrowCenterX = rect.x + rect.width - horizontalPadding - 4;
+    const arrowCenterY = rect.y + rect.height / 2;
+    ctx.fillStyle = theme.textLight;
+    ctx.beginPath();
+    ctx.moveTo(arrowCenterX - 4, arrowCenterY - 2);
+    ctx.lineTo(arrowCenterX + 4, arrowCenterY - 2);
+    ctx.lineTo(arrowCenterX, arrowCenterY + 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  },
+};
+
+const choiceCellRenderers = [choiceCellRenderer];
 
 export default function DataGridModal({
   open,
@@ -435,12 +588,16 @@ export default function DataGridModal({
         return {
           kind: GridCellKind.Custom,
           allowOverlay: true,
+          activationBehaviorOverride: 'single-click',
           copyData: toInputValue(value),
           data: {
             kind: 'choice-cell',
             value,
             display: selected?.label ?? toInputValue(value),
             options,
+            searchPlaceholder: t('searchChoices'),
+            noMatchesLabel: t('noMatchingChoices'),
+            clearLabel: t('clearChoice'),
           },
           themeOverride,
         };
@@ -454,7 +611,7 @@ export default function DataGridModal({
         themeOverride,
       };
     },
-    [errorCells, isDarkTheme, project, table],
+    [errorCells, isDarkTheme, project, t, table],
   );
 
   const onCellEdited = useCallback(
@@ -952,38 +1109,7 @@ export default function DataGridModal({
       return {
         editor: ChoiceEditor,
         disablePadding: true,
-        disableStyling: true,
       };
-    },
-    [],
-  );
-
-  const drawCell = useCallback(
-    (
-      args: Parameters<NonNullable<DataEditorProps['drawCell']>>[0],
-      drawContent: () => void,
-    ) => {
-      if (args.cell.kind === GridCellKind.Custom) {
-        const data = args.cell.data as { display?: string };
-        args.ctx.fillStyle = args.highlighted ? args.theme.accentLight : args.theme.bgCell;
-        args.ctx.fillRect(args.rect.x, args.rect.y, args.rect.width, args.rect.height);
-        args.ctx.fillStyle = '#f8fafc';
-        args.ctx.fillRect(args.rect.x + 1, args.rect.y + 1, args.rect.width - 2, args.rect.height - 2);
-        args.ctx.fillStyle = args.theme.textDark;
-        args.ctx.font = `${args.theme.baseFontStyle} ${args.theme.fontFamily}`;
-        args.ctx.textBaseline = 'middle';
-        args.ctx.fillText(data.display ?? '', args.rect.x + 8, args.rect.y + args.rect.height / 2);
-        args.ctx.fillStyle = args.theme.textLight;
-        args.ctx.beginPath();
-        args.ctx.moveTo(args.rect.x + args.rect.width - 15, args.rect.y + args.rect.height / 2 - 2);
-        args.ctx.lineTo(args.rect.x + args.rect.width - 7, args.rect.y + args.rect.height / 2 - 2);
-        args.ctx.lineTo(args.rect.x + args.rect.width - 11, args.rect.y + args.rect.height / 2 + 3);
-        args.ctx.closePath();
-        args.ctx.fill();
-        return;
-      }
-
-      drawContent();
     },
     [],
   );
@@ -1165,7 +1291,7 @@ export default function DataGridModal({
               gridSelection={selection}
               onGridSelectionChange={(nextSelection) => setSelection(nextSelection)}
               provideEditor={provideEditor}
-              drawCell={drawCell}
+              customRenderers={choiceCellRenderers}
               drawHeader={drawHeader}
               showSearch={showSearch}
               onSearchClose={() => {

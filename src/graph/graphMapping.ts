@@ -1,11 +1,39 @@
-import { MarkerType, type Edge, type Node } from '@xyflow/react';
-import type { ProjectFile } from '../model/types';
+import type { Edge, Node } from '@xyflow/react';
+import type { ConfigTable, ProjectFile } from '../model/types';
 
 export const TABLE_NODE_WIDTH = 210;
 export const TABLE_NODE_MIN_HEIGHT = 84;
 
-export const sourceColumnHandleId = (columnId: string) => `source-column:${columnId}`;
-export const targetColumnHandleId = (columnId: string) => `target-column:${columnId}`;
+export type HorizontalHandleSide = 'left' | 'right';
+
+export const sourceColumnHandleId = (columnId: string, side: HorizontalHandleSide) =>
+  `source-column:${columnId}:${side}`;
+export const targetColumnHandleId = (columnId: string, side: HorizontalHandleSide) =>
+  `target-column:${columnId}:${side}`;
+
+export const relationshipHandleSides = (sourceTable: ConfigTable, targetTable: ConfigTable) => {
+  const sourceLeft = sourceTable.position.x;
+  const sourceRight = sourceLeft + TABLE_NODE_WIDTH;
+  const targetLeft = targetTable.position.x;
+  const targetRight = targetLeft + TABLE_NODE_WIDTH;
+  const sourceCenterX = sourceTable.position.x + TABLE_NODE_WIDTH / 2;
+  const targetCenterX = targetTable.position.x + TABLE_NODE_WIDTH / 2;
+
+  if (targetLeft >= sourceRight) {
+    return { sourceSide: 'right' as const, targetSide: 'left' as const };
+  }
+
+  if (targetRight <= sourceLeft) {
+    return { sourceSide: 'left' as const, targetSide: 'right' as const };
+  }
+
+  const sharedSide = targetCenterX >= sourceCenterX ? ('right' as const) : ('left' as const);
+
+  return {
+    sourceSide: sharedSide,
+    targetSide: sharedSide,
+  };
+};
 
 export type TableNodeData = Record<string, unknown> & {
   tableId: string;
@@ -35,16 +63,16 @@ export function projectToFlow(project: ProjectFile): {
       const targetTable = project.tables.find((item) => item.id === column.ref?.tableId);
       const targetColumn = targetTable?.columns.find((item) => item.id === column.ref?.columnId);
       if (!targetTable || !targetColumn) return [];
+      const { sourceSide, targetSide } = relationshipHandleSides(table, targetTable);
 
       return [
         {
           id: `${table.id}.${column.id}->${targetTable.id}.${targetColumn.id}`,
           source: table.id,
-          sourceHandle: sourceColumnHandleId(column.id),
+          sourceHandle: sourceColumnHandleId(column.id, sourceSide),
           target: targetTable.id,
-          targetHandle: targetColumnHandleId(targetColumn.id),
+          targetHandle: targetColumnHandleId(targetColumn.id, targetSide),
           type: 'smoothstep',
-          markerEnd: { type: MarkerType.ArrowClosed },
           className: 'ref-edge',
         },
       ];

@@ -1,7 +1,12 @@
-import { memo } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { memo, useEffect } from 'react';
+import { Handle, Position, type NodeProps, useUpdateNodeInternals } from '@xyflow/react';
 import { useEditorStore } from '../store/editorStore';
-import { sourceColumnHandleId, targetColumnHandleId } from './graphMapping';
+import {
+  relationshipHandleSides,
+  sourceColumnHandleId,
+  targetColumnHandleId,
+  type HorizontalHandleSide,
+} from './graphMapping';
 
 const shortRemark = (value: string) => {
   const singleLine = value.replace(/\s+/g, ' ').trim();
@@ -14,14 +19,40 @@ function TableNode({ data }: NodeProps) {
   const selectTable = useEditorStore((state) => state.selectTable);
   const tableId = typeof data.tableId === 'string' ? data.tableId : '';
   const table = project.tables.find((item) => item.id === tableId);
+  const updateNodeInternals = useUpdateNodeInternals();
+  const handleLayoutKey = project.tables
+    .flatMap((sourceTable) =>
+      sourceTable.columns.flatMap((sourceColumn) => {
+        if (sourceColumn.type !== 'ref' || !sourceColumn.ref) return [];
+
+        const targetTable = project.tables.find((item) => item.id === sourceColumn.ref?.tableId);
+        if (!targetTable) return [];
+
+        const { sourceSide, targetSide } = relationshipHandleSides(sourceTable, targetTable);
+        const parts: string[] = [];
+        if (sourceTable.id === tableId) parts.push(`${sourceColumn.id}:source:${sourceSide}`);
+        if (targetTable.id === tableId) {
+          parts.push(`${sourceColumn.ref.columnId}:target:${targetSide}`);
+        }
+        return parts;
+      }),
+    )
+    .join('|');
+
+  useEffect(() => {
+    if (tableId) updateNodeInternals(tableId);
+  }, [handleLayoutKey, tableId, updateNodeInternals]);
 
   if (!table) return null;
 
-  const incomingColumnIds = new Set<string>();
+  const incomingColumnSides = new Map<string, Set<HorizontalHandleSide>>();
   for (const sourceTable of project.tables) {
     for (const sourceColumn of sourceTable.columns) {
       if (sourceColumn.type === 'ref' && sourceColumn.ref?.tableId === table.id) {
-        incomingColumnIds.add(sourceColumn.ref.columnId);
+        const { targetSide } = relationshipHandleSides(sourceTable, table);
+        const sides = incomingColumnSides.get(sourceColumn.ref.columnId) ?? new Set();
+        sides.add(targetSide);
+        incomingColumnSides.set(sourceColumn.ref.columnId, sides);
       }
     }
   }
@@ -48,18 +79,23 @@ function TableNode({ data }: NodeProps) {
         {table.columns.map((column) => {
           const remark = column.remark?.trim() ?? '';
           const isRefColumn = column.type === 'ref';
-          const hasIncomingRef = incomingColumnIds.has(column.id);
+          const incomingSides = [...(incomingColumnSides.get(column.id) ?? [])];
+          const targetTable = project.tables.find((item) => item.id === column.ref?.tableId);
+          const sourceSide = targetTable
+            ? relationshipHandleSides(table, targetTable).sourceSide
+            : 'right';
 
           return (
             <div className="table-node__field" key={column.id}>
-              {hasIncomingRef ? (
+              {incomingSides.map((side) => (
                 <Handle
-                  id={targetColumnHandleId(column.id)}
+                  key={`target-${side}`}
+                  id={targetColumnHandleId(column.id, side)}
                   type="target"
-                  position={Position.Left}
+                  position={side === 'left' ? Position.Left : Position.Right}
                   className="node-handle node-handle--field"
                 />
-              ) : null}
+              ))}
               <span className="table-node__name" title={remark || undefined}>
                 {column.name || column.id}
                 {remark ? <span className="table-node__remark"> {shortRemark(remark)}</span> : null}
@@ -76,9 +112,9 @@ function TableNode({ data }: NodeProps) {
               ) : null}
               {isRefColumn ? (
                 <Handle
-                  id={sourceColumnHandleId(column.id)}
+                  id={sourceColumnHandleId(column.id, sourceSide)}
                   type="source"
-                  position={Position.Right}
+                  position={sourceSide === 'left' ? Position.Left : Position.Right}
                   className="node-handle node-handle--field"
                 />
               ) : null}

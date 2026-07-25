@@ -1122,13 +1122,110 @@ h3 {
   min-height: 0;
 }
 
-.glide-choice-editor {
+.choice-editor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(360px, calc(100vw - 24px));
+  min-width: min(320px, calc(100vw - 24px));
+  max-height: min(340px, calc(100vh - 24px));
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.choice-editor__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-muted);
+  padding: 6px;
+}
+
+.choice-editor__search input {
+  min-width: 0;
+  height: 30px;
+  flex: 1;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  outline: none;
+  background: var(--field-bg);
+  color: var(--text);
+  padding: 0 9px;
+}
+
+.choice-editor__search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.choice-editor__clear {
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--field-bg);
+  color: var(--muted);
+  padding: 0 9px;
+}
+
+.choice-editor__clear:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.choice-editor__options {
+  min-height: 42px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.choice-editor__option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  height: 100%;
-  min-height: 0;
+  min-height: 32px;
   border: 0;
-  border-radius: 0;
-  padding: 0 8px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.choice-editor__option > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.choice-editor__option:hover,
+.choice-editor__option.is-active {
+  background: var(--hover-bg);
+}
+
+.choice-editor__option.is-active {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.choice-editor__option.is-selected {
+  color: var(--accent-dark);
+  font-weight: 650;
+}
+
+.choice-editor__check {
+  color: var(--accent);
+  text-align: center;
+}
+
+.choice-editor__empty {
+  color: var(--muted);
+  padding: 14px 10px;
+  text-align: center;
 }
 
 .field-remark-tooltip {
