@@ -8,7 +8,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { z } from 'zod';
-import { REF_CELL_VALUE_DESCRIPTION } from '../model/referenceSemantics';
+import {
+  IDENTITY_USAGE_DESCRIPTION,
+  REF_CELL_VALUE_DESCRIPTION,
+  REF_TARGET_PREFERENCE_DESCRIPTION,
+} from '../model/referenceSemantics';
 import type { JsonValue } from '../patch/dataPatch';
 import {
   dataPatchOperationSchema,
@@ -555,7 +559,7 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_patch',
     {
       description:
-        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
+        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} ${IDENTITY_USAGE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
       inputSchema: {
         description: z.string().optional(),
         operations: z.array(dataPatchOperationSchema),
@@ -576,7 +580,7 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_define_ref',
     {
       description:
-        `Preview defining an existing source column as a ref to a target column. ${REF_CELL_VALUE_DESCRIPTION} Prefer a primary column or identity.valueColumnId. Returns a normal patch and confirmationHash for configra_apply_patch.`,
+        `Preview defining an existing source column as a ref to a target column. ${REF_CELL_VALUE_DESCRIPTION} ${REF_TARGET_PREFERENCE_DESCRIPTION} Returns a normal patch and confirmationHash for configra_apply_patch.`,
       inputSchema: {
         sourceTableId: z.string().min(1).describe('Stable ID of the table containing the ref column.'),
         sourceColumnId: z.string().min(1).describe('Stable ID of the source column to make a ref.'),

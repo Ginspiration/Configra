@@ -127,6 +127,7 @@ describe('data patch engine', () => {
     if (!checked.ok) return;
     const loot = checked.project.tables.find((table) => table.id === 'loot_table');
     expect(loot?.remark).toContain('Loot drop');
+    expect(loot?.identity).toBeUndefined();
     expect(loot?.columns.map((column) => column.remark)).toEqual([
       'Stable loot row identifier',
       'Display name for this loot entry',

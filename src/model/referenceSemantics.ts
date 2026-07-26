@@ -3,17 +3,23 @@ import type { ProjectFile } from './types';
 export const REF_CELL_VALUE_DESCRIPTION =
   "A ref cell stores the referenced target column's actual value. tableId and columnId identify the target schema only; never store a tableId, columnId, or _rowId in the cell.";
 
+export const IDENTITY_USAGE_DESCRIPTION =
+  'Optional ID-registry metadata. Configure it only when rows in this table must be exposed through the global ${namespace}.${symbolKey} ID registry. Most configuration, parameter, detail, and relationship tables do not need identity. Do not add identity or symbol-key/runtime-ID columns merely because a table has a primary key, stable IDs, or ref relationships.';
+
+export const REF_TARGET_PREFERENCE_DESCRIPTION =
+  'Prefer a primary column, an already-configured identity.valueColumnId, or another unique stable target. Do not create identity merely to define a ref.';
+
 export const REFERENCE_SEMANTICS = {
   schemaLink:
     'Set the source column type to ref and sourceColumn.ref to the stable target tableId and columnId.',
   cellValue: REF_CELL_VALUE_DESCRIPTION,
   preferredTargets: [
     'Prefer the target table primary column.',
-    'Otherwise prefer the target table identity.valueColumnId runtime-ID column.',
+    'Otherwise, if the target table already defines identity, prefer its identity.valueColumnId runtime-ID column.',
     'Otherwise use a target column whose values are unique and stable.',
   ],
   identity:
-    'identity.keyColumnId is a readable symbol; identity.valueColumnId is normally the runtime value stored by a ref that targets it.',
+    `${IDENTITY_USAGE_DESCRIPTION} When identity is present, identity.keyColumnId is a readable symbol and identity.valueColumnId is normally the runtime value stored by a ref that targets it.`,
 } as const;
 
 export const summarizeProjectReferences = (project: ProjectFile) =>

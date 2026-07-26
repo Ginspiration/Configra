@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { REF_CELL_VALUE_DESCRIPTION } from '../model/referenceSemantics';
+import {
+  IDENTITY_USAGE_DESCRIPTION,
+  REF_CELL_VALUE_DESCRIPTION,
+  REF_TARGET_PREFERENCE_DESCRIPTION,
+} from '../model/referenceSemantics';
 
 export const MCP_SERVER_ID = 'configra';
 export const MCP_DISPLAY_NAME = 'Configra';
@@ -15,11 +19,22 @@ const positionSchema = z.strictObject({
   y: z.number().finite(),
 });
 
-const identitySchema = z.strictObject({
-  namespace: z.string().optional(),
-  keyColumnId: z.string().optional(),
-  valueColumnId: z.string().optional(),
-});
+const identitySchema = z
+  .strictObject({
+    namespace: z
+      .string()
+      .optional()
+      .describe('Namespace prefix used in exported ID-registry keys, such as Sound in Sound.SOUND_CLICK.'),
+    keyColumnId: z
+      .string()
+      .optional()
+      .describe('Stable column ID whose row values provide readable symbol keys for ID-registry entries.'),
+    valueColumnId: z
+      .string()
+      .optional()
+      .describe('Stable column ID whose row values provide runtime IDs for ID-registry entries.'),
+  })
+  .describe(IDENTITY_USAGE_DESCRIPTION);
 
 const refSchema = z
   .strictObject({
@@ -31,7 +46,7 @@ const refSchema = z
     ),
   })
   .describe(
-    `Schema-level reference target. ${REF_CELL_VALUE_DESCRIPTION} Prefer a primary column or identity.valueColumnId.`,
+    `Schema-level reference target. ${REF_CELL_VALUE_DESCRIPTION} ${REF_TARGET_PREFERENCE_DESCRIPTION}`,
   );
 
 const columnTypeSchema = z

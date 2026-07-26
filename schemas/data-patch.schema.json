@@ -45,16 +45,26 @@
     },
     "identity": {
       "type": "object",
+      "description": "Optional ID-registry metadata. Configure it only when rows in this table must be exposed through the global ${namespace}.${symbolKey} ID registry. Most configuration, parameter, detail, and relationship tables do not need identity. Do not add identity or symbol-key/runtime-ID columns merely because a table has a primary key, stable IDs, or ref relationships.",
       "additionalProperties": false,
       "properties": {
-        "namespace": { "type": "string" },
-        "keyColumnId": { "type": "string" },
-        "valueColumnId": { "type": "string" }
+        "namespace": {
+          "type": "string",
+          "description": "Namespace prefix used in exported ID-registry keys, such as Sound in Sound.SOUND_CLICK."
+        },
+        "keyColumnId": {
+          "type": "string",
+          "description": "Stable column ID whose row values provide readable symbol keys for ID-registry entries."
+        },
+        "valueColumnId": {
+          "type": "string",
+          "description": "Stable column ID whose row values provide runtime IDs for ID-registry entries."
+        }
       }
     },
     "ref": {
       "type": "object",
-      "description": "Schema-level reference target. A ref cell stores the referenced target column's actual value. tableId and columnId identify the target schema only; never store a tableId, columnId, or _rowId in the cell. Prefer a primary column or identity.valueColumnId.",
+      "description": "Schema-level reference target. A ref cell stores the referenced target column's actual value. tableId and columnId identify the target schema only; never store a tableId, columnId, or _rowId in the cell. Prefer a primary column, an already-configured identity.valueColumnId, or another unique stable target. Do not create identity merely to define a ref.",
       "additionalProperties": false,
       "required": ["tableId", "columnId"],
       "properties": {

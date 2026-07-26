@@ -160,9 +160,17 @@ describe('Configra MCP server', () => {
     }
     expect(publicPatchSchema).toContain('remark');
     expect(publicPatchSchema).toContain("referenced target column's actual value");
+    expect(publicPatchSchema).toContain('Optional ID-registry metadata');
+    expect(publicPatchSchema).toContain('Most configuration, parameter, detail, and relationship tables');
+    expect(publicPatchSchema).toContain('Do not add identity or symbol-key/runtime-ID columns');
+    expect(publicPatchSchema).toContain('Do not create identity merely to define a ref');
+    expect(previewTool?.description).toContain('Do not add identity or symbol-key/runtime-ID columns');
 
     const assignRefTool = tools.tools.find((tool) => tool.name === 'configra_preview_assign_refs');
     expect(assignRefTool?.description).toContain('targetRowId itself is never stored');
+
+    const defineRefTool = tools.tools.find((tool) => tool.name === 'configra_preview_define_ref');
+    expect(defineRefTool?.description).toContain('Do not create identity merely to define a ref');
 
     const status = parseToolText(await client.callTool({ name: 'configra_get_status', arguments: {} }));
     expect(status).toMatchObject({
@@ -176,6 +184,9 @@ describe('Configra MCP server', () => {
     expect(inspected).toHaveProperty('table');
     expect((inspected.table as { rows: unknown[] }).rows).toHaveLength(2);
     expect((inspected.table as { relationships: unknown[] }).relationships).toHaveLength(1);
+    expect(
+      (inspected.table as { referenceSemantics: { identity: string } }).referenceSemantics.identity,
+    ).toContain('Most configuration, parameter, detail, and relationship tables');
 
     const definedRef = await client.callTool({
       name: 'configra_preview_define_ref',
