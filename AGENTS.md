@@ -54,6 +54,7 @@ Tauri
 
 - Web 模式：`npm run dev`
 - 桌面模式：`npm run tauri:dev`
+- Windows 多实例调试：`start-debug.bat` 或 `npm run debug`。首个实例会动态选择 `5173–5273` 范围内的空闲 Vite 端口并通过临时 Tauri 配置保持 `devUrl` 一致；同仓库后续实例直接复用已运行的调试服务和可执行文件，避免 Windows 锁定首个 `configra.exe` 后重复链接失败。
 - Headless CLI：`npm run --silent cfg -- ...`
 - 源码桌面 MCP：设置 → AI / MCP
 
@@ -678,7 +679,7 @@ Exit codes:
 The source desktop application now manages a local Streamable HTTP MCP service.
 
 - The toolbar Settings entry opens a categorized settings panel; its AI / MCP category starts/stops the service and persists its enabled state.
-- The service listens only on `127.0.0.1:37631` and uses a per-install token in the URL.
+- The service listens only on `127.0.0.1` and uses a per-install token in the URL. Its default port is `37631`; Settings → AI / MCP can apply another port or reset it to the default. The selected port persists in `mcp-settings.json`, and an enabled service restarts automatically after a port change.
 - The canonical server/source ID is `configra`; initialization advertises tools only. Unsupported `resources/*` calls return `CAPABILITY_NOT_SUPPORTED`.
 - The connection URL is available through the toolbar copy button.
 - MCP is source desktop only; browser mode and packaged sidecars are not supported yet.
@@ -691,9 +692,9 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
 - `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
-- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Hiding it removes the window completely from the canvas; restore it through Settings → AI / MCP → Activity Log. Visibility persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
+- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a small button in the bottom-right corner, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.
 - MCP lifecycle/config files live in the Tauri application config directory as `mcp-settings.json`, `mcp-context.json`, `mcp-events.json`, and `mcp-logs.jsonl`.
 
-MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, service restart persistence, scoped dirty access, Full Access persistence, log-window hide/restore through Settings, and process cleanup after disabling or closing the application.
+MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, service restart persistence, custom-port persistence and default reset, scoped dirty access, Full Access persistence, log-window minimize/restore from the bottom-right launcher, and process cleanup after disabling or closing the application.

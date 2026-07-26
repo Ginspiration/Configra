@@ -4,8 +4,10 @@ import type { Translator } from '../i18n';
 
 type McpLogWindowProps = {
   entries: McpLogEntry[];
+  expanded: boolean;
   running: boolean;
-  onHide(): void;
+  onMinimize(): void;
+  onRestore(): void;
   onOpenContextMenu(position: { x: number; y: number }): void;
   t: Translator;
 };
@@ -18,8 +20,10 @@ const formatLogTime = (timestamp: string) => {
 
 export default function McpLogWindow({
   entries,
+  expanded,
   running,
-  onHide,
+  onMinimize,
+  onRestore,
   onOpenContextMenu,
   t,
 }: McpLogWindowProps) {
@@ -28,6 +32,27 @@ export default function McpLogWindow({
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [entries]);
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="mcp-log-launcher"
+        title={t('mcpLogRestore')}
+        aria-label={t('mcpLogRestore')}
+        onClick={onRestore}
+      >
+        <span className="mcp-log-launcher__icon" aria-hidden="true">
+          <span>&gt;</span>
+          <span>_</span>
+        </span>
+        <span
+          className={`mcp-log-launcher__status ${running ? 'is-running' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+    );
+  }
 
   return (
     <section
@@ -48,11 +73,11 @@ export default function McpLogWindow({
         <button
           type="button"
           className="mcp-log-window__hide"
-          title={t('mcpLogHide')}
-          aria-label={t('mcpLogHide')}
-          onClick={onHide}
+          title={t('mcpLogMinimize')}
+          aria-label={t('mcpLogMinimize')}
+          onClick={onMinimize}
         >
-          ×
+          −
         </button>
       </header>
 

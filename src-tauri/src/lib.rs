@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use uuid::Uuid;
 
-const MCP_PORT: u16 = 37631;
+const DEFAULT_MCP_PORT: u16 = 37631;
 const MCP_SERVER_ID: &str = "configra";
 const MCP_DISPLAY_NAME: &str = "Configra";
 const MCP_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -26,6 +26,7 @@ struct McpSettings {
     enabled: bool,
     #[serde(default)]
     full_access: bool,
+    #[serde(default = "default_mcp_port")]
     port: u16,
     token: String,
 }
@@ -36,7 +37,7 @@ impl Default for McpSettings {
             version: 1,
             enabled: false,
             full_access: false,
-            port: MCP_PORT,
+            port: DEFAULT_MCP_PORT,
             token: Uuid::new_v4().simple().to_string(),
         }
     }
@@ -79,8 +80,13 @@ struct McpStatus {
     running: bool,
     full_access: bool,
     port: u16,
+    default_port: u16,
     connection_url: String,
     error: Option<String>,
+}
+
+fn default_mcp_port() -> u16 {
+    DEFAULT_MCP_PORT
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -532,8 +538,16 @@ fn load_or_create_settings(config_dir: &Path) -> Result<McpSettings, String> {
     let path = settings_path(config_dir);
     if path.exists() {
         let mut settings: McpSettings = read_json(&path)?;
+        let mut changed = false;
         if settings.token.len() < 16 {
             settings.token = Uuid::new_v4().simple().to_string();
+            changed = true;
+        }
+        if settings.port == 0 {
+            settings.port = DEFAULT_MCP_PORT;
+            changed = true;
+        }
+        if changed {
             write_json(&path, &settings)?;
         }
         return Ok(settings);
@@ -553,6 +567,7 @@ fn status_for(state: &McpState, settings: &McpSettings) -> McpStatus {
         running: settings.enabled && state.is_running(settings),
         full_access: settings.full_access,
         port: settings.port,
+        default_port: DEFAULT_MCP_PORT,
         connection_url: format!("http://127.0.0.1:{}/mcp/{}", settings.port, settings.token),
         error: state.last_error.lock().ok().and_then(|error| error.clone()),
     }
@@ -629,6 +644,45 @@ fn restart_mcp(state: tauri::State<'_, McpState>) -> Result<McpStatus, String> {
         state.record_error(error);
     }
     Ok(status_for(&state, &settings))
+}
+
+fn update_mcp_port(state: &McpState, port: u16) -> Result<McpStatus, String> {
+    if port == 0 {
+        return Err("MCP port must be between 1 and 65535.".to_string());
+    }
+
+    let mut settings = load_or_create_settings(&state.config_dir)?;
+    if settings.port == port {
+        return Ok(status_for(state, &settings));
+    }
+
+    let previous_port = settings.port;
+    settings.port = port;
+    write_json(&settings_path(&state.config_dir), &settings)?;
+    state.log(
+        "info",
+        format!("MCP port changed from {previous_port} to {port}."),
+    );
+    state.clear_error();
+
+    if settings.enabled {
+        state.stop();
+        if let Err(error) = state.start(&settings) {
+            state.record_error(error);
+        }
+    }
+
+    Ok(status_for(state, &settings))
+}
+
+#[tauri::command]
+fn set_mcp_port(state: tauri::State<'_, McpState>, port: u16) -> Result<McpStatus, String> {
+    update_mcp_port(&state, port)
+}
+
+#[tauri::command]
+fn reset_mcp_port(state: tauri::State<'_, McpState>) -> Result<McpStatus, String> {
+    update_mcp_port(&state, DEFAULT_MCP_PORT)
 }
 
 #[tauri::command]
@@ -718,6 +772,8 @@ pub fn run() {
             get_mcp_status,
             set_mcp_enabled,
             restart_mcp,
+            set_mcp_port,
+            reset_mcp_port,
             set_mcp_full_access,
             update_mcp_context,
             get_mcp_events,
@@ -767,4 +823,48 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_port_uses_default_when_missing() {
+        let settings: McpSettings = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "enabled": false,
+            "fullAccess": false,
+            "token": "0123456789abcdef"
+        }))
+        .expect("settings without a port should remain compatible");
+
+        assert_eq!(settings.port, DEFAULT_MCP_PORT);
+    }
+
+    #[test]
+    fn mcp_port_change_and_reset_are_persisted() {
+        let config_dir = std::env::temp_dir().join(format!(
+            "configra-mcp-port-test-{}",
+            Uuid::new_v4().simple()
+        ));
+
+        let result = (|| -> Result<(), String> {
+            let state = McpState::new(config_dir.clone(), PathBuf::new());
+            assert!(update_mcp_port(&state, 0).is_err());
+
+            let custom_status = update_mcp_port(&state, 43123)?;
+            assert_eq!(custom_status.port, 43123);
+            assert_eq!(custom_status.default_port, DEFAULT_MCP_PORT);
+            assert_eq!(load_or_create_settings(&config_dir)?.port, 43123);
+
+            let reset_status = update_mcp_port(&state, DEFAULT_MCP_PORT)?;
+            assert_eq!(reset_status.port, DEFAULT_MCP_PORT);
+            assert_eq!(load_or_create_settings(&config_dir)?.port, DEFAULT_MCP_PORT);
+            Ok(())
+        })();
+
+        let _ = fs::remove_dir_all(&config_dir);
+        result.expect("custom and default MCP ports should persist in mcp-settings.json");
+    }
 }

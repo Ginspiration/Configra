@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "debug": "node scripts/start-debug.mjs",
     "build": "tsc --noEmit && vite build",
     "cfg": "tsx src/cli/cfg.ts",
     "mcp": "tsx src/mcp/server.ts",

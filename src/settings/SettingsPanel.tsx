@@ -22,6 +22,8 @@ type SettingsPanelProps = {
   onMiniMapChange(show: boolean): void;
   onMcpEnabledChange(enabled: boolean): void;
   onMcpRestart(): void;
+  onMcpPortChange(port: number): Promise<boolean>;
+  onMcpPortReset(): Promise<boolean>;
   onMcpFullAccessChange(fullAccess: boolean): void;
   onMcpLogVisibilityChange(show: boolean): void;
   onCopyMcpAddress(): void;
@@ -43,12 +45,26 @@ export default function SettingsPanel({
   onMiniMapChange,
   onMcpEnabledChange,
   onMcpRestart,
+  onMcpPortChange,
+  onMcpPortReset,
   onMcpFullAccessChange,
   onMcpLogVisibilityChange,
   onCopyMcpAddress,
   t,
 }: SettingsPanelProps) {
   const [activeCategory, setActiveCategory] = useState<'interface' | 'mcp'>('interface');
+  const [mcpPortInput, setMcpPortInput] = useState('');
+  const [mcpPortDirty, setMcpPortDirty] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setMcpPortDirty(false);
+      return;
+    }
+    if (!mcpPortDirty && mcpStatus) {
+      setMcpPortInput(String(mcpStatus.port));
+    }
+  }, [mcpPortDirty, mcpStatus, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -62,6 +78,25 @@ export default function SettingsPanel({
   if (!open) return null;
 
   const mcpRunning = mcpStatus?.running ?? false;
+  const parsedMcpPort = Number(mcpPortInput);
+  const mcpPortValid =
+    /^\d+$/.test(mcpPortInput.trim()) &&
+    Number.isInteger(parsedMcpPort) &&
+    parsedMcpPort >= 1 &&
+    parsedMcpPort <= 65535;
+  const mcpPortChanged = mcpPortValid && parsedMcpPort !== mcpStatus?.port;
+  const mcpDefaultPort = mcpStatus?.defaultPort;
+  const applyMcpPort = async () => {
+    if (!mcpPortChanged) return;
+    if (await onMcpPortChange(parsedMcpPort)) setMcpPortDirty(false);
+  };
+  const restoreDefaultMcpPort = async () => {
+    if (mcpDefaultPort === undefined) return;
+    if (await onMcpPortReset()) {
+      setMcpPortInput(String(mcpDefaultPort));
+      setMcpPortDirty(false);
+    }
+  };
 
   return (
     <div
@@ -207,6 +242,68 @@ export default function SettingsPanel({
                     />
                     <span aria-hidden="true" />
                   </label>
+                </div>
+
+                <div className="settings-row settings-row--port">
+                  <div className="settings-row__copy">
+                    <strong>{t('settingsMcpPort')}</strong>
+                    <span>
+                      {t('settingsMcpPortDescription', { port: mcpDefaultPort ?? '—' })}
+                    </span>
+                  </div>
+                  <div className="settings-port-control">
+                    <div className="settings-port-control__input-row">
+                      <input
+                        type="number"
+                        className="settings-port-input"
+                        min={1}
+                        max={65535}
+                        step={1}
+                        inputMode="numeric"
+                        value={mcpPortInput}
+                        disabled={!desktopAvailable || mcpBusy || !mcpStatus}
+                        aria-label={t('settingsMcpPort')}
+                        aria-invalid={mcpPortDirty && !mcpPortValid}
+                        onChange={(event) => {
+                          setMcpPortInput(event.target.value);
+                          setMcpPortDirty(true);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && mcpPortChanged && !mcpBusy) {
+                            event.preventDefault();
+                            void applyMcpPort();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="button settings-port-reset"
+                        disabled={
+                          !desktopAvailable ||
+                          mcpBusy ||
+                          mcpDefaultPort === undefined ||
+                          (!mcpPortDirty && mcpStatus?.port === mcpDefaultPort)
+                        }
+                        title={t('settingsMcpPortResetTitle', {
+                          port: mcpDefaultPort ?? '—',
+                        })}
+                        onClick={() => void restoreDefaultMcpPort()}
+                      >
+                        {t('settingsMcpPortReset')}
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--primary settings-port-apply"
+                        disabled={!desktopAvailable || mcpBusy || !mcpPortChanged}
+                        onClick={() => void applyMcpPort()}
+                      >
+                        {t('settingsMcpPortApply')}
+                      </button>
+                    </div>
+                    {mcpPortDirty && !mcpPortValid ? (
+                      <span className="settings-port-error">{t('settingsMcpPortInvalid')}</span>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="settings-row">

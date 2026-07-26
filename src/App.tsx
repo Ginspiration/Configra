@@ -41,9 +41,11 @@ import {
   readTextFile,
   readProjectFileText,
   rememberRecentProjectPath,
+  resetMcpPort,
   restartMcp,
   setMcpEnabled,
   setMcpFullAccess,
+  setMcpPort,
   type McpEvents,
   type McpLogEntry,
   type McpStatus,
@@ -964,6 +966,39 @@ export default function App() {
       .finally(() => setMcpBusy(false));
   }, [t]);
 
+  const changeMcpPort = useCallback(
+    async (port: number) => {
+      setMcpBusy(true);
+      try {
+        const nextStatus = await setMcpPort(port);
+        setMcpStatus(nextStatus);
+        setStatus(nextStatus.error ?? t('mcpPortUpdated', { port: nextStatus.port }));
+        return true;
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        setMcpBusy(false);
+      }
+    },
+    [t],
+  );
+
+  const restoreDefaultMcpPort = useCallback(async () => {
+    setMcpBusy(true);
+    try {
+      const nextStatus = await resetMcpPort();
+      setMcpStatus(nextStatus);
+      setStatus(nextStatus.error ?? t('mcpPortReset', { port: nextStatus.port }));
+      return true;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      setMcpBusy(false);
+    }
+  }, [t]);
+
   const changeMcpFullAccess = useCallback(
     (fullAccess: boolean) => {
       setMcpBusy(true);
@@ -1093,17 +1128,21 @@ export default function App() {
         onMiniMapChange={setShowMiniMap}
         onMcpEnabledChange={changeMcpEnabled}
         onMcpRestart={restartMcpService}
+        onMcpPortChange={changeMcpPort}
+        onMcpPortReset={restoreDefaultMcpPort}
         onMcpFullAccessChange={changeMcpFullAccess}
         onMcpLogVisibilityChange={setMcpLogVisible}
         onCopyMcpAddress={copyMcpAddress}
         t={t}
       />
 
-      {mcpStatus?.enabled && mcpLogVisible ? (
+      {mcpStatus?.enabled ? (
         <McpLogWindow
           entries={mcpLogs}
+          expanded={mcpLogVisible}
           running={mcpStatus.running}
-          onHide={() => setMcpLogVisible(false)}
+          onMinimize={() => setMcpLogVisible(false)}
+          onRestore={() => setMcpLogVisible(true)}
           onOpenContextMenu={openMcpLogContextMenu}
           t={t}
         />

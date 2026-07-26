@@ -16,6 +16,7 @@ export type McpStatus = {
   running: boolean;
   fullAccess: boolean;
   port: number;
+  defaultPort: number;
   connectionUrl: string;
   error?: string;
 };
@@ -89,6 +90,14 @@ export async function setMcpEnabled(enabled: boolean) {
 
 export async function restartMcp() {
   return invoke<McpStatus>('restart_mcp');
+}
+
+export async function setMcpPort(port: number) {
+  return invoke<McpStatus>('set_mcp_port', { port });
+}
+
+export async function resetMcpPort() {
+  return invoke<McpStatus>('reset_mcp_port');
 }
 
 export async function setMcpFullAccess(fullAccess: boolean) {
