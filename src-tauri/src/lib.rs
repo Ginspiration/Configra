@@ -112,6 +112,7 @@ struct ManagedMcpChild {
 
 struct McpState {
     child: Mutex<Option<ManagedMcpChild>>,
+    startup_lock: Mutex<()>,
     reused_service: Mutex<bool>,
     last_error: Mutex<Option<String>>,
     config_dir: PathBuf,
@@ -122,6 +123,7 @@ impl McpState {
     fn new(config_dir: PathBuf, repo_dir: PathBuf) -> Self {
         Self {
             child: Mutex::new(None),
+            startup_lock: Mutex::new(()),
             reused_service: Mutex::new(false),
             last_error: Mutex::new(None),
             config_dir,
@@ -130,6 +132,10 @@ impl McpState {
     }
 
     fn start(&self, settings: &McpSettings) -> Result<(), String> {
+        let _startup_guard = self
+            .startup_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
         self.log(
             "info",
             format!("Starting MCP service on 127.0.0.1:{}.", settings.port),
@@ -254,18 +260,18 @@ impl McpState {
 
             let exited = {
                 let mut slot = self.child.lock().map_err(|error| error.to_string())?;
-                if let Some(child) = slot.as_mut() {
-                    if let Some(status) = child
-                        .process
-                        .try_wait()
-                        .map_err(|error| error.to_string())?
-                    {
-                        let diagnostics = stderr_tail(&child.stderr_tail);
-                        *slot = None;
-                        Some((status, diagnostics))
-                    } else {
-                        None
-                    }
+                let Some(child) = slot.as_mut() else {
+                    self.log("info", "MCP service startup was canceled.");
+                    return Ok(());
+                };
+                if let Some(status) = child
+                    .process
+                    .try_wait()
+                    .map_err(|error| error.to_string())?
+                {
+                    let diagnostics = stderr_tail(&child.stderr_tail);
+                    *slot = None;
+                    Some((status, diagnostics))
                 } else {
                     None
                 }
@@ -813,12 +819,17 @@ pub fn run() {
             )
             .map_err(std::io::Error::other)?;
 
-            if settings.enabled {
-                if let Err(error) = state.start(&settings) {
-                    state.record_error(error);
-                }
-            }
             app.manage(state);
+
+            if settings.enabled {
+                let app_handle = app.handle().clone();
+                thread::spawn(move || {
+                    let state = app_handle.state::<McpState>();
+                    if let Err(error) = state.start(&settings) {
+                        state.record_error(error);
+                    }
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

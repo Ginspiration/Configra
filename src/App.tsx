@@ -7,6 +7,7 @@ import DataGridModal from './dataGrid/DataGridModal';
 import ContextMenu, { type ContextMenuItem } from './contextMenu/ContextMenu';
 import McpLogWindow from './mcp/McpLogWindow';
 import SettingsPanel from './settings/SettingsPanel';
+import StartupScreen from './startup/StartupScreen';
 import { useEditorStore } from './store/editorStore';
 import { validateProject } from './validation/validateProject';
 import {
@@ -160,6 +161,7 @@ export default function App() {
   const [mcpLogVisible, setMcpLogVisible] = useState(initialMcpLogVisible);
   const [mcpBusy, setMcpBusy] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isStarting, setIsStarting] = useState(isDesktopRuntime);
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
   const dirtyScopeRef = useRef(dirtyScope);
@@ -738,6 +740,8 @@ export default function App() {
         loadProjectText(recentFile.text, recentFile.name, recentFile.path);
       } catch (error) {
         setStatus(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsStarting(false);
       }
     };
 
@@ -1022,6 +1026,8 @@ export default function App() {
       () => setStatus(t('clipboardDenied')),
     );
   }, [mcpStatus?.connectionUrl, t]);
+
+  if (isStarting) return <StartupScreen t={t} />;
 
   return (
     <div className="app-shell" onContextMenu={preventNativeContextMenu}>
