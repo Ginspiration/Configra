@@ -28,12 +28,15 @@ import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition } from './model/types';
 import {
   clearMcpLogs,
+  claimProjectWindow,
   fileExists,
+  getAssignedProjectPath,
   getMcpEvents,
   getMcpLogs,
   getMcpStatus,
   isDesktopRuntime,
   loadRecentProjectPath,
+  openProjectWindow,
   pickExportDirectoryPath,
   pickIdRegistrySavePath,
   pickProjectFileText,
@@ -41,6 +44,7 @@ import {
   pickProjectSavePath,
   readTextFile,
   readProjectFileText,
+  releaseProjectWindow,
   rememberRecentProjectPath,
   resetMcpPort,
   restartMcp,
@@ -162,6 +166,8 @@ export default function App() {
   const [mcpBusy, setMcpBusy] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isStarting, setIsStarting] = useState(isDesktopRuntime);
+  const windowLabelRef = useRef(isDesktopRuntime() ? getCurrentWindow().label : 'browser');
+  const projectSessionId = windowLabelRef.current;
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
   const dirtyScopeRef = useRef(dirtyScope);
@@ -192,6 +198,12 @@ export default function App() {
     return () => mediaQuery.removeEventListener('change', syncTheme);
   }, [themePreference]);
 
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const name = projectPath?.split(/[\\/]/).pop();
+    void getCurrentWindow().setTitle(name ? `${name} — Configra` : 'Configra');
+  }, [projectPath]);
+
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
   const editingTable = project.tables.find((table) => table.id === editingTableId) ?? selectedTable;
   const issues = useMemo(() => validateProject(project, t), [project, t]);
@@ -221,9 +233,16 @@ export default function App() {
       return true;
     }
 
+    let claimedFirstSavePath = false;
     try {
       const nextPath = projectPath ?? (await pickProjectSavePath());
       if (!nextPath) return false;
+
+      if (!(await claimProjectWindow(windowLabelRef.current, nextPath))) {
+        setStatus(t('projectAlreadyOpen'));
+        return false;
+      }
+      claimedFirstSavePath = projectPath === undefined;
 
       await writeProjectFileText(nextPath, JSON.stringify(project, null, 2));
       setProjectPath(nextPath);
@@ -231,10 +250,13 @@ export default function App() {
       setStatus(`Saved ${nextPath.split(/[\\/]/).pop() ?? nextPath}`);
       return true;
     } catch (error) {
+      if (claimedFirstSavePath) {
+        await releaseProjectWindow(windowLabelRef.current, projectSessionId).catch(() => undefined);
+      }
       setStatus(error instanceof Error ? error.message : String(error));
       return false;
     }
-  }, [markClean, project, projectPath]);
+  }, [markClean, project, projectPath, projectSessionId, t]);
 
   useEffect(() => {
     saveProjectRef.current = saveProject;
@@ -270,6 +292,14 @@ export default function App() {
   const createNewProject = useCallback(async () => {
     if (!(await confirmReplaceProject(t('unsavedChangesNewMessage')))) return;
 
+    if (isDesktopRuntime()) {
+      try {
+        await releaseProjectWindow(windowLabelRef.current, projectSessionId);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
     newProject();
     setProjectPath(undefined);
     setEditingTableId(undefined);
@@ -277,7 +307,7 @@ export default function App() {
     setMenu(undefined);
     setShowAppMenu(false);
     setStatus(t('newProjectCreated'));
-  }, [confirmReplaceProject, newProject, t]);
+  }, [confirmReplaceProject, newProject, projectSessionId, t]);
 
   const importDesktopProjectFile = useCallback(async () => {
     try {
@@ -285,6 +315,15 @@ export default function App() {
 
       const selected = await pickProjectFileText(t('importProject'));
       if (!selected) return;
+      const parsed = parseProjectFileText(selected.text, t);
+      if (!parsed.ok) {
+        setStatus(parsed.error);
+        return;
+      }
+      if (!(await claimProjectWindow(windowLabelRef.current, selected.path))) {
+        setStatus(t('projectAlreadyOpen'));
+        return;
+      }
       if (loadProjectText(selected.text, selected.name, selected.path)) {
         await rememberRecentProjectPath(selected.path);
       }
@@ -292,6 +331,24 @@ export default function App() {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }, [confirmReplaceProject, loadProjectText, t]);
+
+  const openDesktopProjectInNewWindow = useCallback(async () => {
+    try {
+      const selected = await pickProjectFileText(t('openProjectInNewWindow'));
+      if (!selected) return;
+      const parsed = parseProjectFileText(selected.text, t);
+      if (!parsed.ok) {
+        setStatus(parsed.error);
+        return;
+      }
+      const result = await openProjectWindow(selected.path);
+      await rememberRecentProjectPath(selected.path);
+      setShowAppMenu(false);
+      setStatus(result.created ? t('projectOpenedInNewWindow') : t('projectAlreadyOpen'));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }, [t]);
 
   const triggerImportProject = useCallback(() => {
     if (isDesktopRuntime()) {
@@ -632,6 +689,16 @@ export default function App() {
         shortcut: 'Ctrl+O',
         onSelect: triggerImportProject,
       },
+      ...(isDesktopRuntime()
+        ? [
+            {
+              id: 'open-project-new-window',
+              label: t('openProjectInNewWindow'),
+              shortcut: 'Ctrl+Alt+O',
+              onSelect: openDesktopProjectInNewWindow,
+            } satisfies ContextMenuItem,
+          ]
+        : []),
       {
         id: 'export-project',
         label: isExporting ? t('exporting') : t('exportAll'),
@@ -645,7 +712,15 @@ export default function App() {
         onSelect: () => setShowSettings(true),
       },
     ],
-    [createNewProject, exportAllJsonFiles, isExporting, saveProject, t, triggerImportProject],
+    [
+      createNewProject,
+      exportAllJsonFiles,
+      isExporting,
+      openDesktopProjectInNewWindow,
+      saveProject,
+      t,
+      triggerImportProject,
+    ],
   );
 
   useEffect(() => {
@@ -662,7 +737,6 @@ export default function App() {
 
   useEffect(() => {
     if (!isDesktopRuntime()) return;
-    if (!isDirty) return;
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -672,7 +746,6 @@ export default function App() {
     void appWindow
       .onCloseRequested((event) => {
         if (allowCloseRef.current) return;
-        if (!isDirtyRef.current) return;
 
         event.preventDefault();
         if (closePromptOpenRef.current) return;
@@ -685,23 +758,26 @@ export default function App() {
           const discardLabel = translateNow('discardAndQuit');
 
           try {
-            const result = await message(translateNow('unsavedChangesCloseMessage'), {
-              title: translateNow('unsavedChangesTitle'),
-              kind: 'warning',
-              buttons: {
-                yes: saveLabel,
-                no: discardLabel,
-                cancel: translateNow('cancel'),
-              },
-            });
+            if (isDirtyRef.current) {
+              const result = await message(translateNow('unsavedChangesCloseMessage'), {
+                title: translateNow('unsavedChangesTitle'),
+                kind: 'warning',
+                buttons: {
+                  yes: saveLabel,
+                  no: discardLabel,
+                  cancel: translateNow('cancel'),
+                },
+              });
 
-            if (result === saveLabel || result === 'Yes') {
-              const saved = await saveProjectRef.current();
-              if (!saved) return;
-            } else if (result !== discardLabel && result !== 'No') {
-              return;
+              if (result === saveLabel || result === 'Yes') {
+                const saved = await saveProjectRef.current();
+                if (!saved) return;
+              } else if (result !== discardLabel && result !== 'No') {
+                return;
+              }
             }
 
+            await releaseProjectWindow(windowLabelRef.current, projectSessionId);
             allowCloseRef.current = true;
             await appWindow.destroy();
           } catch (error) {
@@ -724,7 +800,7 @@ export default function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [isDirty]);
+  }, [projectSessionId]);
 
   useEffect(() => {
     if (!isDesktopRuntime()) return;
@@ -733,8 +809,14 @@ export default function App() {
 
     const loadRecentProject = async () => {
       try {
-        const recentPath = await loadRecentProjectPath();
+        const assignedPath = await getAssignedProjectPath(windowLabelRef.current);
+        const recentPath = assignedPath ??
+          (windowLabelRef.current === 'main' ? await loadRecentProjectPath() : undefined);
         if (!recentPath) return;
+        if (!(await claimProjectWindow(windowLabelRef.current, recentPath))) {
+          setStatus(t('projectAlreadyOpen'));
+          return;
+        }
 
         const recentFile = await readProjectFileText(recentPath);
         loadProjectText(recentFile.text, recentFile.name, recentFile.path);
@@ -746,23 +828,23 @@ export default function App() {
     };
 
     void loadRecentProject();
-  }, [loadProjectText]);
+  }, [loadProjectText, t]);
 
   useEffect(() => {
     if (!isDesktopRuntime()) return;
-    if (!mcpStatus) return;
     const revision = mcpContextRevisionRef.current + 1;
     mcpContextRevisionRef.current = revision;
     void updateMcpContext(
+      projectSessionId,
+      windowLabelRef.current,
       projectPath,
       isDirty,
       dirtyScope,
-      mcpStatus?.fullAccess ?? false,
       revision,
     ).catch((error) => {
       setStatus(error instanceof Error ? error.message : String(error));
     });
-  }, [dirtyScope, isDirty, mcpStatus?.fullAccess, projectPath]);
+  }, [dirtyScope, isDirty, projectPath, projectSessionId]);
 
   const reloadProjectFromMcp = useCallback(
     async (event: McpEvents) => {
@@ -811,8 +893,8 @@ export default function App() {
       const logsRevision = mcpLogsRevisionRef.current;
       try {
         const [nextStatus, event, logs] = await Promise.all([
-          getMcpStatus(),
-          getMcpEvents(),
+          getMcpStatus(projectSessionId),
+          getMcpEvents(projectSessionId),
           getMcpLogs(),
         ]);
         if (disposed) return;
@@ -842,7 +924,7 @@ export default function App() {
       disposed = true;
       window.clearInterval(interval);
     };
-  }, [reloadProjectFromMcp]);
+  }, [projectSessionId, reloadProjectFromMcp]);
 
   useEffect(() => {
     try {
@@ -864,6 +946,13 @@ export default function App() {
 
       const key = event.key.toLowerCase();
       const commandKey = event.ctrlKey || event.metaKey;
+
+      if (commandKey && event.altKey && !event.shiftKey && key === 'o' && isDesktopRuntime()) {
+        event.preventDefault();
+        setShowAppMenu(false);
+        void openDesktopProjectInNewWindow();
+        return;
+      }
 
       if (commandKey && !event.altKey) {
         if (key === 'n' && event.shiftKey) {
@@ -924,6 +1013,7 @@ export default function App() {
     createNewProject,
     deleteTableById,
     downloadTableJsonFile,
+    openDesktopProjectInNewWindow,
     openRowsModal,
     saveProject,
     showSettings,
@@ -946,7 +1036,7 @@ export default function App() {
 
   const changeMcpEnabled = useCallback((enabled: boolean) => {
     setMcpBusy(true);
-    void setMcpEnabled(enabled)
+    void setMcpEnabled(enabled, projectSessionId)
       .then((nextStatus) => {
         setMcpStatus(nextStatus);
         if (nextStatus.error) setStatus(nextStatus.error);
@@ -955,11 +1045,11 @@ export default function App() {
         setStatus(error instanceof Error ? error.message : String(error));
       })
       .finally(() => setMcpBusy(false));
-  }, []);
+  }, [projectSessionId]);
 
   const restartMcpService = useCallback(() => {
     setMcpBusy(true);
-    void restartMcp()
+    void restartMcp(projectSessionId)
       .then((nextStatus) => {
         setMcpStatus(nextStatus);
         setStatus(nextStatus.error ?? (nextStatus.running ? t('mcpRestarted') : ''));
@@ -968,13 +1058,13 @@ export default function App() {
         setStatus(error instanceof Error ? error.message : String(error));
       })
       .finally(() => setMcpBusy(false));
-  }, [t]);
+  }, [projectSessionId, t]);
 
   const changeMcpPort = useCallback(
     async (port: number) => {
       setMcpBusy(true);
       try {
-        const nextStatus = await setMcpPort(port);
+        const nextStatus = await setMcpPort(port, projectSessionId);
         setMcpStatus(nextStatus);
         setStatus(nextStatus.error ?? t('mcpPortUpdated', { port: nextStatus.port }));
         return true;
@@ -985,13 +1075,13 @@ export default function App() {
         setMcpBusy(false);
       }
     },
-    [t],
+    [projectSessionId, t],
   );
 
   const restoreDefaultMcpPort = useCallback(async () => {
     setMcpBusy(true);
     try {
-      const nextStatus = await resetMcpPort();
+      const nextStatus = await resetMcpPort(projectSessionId);
       setMcpStatus(nextStatus);
       setStatus(nextStatus.error ?? t('mcpPortReset', { port: nextStatus.port }));
       return true;
@@ -1001,12 +1091,12 @@ export default function App() {
     } finally {
       setMcpBusy(false);
     }
-  }, [t]);
+  }, [projectSessionId, t]);
 
   const changeMcpFullAccess = useCallback(
     (fullAccess: boolean) => {
       setMcpBusy(true);
-      void setMcpFullAccess(fullAccess)
+      void setMcpFullAccess(projectSessionId, fullAccess)
         .then((nextStatus) => {
           setMcpStatus(nextStatus);
           if (fullAccess) setStatus(t('mcpFullAccessEnabled'));
@@ -1016,7 +1106,7 @@ export default function App() {
         })
         .finally(() => setMcpBusy(false));
     },
-    [t],
+    [projectSessionId, t],
   );
 
   const copyMcpAddress = useCallback(() => {
@@ -1040,6 +1130,7 @@ export default function App() {
         />
         <div className="brand-block">
           <strong>Configra</strong>
+          <span title={projectPath}>{projectPath?.split(/[\\/]/).pop() ?? t('unsavedProject')}</span>
           <span>{t('errorCount', { count: errorCount })}</span>
           {warningCount > 0 ? <span>{t('warningCount', { count: warningCount })}</span> : null}
         </div>

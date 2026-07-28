@@ -92,6 +92,7 @@ export default function McpLogWindow({
             >
               <time>{formatLogTime(entry.timestamp)}</time>
               <span>{entry.message}</span>
+              {entry.projectId ? <small>{entry.projectId}</small> : null}
               {entry.durationMs !== undefined ? <small>{entry.durationMs} ms</small> : null}
             </div>
           ))

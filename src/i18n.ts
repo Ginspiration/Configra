@@ -52,6 +52,9 @@ const en = {
   language: 'Language',
   importProject: 'Import',
   importedFile: 'Imported {name}',
+  openProjectInNewWindow: 'Open in New Window',
+  projectAlreadyOpen: 'This project is already open. Focused its existing window.',
+  projectOpenedInNewWindow: 'Opened the project in a new window.',
   locateField: 'Locate {name}',
   miniMap: 'Mini Map',
   mcp: 'MCP',
@@ -206,6 +209,7 @@ const en = {
   unsavedChangesImportMessage: 'The current project has unsaved changes. Save before importing another project?',
   unsavedChangesNewMessage: 'The current project has unsaved changes. Save before creating a new project?',
   unsavedChangesTitle: 'Unsaved Changes',
+  unsavedProject: 'Unsaved project',
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -262,6 +266,9 @@ const zh: Record<TranslationKey, string> = {
   language: '语言',
   importProject: '导入',
   importedFile: '已导入 {name}',
+  openProjectInNewWindow: '在新窗口中打开',
+  projectAlreadyOpen: '该工程已经打开，已切换到现有窗口。',
+  projectOpenedInNewWindow: '已在新窗口中打开工程。',
   locateField: '定位到 {name}',
   miniMap: '小地图',
   mcp: 'MCP',
@@ -416,6 +423,7 @@ const zh: Record<TranslationKey, string> = {
   unsavedChangesImportMessage: '当前工程有未保存的修改，导入其他工程前要保存吗？',
   unsavedChangesNewMessage: '当前工程有未保存的修改，新建工程前要保存吗？',
   unsavedChangesTitle: '未保存的修改',
+  unsavedProject: '未保存工程',
 };
 
 const translations: Record<Language, Record<TranslationKey, string>> = { en, zh };

@@ -24,6 +24,7 @@ export type McpStatus = {
 export type McpLogEntry = {
   timestamp: string;
   sourceId?: string;
+  projectId?: string;
   level: 'info' | 'warning' | 'error' | string;
   message: string;
   requestId?: string;
@@ -34,11 +35,17 @@ export type McpLogEntry = {
 export type McpEvents = {
   version: number;
   changeRevision: number;
+  projectId?: string;
   projectPath?: string;
   projectHash?: string;
   changedAt?: string;
   serverId?: string;
   transactionId?: string;
+};
+
+export type OpenProjectWindowResult = {
+  windowLabel: string;
+  created: boolean;
 };
 
 const projectFilters = [
@@ -80,49 +87,51 @@ export async function rememberRecentProjectPath(path: string) {
   await invoke('save_recent_project_path', { path });
 }
 
-export async function getMcpStatus() {
-  return invoke<McpStatus>('get_mcp_status');
+export async function getMcpStatus(projectId?: string) {
+  return invoke<McpStatus>('get_mcp_status', { projectId: projectId ?? null });
 }
 
-export async function setMcpEnabled(enabled: boolean) {
-  return invoke<McpStatus>('set_mcp_enabled', { enabled });
+export async function setMcpEnabled(enabled: boolean, projectId?: string) {
+  return invoke<McpStatus>('set_mcp_enabled', { enabled, projectId: projectId ?? null });
 }
 
-export async function restartMcp() {
-  return invoke<McpStatus>('restart_mcp');
+export async function restartMcp(projectId?: string) {
+  return invoke<McpStatus>('restart_mcp', { projectId: projectId ?? null });
 }
 
-export async function setMcpPort(port: number) {
-  return invoke<McpStatus>('set_mcp_port', { port });
+export async function setMcpPort(port: number, projectId?: string) {
+  return invoke<McpStatus>('set_mcp_port', { port, projectId: projectId ?? null });
 }
 
-export async function resetMcpPort() {
-  return invoke<McpStatus>('reset_mcp_port');
+export async function resetMcpPort(projectId?: string) {
+  return invoke<McpStatus>('reset_mcp_port', { projectId: projectId ?? null });
 }
 
-export async function setMcpFullAccess(fullAccess: boolean) {
-  return invoke<McpStatus>('set_mcp_full_access', { fullAccess });
+export async function setMcpFullAccess(projectId: string, fullAccess: boolean) {
+  return invoke<McpStatus>('set_mcp_full_access', { projectId, fullAccess });
 }
 
 export async function updateMcpContext(
+  projectId: string,
+  windowLabel: string,
   projectPath: string | undefined,
   uiDirty: boolean,
   dirtyScope: 'none' | 'layout' | 'content',
-  fullAccess: boolean,
   revision: number,
 ) {
   await invoke('update_mcp_context', {
+    projectId,
+    windowLabel,
     projectPath: projectPath ?? null,
     uiDirty,
     dirtyScope,
-    fullAccess,
     revision,
     updatedAt: new Date().toISOString(),
   });
 }
 
-export async function getMcpEvents() {
-  return invoke<McpEvents>('get_mcp_events');
+export async function getMcpEvents(projectId: string) {
+  return invoke<McpEvents>('get_mcp_events', { projectId });
 }
 
 export async function getMcpLogs() {
@@ -131,6 +140,22 @@ export async function getMcpLogs() {
 
 export async function clearMcpLogs() {
   await invoke('clear_mcp_logs');
+}
+
+export async function claimProjectWindow(windowLabel: string, path: string) {
+  return invoke<boolean>('claim_project_window', { windowLabel, path });
+}
+
+export async function openProjectWindow(path: string) {
+  return invoke<OpenProjectWindowResult>('open_project_window', { path });
+}
+
+export async function getAssignedProjectPath(windowLabel: string) {
+  return invoke<string | null>('get_assigned_project_path', { windowLabel });
+}
+
+export async function releaseProjectWindow(windowLabel: string, projectId: string) {
+  await invoke('release_project_window', { windowLabel, projectId });
 }
 
 export async function pickProjectFileText(title: string) {

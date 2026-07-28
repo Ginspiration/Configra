@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
@@ -35,7 +35,7 @@ export type ServerOptions = {
   parentPid?: number;
 };
 
-type McpContext = {
+type LegacyMcpContext = {
   version: 1;
   projectPath?: string;
   uiDirty: boolean;
@@ -45,9 +45,27 @@ type McpContext = {
   updatedAt: string;
 };
 
+type McpProjectContext = {
+  projectId: string;
+  windowLabel: string;
+  projectName: string;
+  projectPath: string;
+  uiDirty: boolean;
+  dirtyScope?: 'none' | 'layout' | 'content';
+  fullAccess?: boolean;
+  revision: number;
+  updatedAt: string;
+};
+
+type McpContextRegistry = {
+  version: 2;
+  projects: Record<string, McpProjectContext>;
+};
+
 type McpLogEntry = {
   timestamp: string;
   sourceId?: string;
+  projectId?: string;
   level: 'info' | 'warning' | 'error';
   message: string;
   requestId?: string;
@@ -63,6 +81,7 @@ type McpLogger = {
 type McpEvents = {
   version: 1;
   changeRevision: number;
+  projectId?: string;
   projectPath?: string;
   projectHash?: string;
   changedAt?: string;
@@ -318,27 +337,80 @@ const createServer = (options: ServerOptions) => {
     { capabilities: {} },
   );
   const contextPath = path.join(options.configDir, 'mcp-context.json');
-  const eventsPath = path.join(options.configDir, 'mcp-events.json');
+  const eventsDir = path.join(options.configDir, 'mcp-events');
   const backupDir = path.join(options.configDir, 'backups');
 
-  const readContext = () =>
-    readJsonFile<McpContext>(contextPath, {
-      version: 1,
-      uiDirty: false,
-      revision: 0,
-      updatedAt: new Date(0).toISOString(),
-    });
+  const projectSelectorSchema = {
+    projectId: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+      .optional()
+      .describe('Open Configra project ID from configra_list_projects. Required when multiple projects are open.'),
+  };
 
-  const requireProject = async (mode: 'read' | 'write') => {
-    const context = await readContext();
-    if (!context.projectPath) {
-      serviceError('PROJECT_NOT_OPEN', 'No saved project is active in the desktop editor.');
+  const legacyProjectId = (projectPath: string) =>
+    `project-${createHash('sha256').update(path.resolve(projectPath).toLowerCase()).digest('hex').slice(0, 16)}`;
+
+  const readRegistry = async (): Promise<McpContextRegistry> => {
+    const raw = await readJsonFile<LegacyMcpContext | McpContextRegistry>(contextPath, {
+      version: 2,
+      projects: {},
+    });
+    if (raw.version === 2) return raw;
+    if (!raw.projectPath) return { version: 2, projects: {} };
+    const projectId = legacyProjectId(raw.projectPath);
+    return {
+      version: 2,
+      projects: {
+        [projectId]: {
+          projectId,
+          windowLabel: 'legacy',
+          projectName: path.basename(raw.projectPath),
+          projectPath: raw.projectPath,
+          uiDirty: raw.uiDirty,
+          dirtyScope: raw.dirtyScope,
+          fullAccess: raw.fullAccess,
+          revision: raw.revision,
+          updatedAt: raw.updatedAt,
+        },
+      },
+    };
+  };
+
+  const listContexts = async () => Object.values((await readRegistry()).projects);
+
+  const requireProject = async (
+    mode: 'read' | 'write',
+    requestedProjectId?: string,
+  ): Promise<McpProjectContext & { dirtyScope: 'none' | 'layout' | 'content'; fullAccess: boolean }> => {
+    const contexts = await listContexts();
+    const context = requestedProjectId
+      ? contexts.find((candidate) => candidate.projectId === requestedProjectId)
+      : contexts.length === 1
+        ? contexts[0]
+        : undefined;
+    if (requestedProjectId && !context) {
+      serviceError('PROJECT_NOT_OPEN', `Project "${requestedProjectId}" is not open in Configra.`, {
+        projectId: requestedProjectId,
+        openProjectIds: contexts.map((candidate) => candidate.projectId),
+      });
+    }
+    if (!requestedProjectId && contexts.length > 1) {
+      serviceError(
+        'AMBIGUOUS_PROJECT',
+        'Multiple Configra projects are open. Pass projectId from configra_list_projects.',
+        { openProjectIds: contexts.map((candidate) => candidate.projectId) },
+      );
+    }
+    if (!context) {
+      return serviceError('PROJECT_NOT_OPEN', 'No saved project is active in the desktop editor.');
     }
     const dirtyScope = context.dirtyScope ?? (context.uiDirty ? 'content' : 'none');
     if (mode === 'write' && dirtyScope === 'content' && !context.fullAccess) {
       serviceError(
         'UI_DIRTY_CONFLICT',
         'The desktop editor has unsaved content changes. Save or discard them, or explicitly enable MCP Full Access before using this tool.',
+        { projectId: context.projectId, dirtyScope },
       );
     }
     return { ...context, dirtyScope, fullAccess: context.fullAccess ?? false };
@@ -353,11 +425,19 @@ const createServer = (options: ServerOptions) => {
     dirtyScope: context.dirtyScope,
     fullAccess: context.fullAccess,
     contextRevision: context.revision,
+    projectId: context.projectId,
+    projectName: context.projectName,
+    projectPath: context.projectPath,
   });
 
-  const guarded = <T>(handler: () => Promise<T>) => async () => {
+  const boundConfirmationHash = (projectId: string, cliConfirmationHash: string) =>
+    `sha256:${createHash('sha256').update(`${projectId}\0${cliConfirmationHash}`).digest('hex')}`;
+
+  const eventPathForProject = (projectId: string) => path.join(eventsDir, `${projectId}.json`);
+
+  const guarded = <TArgs extends unknown[], T>(handler: (...args: TArgs) => Promise<T>) => async (...args: TArgs) => {
     try {
-      return await handler();
+      return await handler(...args);
     } catch (error) {
       return caughtToolError(error);
     }
@@ -403,8 +483,14 @@ const createServer = (options: ServerOptions) => {
       ['patch', 'check', '--project', context.projectPath!, '--patch', '-'],
       patch,
     );
+    const cliConfirmationHash =
+      typeof checked.body.confirmationHash === 'string' ? checked.body.confirmationHash : undefined;
     return cliToolResult(checked, {
       patch,
+      ...(cliConfirmationHash
+        ? { confirmationHash: boundConfirmationHash(context.projectId, cliConfirmationHash) }
+        : {}),
+      targetProjectId: context.projectId,
       referenceChanges: referenceChangesForOperations(operations),
       ...extra,
       ...accessState(context),
@@ -417,6 +503,7 @@ const createServer = (options: ServerOptions) => {
     transactionId: string,
   ) => {
     if (result.exitCode !== 0 || result.body.written !== true) return;
+    const eventsPath = eventPathForProject(context.projectId);
     const previous = await readJsonFile<McpEvents>(eventsPath, { version: 1, changeRevision: 0 });
     await atomicWriteJson(eventsPath, {
       version: 1,
@@ -429,20 +516,22 @@ const createServer = (options: ServerOptions) => {
       changedAt: new Date().toISOString(),
       serverId: MCP_SERVER_ID,
       transactionId,
+      projectId: context.projectId,
     } satisfies McpEvents);
   };
 
   server.registerTool(
     'configra_get_status',
     {
-      description: 'Return the local MCP service and active desktop project status.',
+      description: 'Return the local MCP service and all open desktop project statuses.',
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     guarded(async () => {
-      const context = await readContext();
+      const contexts = await listContexts();
+      const singleContext = contexts.length === 1 ? contexts[0] : undefined;
       let project: Record<string, unknown> | undefined;
-      if (context.projectPath) {
-        const inspected = await runCli(options, ['inspect', '--project', context.projectPath]);
+      if (singleContext) {
+        const inspected = await runCli(options, ['inspect', '--project', singleContext.projectPath]);
         project = { ...inspected.body, cliExitCode: inspected.exitCode };
       }
       return toolResult({
@@ -453,12 +542,46 @@ const createServer = (options: ServerOptions) => {
         supportedCapabilities: MCP_SUPPORTED_CAPABILITIES,
         running: true,
         port: options.port,
-        activeProjectPath: context.projectPath,
-        uiDirty: context.uiDirty,
-        dirtyScope: context.dirtyScope ?? (context.uiDirty ? 'content' : 'none'),
-        fullAccess: context.fullAccess ?? false,
-        contextRevision: context.revision,
+        activeProjectPath: singleContext?.projectPath,
+        uiDirty: singleContext?.uiDirty ?? false,
+        dirtyScope:
+          singleContext?.dirtyScope ?? (singleContext?.uiDirty ? 'content' : 'none'),
+        fullAccess: singleContext?.fullAccess ?? false,
+        contextRevision: singleContext?.revision ?? 0,
         project,
+        projectCount: contexts.length,
+        projects: contexts.map((context) => ({
+          ...accessState({
+            ...context,
+            dirtyScope: context.dirtyScope ?? (context.uiDirty ? 'content' : 'none'),
+            fullAccess: context.fullAccess ?? false,
+          }),
+          updatedAt: context.updatedAt,
+        })),
+      });
+    }),
+  );
+
+  server.registerTool(
+    'configra_list_projects',
+    {
+      description:
+        'List every saved project currently open in Configra. Use projectId from this result on all project-specific tools when more than one project is open.',
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    guarded(async () => {
+      const contexts = await listContexts();
+      return toolResult({
+        ok: true,
+        projectCount: contexts.length,
+        projects: contexts.map((context) => ({
+          ...accessState({
+            ...context,
+            dirtyScope: context.dirtyScope ?? (context.uiDirty ? 'content' : 'none'),
+            fullAccess: context.fullAccess ?? false,
+          }),
+          updatedAt: context.updatedAt,
+        })),
       });
     }),
   );
@@ -467,11 +590,12 @@ const createServer = (options: ServerOptions) => {
     'configra_inspect_project',
     {
       description:
-        'Inspect the active project and list stable table IDs, names, remarks, row/column counts, ref semantics, and resolved table relationships. Read referenceSemantics before creating or assigning refs.',
+        'Inspect one open project and list stable table IDs, names, remarks, row/column counts, ref semantics, and resolved table relationships. Read referenceSemantics before creating or assigning refs.',
+      inputSchema: projectSelectorSchema,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded(async () => {
-      const context = await requireProject('read');
+    guarded(async ({ projectId }) => {
+      const context = await requireProject('read', projectId);
       const result = await runCli(options, ['inspect', '--project', context.projectPath!]);
       return cliToolResult(result, accessState(context));
     }),
@@ -483,15 +607,16 @@ const createServer = (options: ServerOptions) => {
       description:
         'Inspect one table by stable tableId, including schema remarks, ref semantics, incoming/outgoing relationships, and paginated rows with stable row IDs.',
       inputSchema: {
+        ...projectSelectorSchema,
         tableId: z.string().min(1).describe('Stable internal table ID, not its display name.'),
         offset: z.number().int().min(0).default(0),
         limit: z.number().int().min(0).max(500).default(100),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ tableId, offset, limit }) => {
+    async ({ projectId, tableId, offset, limit }) => {
       try {
-        const context = await requireProject('read');
+        const context = await requireProject('read', projectId);
         const result = await runCli(options, [
           'inspect',
           '--project',
@@ -519,6 +644,7 @@ const createServer = (options: ServerOptions) => {
     {
       description: 'Query rows in one table by stable column IDs using typed equality or case-insensitive string contains.',
       inputSchema: {
+        ...projectSelectorSchema,
         tableId: z.string().min(1),
         match: z.enum(['all', 'any']).default('all'),
         filters: z.array(queryFilterSchema).min(1),
@@ -527,9 +653,9 @@ const createServer = (options: ServerOptions) => {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (query) => {
+    async ({ projectId, ...query }) => {
       try {
-        const context = await requireProject('read');
+        const context = await requireProject('read', projectId);
         const result = await runCli(
           options,
           ['query', 'rows', '--project', context.projectPath!, '--query', '-'],
@@ -545,11 +671,12 @@ const createServer = (options: ServerOptions) => {
   server.registerTool(
     'configra_validate',
     {
-      description: 'Validate the active project and return all structured validation issues.',
+      description: 'Validate one open project and return all structured validation issues.',
+      inputSchema: projectSelectorSchema,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded(async () => {
-      const context = await requireProject('read');
+    guarded(async ({ projectId }) => {
+      const context = await requireProject('read', projectId);
       const result = await runCli(options, ['validate', '--project', context.projectPath!]);
       return cliToolResult(result, accessState(context));
     }),
@@ -561,14 +688,15 @@ const createServer = (options: ServerOptions) => {
       description:
         `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} ${IDENTITY_USAGE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
       inputSchema: {
+        ...projectSelectorSchema,
         description: z.string().optional(),
         operations: z.array(dataPatchOperationSchema),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ description, operations }) => {
+    async ({ projectId, description, operations }) => {
       try {
-        const context = await requireProject('write');
+        const context = await requireProject('write', projectId);
         return await previewDataPatch(context, description, operations);
       } catch (error) {
         return caughtToolError(error);
@@ -582,6 +710,7 @@ const createServer = (options: ServerOptions) => {
       description:
         `Preview defining an existing source column as a ref to a target column. ${REF_CELL_VALUE_DESCRIPTION} ${REF_TARGET_PREFERENCE_DESCRIPTION} Returns a normal patch and confirmationHash for configra_apply_patch.`,
       inputSchema: {
+        ...projectSelectorSchema,
         sourceTableId: z.string().min(1).describe('Stable ID of the table containing the ref column.'),
         sourceColumnId: z.string().min(1).describe('Stable ID of the source column to make a ref.'),
         targetTableId: z.string().min(1).describe('Stable ID of the referenced target table.'),
@@ -593,9 +722,9 @@ const createServer = (options: ServerOptions) => {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ sourceTableId, sourceColumnId, targetTableId, targetColumnId, description }) => {
+    async ({ projectId, sourceTableId, sourceColumnId, targetTableId, targetColumnId, description }) => {
       try {
-        const context = await requireProject('write');
+        const context = await requireProject('write', projectId);
         return await previewDataPatch(
           context,
           description ?? `Define ${sourceTableId}.${sourceColumnId} as a ref to ${targetTableId}.${targetColumnId}`,
@@ -623,6 +752,7 @@ const createServer = (options: ServerOptions) => {
       description:
         `Preview assigning an existing ref column by stable source and target row IDs. Configra resolves each targetRowId to the target column's actual value; targetRowId itself is never stored. Use null targetRowId to clear a ref. Use configra_preview_define_ref first when needed. Returns a normal patch and confirmationHash for configra_apply_patch.`,
       inputSchema: {
+        ...projectSelectorSchema,
         sourceTableId: z.string().min(1).describe('Stable ID of the source table.'),
         sourceColumnId: z.string().min(1).describe('Stable ID of an existing ref column.'),
         assignments: z
@@ -642,9 +772,9 @@ const createServer = (options: ServerOptions) => {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ sourceTableId, sourceColumnId, assignments, description }) => {
+    async ({ projectId, sourceTableId, sourceColumnId, assignments, description }) => {
       try {
-        const context = await requireProject('write');
+        const context = await requireProject('write', projectId);
         const duplicateSourceRowId = assignments.find(
           (assignment, index) =>
             assignments.findIndex((candidate) => candidate.sourceRowId === assignment.sourceRowId) !== index,
@@ -823,15 +953,34 @@ const createServer = (options: ServerOptions) => {
       description:
         'Apply an exact patch previously returned by any configra_preview_* tool using its matching confirmationHash.',
       inputSchema: {
+        ...projectSelectorSchema,
         patch: dataPatchSchema,
         confirmationHash: z.string().min(1),
         transactionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/).optional(),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    async ({ patch, confirmationHash, transactionId }) => {
+    async ({ projectId, patch, confirmationHash, transactionId }) => {
       try {
-        const context = await requireProject('write');
+        const context = await requireProject('write', projectId);
+        const checked = await runCli(
+          options,
+          ['patch', 'check', '--project', context.projectPath, '--patch', '-'],
+          patch,
+        );
+        if (checked.exitCode !== 0) return cliToolResult(checked, accessState(context));
+        const rawCliConfirmationHash = checked.body.confirmationHash;
+        if (typeof rawCliConfirmationHash !== 'string') {
+          return serviceError('INTERNAL_ERROR', 'Patch check did not return a confirmationHash.');
+        }
+        const cliConfirmationHash = rawCliConfirmationHash;
+        if (boundConfirmationHash(context.projectId, cliConfirmationHash) !== confirmationHash) {
+          return serviceError(
+            'PATCH_REJECTED',
+            'The confirmationHash does not match this patch and target project. Preview the patch again for this project.',
+            { projectId: context.projectId },
+          );
+        }
         const effectiveTransactionId = transactionId ?? randomUUID();
         const result = await runCli(
           options,
@@ -843,7 +992,7 @@ const createServer = (options: ServerOptions) => {
             '--patch',
             '-',
             '--confirm',
-            confirmationHash,
+            cliConfirmationHash,
             '--transaction-id',
             effectiveTransactionId,
             '--backup-dir',
@@ -865,14 +1014,15 @@ const createServer = (options: ServerOptions) => {
       description:
         'Restore the byte-exact project snapshot captured before a transaction. Requires the current project hash to prevent stale rollback.',
       inputSchema: {
+        ...projectSelectorSchema,
         transactionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
         expectedProjectHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
       },
       annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
-    async ({ transactionId, expectedProjectHash }) => {
+    async ({ projectId, transactionId, expectedProjectHash }) => {
       try {
-        const context = await requireProject('write');
+        const context = await requireProject('write', projectId);
         const result = await runCli(options, [
           'patch',
           'rollback',
@@ -900,12 +1050,13 @@ const createServer = (options: ServerOptions) => {
   };
   const runExport = async (
     mode: 'table' | 'all' | 'ids',
+    projectId: string | undefined,
     outPath: string,
     overwrite: boolean,
     tableId?: string,
   ) => {
     try {
-      const context = await requireProject('write');
+      const context = await requireProject('write', projectId);
       ensureAbsolute(outPath);
       const cliArgs = ['export', mode, '--project', context.projectPath!];
       if (tableId) cliArgs.push('--table', tableId);
@@ -922,31 +1073,41 @@ const createServer = (options: ServerOptions) => {
     {
       description: 'Export one table JSON to an absolute local file path.',
       inputSchema: {
+        ...projectSelectorSchema,
         tableId: z.string().min(1),
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ tableId, outPath, overwrite }) => runExport('table', outPath, overwrite, tableId),
+    ({ projectId, tableId, outPath, overwrite }) =>
+      runExport('table', projectId, outPath, overwrite, tableId),
   );
   server.registerTool(
     'configra_export_all',
     {
       description: 'Export every table and config_ids.json to an absolute local directory.',
-      inputSchema: { outPath: z.string().min(1), overwrite: z.boolean().default(false) },
+      inputSchema: {
+        ...projectSelectorSchema,
+        outPath: z.string().min(1),
+        overwrite: z.boolean().default(false),
+      },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ outPath, overwrite }) => runExport('all', outPath, overwrite),
+    ({ projectId, outPath, overwrite }) => runExport('all', projectId, outPath, overwrite),
   );
   server.registerTool(
     'configra_export_ids',
     {
       description: 'Export config_ids.json to an absolute local file path.',
-      inputSchema: { outPath: z.string().min(1), overwrite: z.boolean().default(false) },
+      inputSchema: {
+        ...projectSelectorSchema,
+        outPath: z.string().min(1),
+        overwrite: z.boolean().default(false),
+      },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ outPath, overwrite }) => runExport('ids', outPath, overwrite),
+    ({ projectId, outPath, overwrite }) => runExport('ids', projectId, outPath, overwrite),
   );
 
   return server;
@@ -998,19 +1159,24 @@ export async function startMcpHttpServer(options: ServerOptions) {
     const requestBody = req.body as {
       id?: string | number | null;
       method?: string;
-      params?: { name?: string };
+      params?: { name?: string; arguments?: { projectId?: unknown } };
     };
     const method = requestBody?.method ?? 'unknown';
     const toolName = method === 'tools/call' ? requestBody.params?.name : undefined;
+    const projectId =
+      typeof requestBody.params?.arguments?.projectId === 'string'
+        ? requestBody.params.arguments.projectId
+        : undefined;
     const action = toolName ? `AI called ${toolName}` : `MCP request ${method}`;
     const startedAt = Date.now();
-    void logger.log({ level: 'info', message: action, requestId, toolName });
+    void logger.log({ level: 'info', message: action, requestId, toolName, projectId });
     res.on('finish', () => {
       void logger.log({
         level: res.statusCode >= 400 ? 'error' : 'info',
         message: `${action} completed with HTTP ${res.statusCode}`,
         requestId,
         toolName,
+        projectId,
         durationMs: Date.now() - startedAt,
       });
     });
@@ -1046,6 +1212,7 @@ export async function startMcpHttpServer(options: ServerOptions) {
         message: error instanceof Error ? error.message : String(error),
         requestId,
         toolName,
+        projectId,
         durationMs: Date.now() - startedAt,
       });
       process.stderr.write(`[configra-mcp] ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);

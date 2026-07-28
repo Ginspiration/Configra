@@ -31,11 +31,12 @@
 - 浏览器模式支持保存/导入 `.configra.json`。
 - Tauri 桌面模式支持保存到当前工程文件。
 - 桌面模式会自动加载最近打开的工程。
+- 桌面模式支持通过“在新窗口中打开”或 `Ctrl+Alt+O` 同时打开多个工程；每个工程独立保存、校验和处理未保存状态，同一路径只会打开一个窗口。
 - 新建、导入其他工程或关闭桌面应用前，如果存在未保存修改，会提示保存。
 - 支持导出当前表 JSON。
 - 支持导出语言无关的 `config_ids.json` ID 注册表。
 - 提供 Headless CLI，支持检查、查询、校验、两阶段 patch、事务回滚和导出。
-- Tauri 源码桌面模式可启动本机 MCP，供外部 AI 安全操作当前已保存工程。
+- Tauri 源码桌面模式可启动单一的本机 MCP，供外部 AI 通过 `projectId` 安全操作多个已打开且已保存的工程。
 - MCP inspect 会返回 `ref` 语义和已解析的表关系，并提供定义、分配引用的专用预览工具。
 
 ## 运行
@@ -444,9 +445,9 @@ Exit codes:
 
 服务的 canonical ID 是 `configra`，初始化能力只声明 `tools`。不支持的 `resources/*` 请求会稳定返回 `CAPABILITY_NOT_SUPPORTED`，不会被伪装成另一个资源服务器。
 
-MCP 只操作当前已保存工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。仅蓝图布局发生变化时不会阻断 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”明确放行所有 MCP 操作，此时 MCP 应用可能替换界面中未保存的内容。
+MCP 只操作桌面窗口中已打开且已保存的工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。`configra_list_projects` 返回当前工程及其 `projectId`；当打开多个工程时，所有工程相关工具都必须显式传入目标 `projectId`，避免依赖当前焦点窗口猜测目标。仅蓝图布局发生变化时不会阻断该工程的 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”按工程明确放行 MCP 操作，此时 MCP 应用可能替换该工程窗口中未保存的内容，但不会授权其他工程。
 
-MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接和工具调用记录。收起后窗口会变成右下角的小按钮，点击即可恢复；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中。
+MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接、工具调用记录及工具显式指定的 `projectId`。收起后窗口会变成右下角的小按钮，点击即可恢复；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中。
 
 ### MCP 自解释契约
 
@@ -456,7 +457,7 @@ inspect 结果中的 `referenceSemantics` 会说明 `ref` 单元格保存目标�
 
 当前工具分组：
 
-- 状态：`configra_get_status`。
+- 状态与工程路由：`configra_get_status`、`configra_list_projects`。
 - 读取：`configra_inspect_project`、`configra_inspect_table`、`configra_query_rows`。
 - 校验：`configra_validate`。
 - 通用修改预览：`configra_preview_patch`。
@@ -464,11 +465,11 @@ inspect 结果中的 `referenceSemantics` 会说明 `ref` 单元格保存目标�
 - 应用与恢复：`configra_apply_patch`、`configra_rollback_transaction`。
 - 导出：`configra_export_table`、`configra_export_ids`、`configra_export_all`。
 
-所有修改仍采用两阶段流程：preview 返回精确 `patch` 和 `confirmationHash`，apply 必须原样提交二者。ref 专用工具不会绕过 patch 校验、当前工程哈希、写锁、事务快照或校验增量。
+所有修改仍采用两阶段流程：preview 返回目标 `projectId`、精确 `patch` 和绑定该项目的 `confirmationHash`，apply 必须对同一工程原样提交后二者。即使两个工程文件内容完全相同，A 工程的确认值也不能用于 B 工程。ref 专用工具不会绕过 patch 校验、工程哈希、写锁、事务快照或校验增量。
 
 ### AI 使用 `ref` 的推荐流程
 
-1. 调用 `configra_inspect_project`，再检查源表和目标表，读取 `referenceSemantics`、`relationships`、稳定字段 ID 和行 `_rowId`。
+1. 先调用 `configra_list_projects` 选择目标 `projectId`，再调用 `configra_inspect_project` 并检查源表和目标表，读取 `referenceSemantics`、`relationships`、稳定字段 ID 和行 `_rowId`。
 2. 对已有字段调用 `configra_preview_define_ref`，传入源表、源字段、目标表和目标字段的稳定 ID。
 3. 审查 diff、关系摘要和 `confirmationHash`，使用 `configra_apply_patch` 应用原样返回的 patch。
 4. 调用 `configra_preview_assign_refs`，按 `{ sourceRowId, targetRowId }` 表达“源行关联目标行”。服务会读取目标字段的实际值并生成普通 `updateRows` patch；不会把 `targetRowId` 写进单元格。

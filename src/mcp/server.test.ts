@@ -316,7 +316,9 @@ describe('Configra MCP server', () => {
     expect(applied.resultingProjectHash).toMatch(/^sha256:/);
     const updated = JSON.parse(readFileSync(projectPath, 'utf8'));
     expect(updated.tables[0].rows[0].values.name).toBe('Long Sword');
-    const events = JSON.parse(readFileSync(join(configDir, 'mcp-events.json'), 'utf8'));
+    const events = JSON.parse(
+      readFileSync(join(configDir, 'mcp-events', `${String(applied.projectId)}.json`), 'utf8'),
+    );
     expect(events.changeRevision).toBe(3);
     expect(events.serverId).toBe('configra');
 
@@ -445,4 +447,126 @@ describe('Configra MCP server', () => {
     });
     await client.close();
   });
+
+  it('routes tools to explicit project IDs and binds confirmations to the target project', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'configra-mcp-multi-project-'));
+    const configDir = join(root, 'config');
+    const projectAPath = join(root, 'a.configra.json');
+    const projectBPath = join(root, 'b.configra.json');
+    const project = {
+      version: 1,
+      tables: [
+        {
+          id: 'items',
+          name: 'Items',
+          position: { x: 0, y: 0 },
+          columns: [
+            { id: 'id', name: 'id', type: 'int', primary: true, required: true },
+            { id: 'name', name: 'name', type: 'string' },
+          ],
+          rows: [{ _rowId: 'row_1', values: { id: 1, name: 'Sword' } }],
+        },
+      ],
+    };
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(projectAPath, `${JSON.stringify(project, null, 2)}\n`, 'utf8');
+    writeFileSync(projectBPath, `${JSON.stringify(project, null, 2)}\n`, 'utf8');
+    writeFileSync(
+      join(configDir, 'mcp-context.json'),
+      `${JSON.stringify({
+        version: 2,
+        projects: {
+          alpha: {
+            projectId: 'alpha',
+            windowLabel: 'main',
+            projectName: 'a.configra.json',
+            projectPath: projectAPath,
+            uiDirty: false,
+            dirtyScope: 'none',
+            fullAccess: false,
+            revision: 1,
+            updatedAt: new Date().toISOString(),
+          },
+          beta: {
+            projectId: 'beta',
+            windowLabel: 'project-beta',
+            projectName: 'b.configra.json',
+            projectPath: projectBPath,
+            uiDirty: false,
+            dirtyScope: 'none',
+            fullAccess: false,
+            revision: 1,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      })}\n`,
+      'utf8',
+    );
+
+    const token = '0123456789abcdef0123456789abcdef';
+    const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
+    runningServers.push(started.httpServer);
+    const client = new Client({ name: 'configra-multi-project-test', version: '1.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
+    ));
+
+    const listed = parseToolText(await client.callTool({
+      name: 'configra_list_projects',
+      arguments: {},
+    }));
+    expect(listed).toMatchObject({
+      projectCount: 2,
+      projects: [
+        { projectId: 'alpha', projectName: 'a.configra.json' },
+        { projectId: 'beta', projectName: 'b.configra.json' },
+      ],
+    });
+
+    const ambiguous = await client.callTool({ name: 'configra_inspect_project', arguments: {} });
+    expect(ambiguous.isError).toBe(true);
+    expect(parseToolText(ambiguous).error).toMatchObject({ code: 'AMBIGUOUS_PROJECT' });
+
+    const inspectedBeta = parseToolText(await client.callTool({
+      name: 'configra_inspect_project',
+      arguments: { projectId: 'beta' },
+    }));
+    expect(inspectedBeta).toMatchObject({ projectId: 'beta', projectName: 'b.configra.json' });
+
+    const preview = parseToolText(await client.callTool({
+      name: 'configra_preview_patch',
+      arguments: {
+        projectId: 'alpha',
+        operations: [
+          { op: 'updateRows', tableId: 'items', rows: [{ rowId: 'row_1', values: { name: 'Axe' } }] },
+        ],
+      },
+    }));
+    expect(preview).toMatchObject({ projectId: 'alpha', targetProjectId: 'alpha' });
+
+    const wrongTarget = await client.callTool({
+      name: 'configra_apply_patch',
+      arguments: {
+        projectId: 'beta',
+        patch: preview.patch,
+        confirmationHash: preview.confirmationHash,
+      },
+    });
+    expect(wrongTarget.isError).toBe(true);
+    expect(parseToolText(wrongTarget).error).toMatchObject({ code: 'PATCH_REJECTED' });
+
+    const applied = parseToolText(await client.callTool({
+      name: 'configra_apply_patch',
+      arguments: {
+        projectId: 'alpha',
+        patch: preview.patch,
+        confirmationHash: preview.confirmationHash,
+      },
+    }));
+    expect(applied).toMatchObject({ written: true, projectId: 'alpha' });
+    expect(JSON.parse(readFileSync(projectAPath, 'utf8')).tables[0].rows[0].values.name).toBe('Axe');
+    expect(JSON.parse(readFileSync(projectBPath, 'utf8')).tables[0].rows[0].values.name).toBe('Sword');
+
+    await client.close();
+  }, 60000);
 });

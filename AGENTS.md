@@ -54,6 +54,7 @@ Tauri
 
 - Web 模式：`npm run dev`
 - 桌面模式：`npm run tauri:dev`
+- 桌面多工程：应用菜单 →“在新窗口中打开”或 `Ctrl+Alt+O`。一个 Tauri 进程可同时打开多个工程，每个窗口维持独立的 Zustand 编辑状态；同一路径只允许一个窗口，重复打开会聚焦已有窗口。
 - Windows 多实例调试：`start-debug.bat` 或 `npm run debug`。首个实例会动态选择 `5173–5273` 范围内的空闲 Vite 端口并通过临时 Tauri 配置保持 `devUrl` 一致；同仓库后续实例直接复用已运行的调试服务和可执行文件，避免 Windows 锁定首个 `configra.exe` 后重复链接失败。
 - Headless CLI：`npm run --silent cfg -- ...`
 - 源码桌面 MCP：设置 → AI / MCP
@@ -88,6 +89,7 @@ Tauri
 | 22 | Headless CLI、两阶段 patch 和事务回滚 | 已完成 | `src/cli/cfg.ts`, `src/patch/dataPatch.ts`, `schemas/data-patch.schema.json` |
 | 23 | 本机 MCP 和外部 AI 安全工作流 | 已完成，包含 scoped dirty、Full Access、日志和导出 | `src/mcp/server.ts`, `src/mcp/protocol.ts`, `src-tauri/src/lib.rs` |
 | 24 | MCP 自解释 `ref` 关系与专用预览工具 | 已完成 | `src/model/referenceSemantics.ts`, `src/mcp/server.ts`, `src/cli/cfg.ts` |
+| 25 | 单进程多窗口、多工程 MCP 路由 | 已完成；一个工程一个窗口，共用一个 MCP 地址并通过 `projectId` 路由 | `src/App.tsx`, `src/file/desktopProjectFile.ts`, `src/mcp/server.ts`, `src-tauri/src/lib.rs` |
 
 ## 4. 当前界面行为
 
@@ -683,18 +685,19 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - The canonical server/source ID is `configra`; initialization advertises tools only. Unsupported `resources/*` calls return `CAPABILITY_NOT_SUPPORTED`.
 - The connection URL is available through the toolbar copy button.
 - MCP is source desktop only; browser mode and packaged sidecars are not supported yet.
-- MCP tools operate only on the current saved project and invoke the headless CLI rather than mutating Zustand.
-- Dirty state is scoped: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads the project.
-- Unsaved content changes block MCP modification/export tools by default. The persisted Settings → AI / MCP → “Full Access” switch lets the user explicitly allow all MCP operations; an MCP apply may then replace unsaved content edits.
-- MCP modifications remain two-stage: preview returns the exact patch and `confirmationHash`; apply requires both. The public tool schema expands every supported operation as a discriminated union.
+- MCP tools operate only on saved projects currently open in desktop windows and invoke the headless CLI rather than mutating Zustand.
+- `configra_list_projects` lists all open saved projects. Every project-specific tool accepts `projectId`; it may be omitted only when exactly one project is open. Omitting it with multiple open projects returns `AMBIGUOUS_PROJECT`.
+- Dirty state is scoped per project: graph layout-only changes do not block MCP preview/apply/export and are preserved when an MCP apply reloads that project's window.
+- Unsaved content changes block MCP modification/export tools for that project by default. Settings → AI / MCP → “Full Access” is persisted per saved project; enabling it in one project window does not grant access to other projects.
+- MCP modifications remain two-stage: preview returns the exact patch, target `projectId`, and a project-bound `confirmationHash`; apply requires the same project, patch, and confirmation value. The public tool schema expands every supported operation as a discriminated union.
 - Live MCP tool descriptions, input schemas, and results are the authoritative client contract. External AI clients should not need `AGENTS.md` to reconstruct tool parameters.
 - MCP inspect results include `referenceSemantics` plus resolved incoming/outgoing `relationships`, so clients can distinguish schema IDs, row IDs, and the actual target-column values stored in `ref` cells.
 - Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
 - `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
-- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a small button in the bottom-right corner, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
+- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a small button in the bottom-right corner, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity and optional target `projectId` to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.
-- MCP lifecycle/config files live in the Tauri application config directory as `mcp-settings.json`, `mcp-context.json`, `mcp-events.json`, and `mcp-logs.jsonl`.
+- MCP lifecycle/config files live in the Tauri application config directory as `mcp-settings.json`, the version-2 multi-project registry `mcp-context.json`, per-project permissions in `mcp-project-access.json`, per-project event files under `mcp-events/`, and `mcp-logs.jsonl`.
 
-MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, service restart persistence, custom-port persistence and default reset, scoped dirty access, Full Access persistence, log-window minimize/restore from the bottom-right launcher, and process cleanup after disabling or closing the application.
+MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, opening two projects in separate windows, duplicate-path window focusing, explicit multi-project routing, cross-project confirmation rejection, per-project events and Full Access, service restart persistence, custom-port persistence and default reset, log-window minimize/restore from the bottom-right launcher, and process cleanup after the last window closes.

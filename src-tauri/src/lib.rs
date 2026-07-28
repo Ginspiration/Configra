@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
@@ -45,9 +46,11 @@ impl Default for McpSettings {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct McpContext {
-    version: u8,
-    project_path: Option<String>,
+struct McpProjectContext {
+    project_id: String,
+    window_label: String,
+    project_name: String,
+    project_path: String,
     ui_dirty: bool,
     dirty_scope: String,
     full_access: bool,
@@ -55,11 +58,45 @@ struct McpContext {
     updated_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpContextRegistry {
+    version: u8,
+    projects: BTreeMap<String, McpProjectContext>,
+}
+
+impl Default for McpContextRegistry {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            projects: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpProjectAccess {
+    version: u8,
+    projects: BTreeMap<String, bool>,
+}
+
+impl Default for McpProjectAccess {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            projects: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct McpEvents {
     version: u8,
     change_revision: u64,
+    #[serde(default)]
+    project_id: Option<String>,
     project_path: Option<String>,
     project_hash: Option<String>,
     changed_at: Option<String>,
@@ -67,6 +104,18 @@ struct McpEvents {
     server_id: Option<String>,
     #[serde(default)]
     transaction_id: Option<String>,
+}
+
+#[derive(Default)]
+struct ProjectWindowState {
+    paths_by_window: Mutex<HashMap<String, PathBuf>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenProjectWindowResult {
+    window_label: String,
+    created: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,6 +144,8 @@ struct McpLogEntry {
     timestamp: String,
     #[serde(default)]
     source_id: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
     level: String,
     message: String,
     #[serde(default)]
@@ -113,6 +164,7 @@ struct ManagedMcpChild {
 struct McpState {
     child: Mutex<Option<ManagedMcpChild>>,
     startup_lock: Mutex<()>,
+    context_lock: Mutex<()>,
     reused_service: Mutex<bool>,
     last_error: Mutex<Option<String>>,
     config_dir: PathBuf,
@@ -124,6 +176,7 @@ impl McpState {
         Self {
             child: Mutex::new(None),
             startup_lock: Mutex::new(()),
+            context_lock: Mutex::new(()),
             reused_service: Mutex::new(false),
             last_error: Mutex::new(None),
             config_dir,
@@ -476,6 +529,7 @@ fn append_mcp_log(config_dir: &Path, level: &str, message: &str) -> Result<(), S
     let entry = McpLogEntry {
         timestamp: mcp_log_timestamp(),
         source_id: Some(MCP_SERVER_ID.to_string()),
+        project_id: None,
         level: level.to_string(),
         message: message.to_string(),
         request_id: None,
@@ -514,8 +568,14 @@ fn context_path(config_dir: &Path) -> PathBuf {
     config_dir.join("mcp-context.json")
 }
 
-fn events_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("mcp-events.json")
+fn access_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("mcp-project-access.json")
+}
+
+fn events_path(config_dir: &Path, project_id: &str) -> PathBuf {
+    config_dir
+        .join("mcp-events")
+        .join(format!("{project_id}.json"))
 }
 
 fn logs_path(config_dir: &Path) -> PathBuf {
@@ -563,7 +623,69 @@ fn load_or_create_settings(config_dir: &Path) -> Result<McpSettings, String> {
     Ok(settings)
 }
 
-fn status_for(state: &McpState, settings: &McpSettings) -> McpStatus {
+fn load_context_registry(config_dir: &Path) -> Result<McpContextRegistry, String> {
+    let path = context_path(config_dir);
+    if !path.exists() {
+        return Ok(McpContextRegistry::default());
+    }
+    read_json(&path)
+}
+
+fn load_project_access(config_dir: &Path) -> Result<McpProjectAccess, String> {
+    let path = access_path(config_dir);
+    if !path.exists() {
+        return Ok(McpProjectAccess::default());
+    }
+    read_json(&path)
+}
+
+fn canonical_project_path(path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(path);
+    if path.exists() {
+        return fs::canonicalize(&path)
+            .map_err(|error| format!("Could not open project path {}: {error}", path.display()));
+    }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("Project path {} has no file name.", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+        format!(
+            "Could not open project directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    Ok(canonical_parent.join(file_name))
+}
+
+fn project_access_key(path: &Path) -> String {
+    let value = path.to_string_lossy().to_string();
+    if cfg!(target_os = "windows") {
+        value.to_lowercase()
+    } else {
+        value
+    }
+}
+
+fn project_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Configra Project")
+        .to_string()
+}
+
+fn status_for(
+    state: &McpState,
+    settings: &McpSettings,
+    project_id: Option<&str>,
+) -> McpStatus {
+    let full_access = project_id
+        .and_then(|project_id| {
+            load_context_registry(&state.config_dir)
+                .ok()
+                .and_then(|registry| registry.projects.get(project_id).map(|project| project.full_access))
+        })
+        .unwrap_or(false);
     McpStatus {
         server_id: MCP_SERVER_ID.to_string(),
         source_id: MCP_SERVER_ID.to_string(),
@@ -571,7 +693,7 @@ fn status_for(state: &McpState, settings: &McpSettings) -> McpStatus {
         supported_capabilities: vec!["tools".to_string()],
         enabled: settings.enabled,
         running: settings.enabled && state.is_running(settings),
-        full_access: settings.full_access,
+        full_access,
         port: settings.port,
         default_port: DEFAULT_MCP_PORT,
         connection_url: format!("http://127.0.0.1:{}/mcp/{}", settings.port, settings.token),
@@ -614,14 +736,174 @@ fn save_recent_project_path(app: tauri::AppHandle, path: String) -> Result<(), S
     fs::write(recent_project_path_file(&app)?, path).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn get_mcp_status(state: tauri::State<'_, McpState>) -> Result<McpStatus, String> {
-    let settings = load_or_create_settings(&state.config_dir)?;
-    Ok(status_for(&state, &settings))
+fn focus_project_window(app: &tauri::AppHandle, window_label: &str) -> bool {
+    let Some(window) = app.get_webview_window(window_label) else {
+        return false;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    true
+}
+
+fn project_window_for_path(
+    paths_by_window: &HashMap<String, PathBuf>,
+    project_path: &Path,
+    except_window_label: Option<&str>,
+) -> Option<String> {
+    paths_by_window
+        .iter()
+        .find(|(label, candidate)| {
+            except_window_label != Some(label.as_str()) && candidate.as_path() == project_path
+        })
+        .map(|(label, _)| label.clone())
 }
 
 #[tauri::command]
-fn set_mcp_enabled(state: tauri::State<'_, McpState>, enabled: bool) -> Result<McpStatus, String> {
+fn claim_project_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ProjectWindowState>,
+    window_label: String,
+    path: String,
+) -> Result<bool, String> {
+    let canonical_path = canonical_project_path(&path)?;
+    let existing_label = {
+        let paths = state
+            .paths_by_window
+            .lock()
+            .map_err(|error| error.to_string())?;
+        project_window_for_path(&paths, &canonical_path, Some(window_label.as_str()))
+    };
+
+    if let Some(existing_label) = existing_label {
+        if focus_project_window(&app, &existing_label) {
+            return Ok(false);
+        }
+        state
+            .paths_by_window
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(&existing_label);
+    }
+
+    let mut paths = state
+        .paths_by_window
+        .lock()
+        .map_err(|error| error.to_string())?;
+    paths.insert(window_label, canonical_path);
+    Ok(true)
+}
+
+#[tauri::command]
+// Keep this command async: synchronous WebView creation can deadlock WebView2 on Windows.
+async fn open_project_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ProjectWindowState>,
+    path: String,
+) -> Result<OpenProjectWindowResult, String> {
+    let canonical_path = canonical_project_path(&path)?;
+    let existing_label = {
+        let paths = state
+            .paths_by_window
+            .lock()
+            .map_err(|error| error.to_string())?;
+        project_window_for_path(&paths, &canonical_path, None)
+    };
+    if let Some(existing_label) = existing_label {
+        if focus_project_window(&app, &existing_label) {
+            return Ok(OpenProjectWindowResult {
+                window_label: existing_label,
+                created: false,
+            });
+        }
+        state
+            .paths_by_window
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(&existing_label);
+    }
+
+    let window_label = format!("project-{}", Uuid::new_v4().simple());
+    state
+        .paths_by_window
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(window_label.clone(), canonical_path.clone());
+
+    let title = format!("{} — Configra", project_name(&canonical_path));
+    let build_result = tauri::WebviewWindowBuilder::new(
+        &app,
+        &window_label,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title(title)
+    .inner_size(1280.0, 820.0)
+    .resizable(true)
+    .build();
+    if let Err(error) = build_result {
+        state
+            .paths_by_window
+            .lock()
+            .map_err(|lock_error| lock_error.to_string())?
+            .remove(&window_label);
+        return Err(error.to_string());
+    }
+
+    Ok(OpenProjectWindowResult {
+        window_label,
+        created: true,
+    })
+}
+
+#[tauri::command]
+fn get_assigned_project_path(
+    state: tauri::State<'_, ProjectWindowState>,
+    window_label: String,
+) -> Result<Option<String>, String> {
+    Ok(state
+        .paths_by_window
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&window_label)
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn release_project_window(
+    window_state: tauri::State<'_, ProjectWindowState>,
+    mcp_state: tauri::State<'_, McpState>,
+    window_label: String,
+    project_id: String,
+) -> Result<(), String> {
+    window_state
+        .paths_by_window
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&window_label);
+    let _guard = mcp_state
+        .context_lock
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let mut registry = load_context_registry(&mcp_state.config_dir)?;
+    registry.projects.remove(&project_id);
+    write_json(&context_path(&mcp_state.config_dir), &registry)
+}
+
+#[tauri::command]
+fn get_mcp_status(
+    state: tauri::State<'_, McpState>,
+    project_id: Option<String>,
+) -> Result<McpStatus, String> {
+    let settings = load_or_create_settings(&state.config_dir)?;
+    Ok(status_for(&state, &settings, project_id.as_deref()))
+}
+
+#[tauri::command]
+fn set_mcp_enabled(
+    state: tauri::State<'_, McpState>,
+    enabled: bool,
+    project_id: Option<String>,
+) -> Result<McpStatus, String> {
     let mut settings = load_or_create_settings(&state.config_dir)?;
     settings.enabled = enabled;
     write_json(&settings_path(&state.config_dir), &settings)?;
@@ -633,11 +915,14 @@ fn set_mcp_enabled(state: tauri::State<'_, McpState>, enabled: bool) -> Result<M
         state.stop();
         state.clear_error();
     }
-    Ok(status_for(&state, &settings))
+    Ok(status_for(&state, &settings, project_id.as_deref()))
 }
 
 #[tauri::command]
-fn restart_mcp(state: tauri::State<'_, McpState>) -> Result<McpStatus, String> {
+fn restart_mcp(
+    state: tauri::State<'_, McpState>,
+    project_id: Option<String>,
+) -> Result<McpStatus, String> {
     let settings = load_or_create_settings(&state.config_dir)?;
     if !settings.enabled {
         return Err("Enable the local MCP service before restarting it.".to_string());
@@ -649,17 +934,21 @@ fn restart_mcp(state: tauri::State<'_, McpState>) -> Result<McpStatus, String> {
     if let Err(error) = state.start(&settings) {
         state.record_error(error);
     }
-    Ok(status_for(&state, &settings))
+    Ok(status_for(&state, &settings, project_id.as_deref()))
 }
 
-fn update_mcp_port(state: &McpState, port: u16) -> Result<McpStatus, String> {
+fn update_mcp_port(
+    state: &McpState,
+    port: u16,
+    project_id: Option<&str>,
+) -> Result<McpStatus, String> {
     if port == 0 {
         return Err("MCP port must be between 1 and 65535.".to_string());
     }
 
     let mut settings = load_or_create_settings(&state.config_dir)?;
     if settings.port == port {
-        return Ok(status_for(state, &settings));
+        return Ok(status_for(state, &settings, project_id));
     }
 
     let previous_port = settings.port;
@@ -678,55 +967,112 @@ fn update_mcp_port(state: &McpState, port: u16) -> Result<McpStatus, String> {
         }
     }
 
-    Ok(status_for(state, &settings))
+    Ok(status_for(state, &settings, project_id))
 }
 
 #[tauri::command]
-fn set_mcp_port(state: tauri::State<'_, McpState>, port: u16) -> Result<McpStatus, String> {
-    update_mcp_port(&state, port)
+fn set_mcp_port(
+    state: tauri::State<'_, McpState>,
+    port: u16,
+    project_id: Option<String>,
+) -> Result<McpStatus, String> {
+    update_mcp_port(&state, port, project_id.as_deref())
 }
 
 #[tauri::command]
-fn reset_mcp_port(state: tauri::State<'_, McpState>) -> Result<McpStatus, String> {
-    update_mcp_port(&state, DEFAULT_MCP_PORT)
+fn reset_mcp_port(
+    state: tauri::State<'_, McpState>,
+    project_id: Option<String>,
+) -> Result<McpStatus, String> {
+    update_mcp_port(&state, DEFAULT_MCP_PORT, project_id.as_deref())
 }
 
 #[tauri::command]
 fn set_mcp_full_access(
     state: tauri::State<'_, McpState>,
+    project_id: String,
     full_access: bool,
 ) -> Result<McpStatus, String> {
-    let mut settings = load_or_create_settings(&state.config_dir)?;
-    settings.full_access = full_access;
-    write_json(&settings_path(&state.config_dir), &settings)?;
-    Ok(status_for(&state, &settings))
+    let _guard = state.context_lock.lock().map_err(|error| error.to_string())?;
+    let mut registry = load_context_registry(&state.config_dir)?;
+    let project = registry
+        .projects
+        .get_mut(&project_id)
+        .ok_or_else(|| "Save the project before changing its MCP Full Access setting.".to_string())?;
+    project.full_access = full_access;
+    let canonical_path = canonical_project_path(&project.project_path)?;
+    let mut access = load_project_access(&state.config_dir)?;
+    access
+        .projects
+        .insert(project_access_key(&canonical_path), full_access);
+    write_json(&access_path(&state.config_dir), &access)?;
+    write_json(&context_path(&state.config_dir), &registry)?;
+    let settings = load_or_create_settings(&state.config_dir)?;
+    Ok(status_for(&state, &settings, Some(&project_id)))
 }
 
 #[tauri::command]
 fn update_mcp_context(
     state: tauri::State<'_, McpState>,
+    project_id: String,
+    window_label: String,
     project_path: Option<String>,
     ui_dirty: bool,
     dirty_scope: String,
-    full_access: bool,
     revision: u64,
     updated_at: String,
 ) -> Result<(), String> {
     if !matches!(dirty_scope.as_str(), "none" | "layout" | "content") {
         return Err("Invalid MCP dirty scope.".to_string());
     }
-    write_json(
-        &context_path(&state.config_dir),
-        &McpContext {
-            version: 1,
-            project_path,
-            ui_dirty,
-            dirty_scope,
-            full_access,
-            revision,
-            updated_at,
-        },
-    )
+    let _guard = state.context_lock.lock().map_err(|error| error.to_string())?;
+    let mut registry = load_context_registry(&state.config_dir)?;
+    let reset_events = !registry.projects.contains_key(&project_id);
+    registry.projects.remove(&project_id);
+    if let Some(project_path) = project_path {
+        let canonical_path = canonical_project_path(&project_path)?;
+        let mut access = load_project_access(&state.config_dir)?;
+        let mut settings = load_or_create_settings(&state.config_dir)?;
+        let access_key = project_access_key(&canonical_path);
+        let full_access = match access.projects.get(&access_key).copied() {
+            Some(full_access) => full_access,
+            None => {
+                let migrated_full_access = settings.full_access;
+                access.projects.insert(access_key, migrated_full_access);
+                write_json(&access_path(&state.config_dir), &access)?;
+                if settings.full_access {
+                    settings.full_access = false;
+                    write_json(&settings_path(&state.config_dir), &settings)?;
+                }
+                migrated_full_access
+            }
+        };
+        registry.projects.insert(
+            project_id.clone(),
+            McpProjectContext {
+                project_id: project_id.clone(),
+                window_label,
+                project_name: project_name(&canonical_path),
+                project_path: canonical_path.to_string_lossy().to_string(),
+                ui_dirty,
+                dirty_scope,
+                full_access,
+                revision,
+                updated_at,
+            },
+        );
+    }
+    write_json(&context_path(&state.config_dir), &registry)?;
+    if reset_events {
+        write_json(
+            &events_path(&state.config_dir, &project_id),
+            &McpEvents {
+                version: 1,
+                ..McpEvents::default()
+            },
+        )?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -754,8 +1100,11 @@ fn clear_mcp_logs(state: tauri::State<'_, McpState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_mcp_events(state: tauri::State<'_, McpState>) -> Result<McpEvents, String> {
-    let path = events_path(&state.config_dir);
+fn get_mcp_events(
+    state: tauri::State<'_, McpState>,
+    project_id: String,
+) -> Result<McpEvents, String> {
+    let path = events_path(&state.config_dir, &project_id);
     if !path.exists() {
         return Ok(McpEvents {
             version: 1,
@@ -775,6 +1124,10 @@ pub fn run() {
             path_exists,
             load_recent_project_path,
             save_recent_project_path,
+            claim_project_window,
+            open_project_window,
+            get_assigned_project_path,
+            release_project_window,
             get_mcp_status,
             set_mcp_enabled,
             restart_mcp,
@@ -804,22 +1157,14 @@ pub fn run() {
             let state = McpState::new(config_dir.clone(), repo_dir);
             let settings = load_or_create_settings(&config_dir).map_err(std::io::Error::other)?;
 
-            let recent_path = load_recent_project_path(app.handle().clone()).unwrap_or(None);
             write_json(
                 &context_path(&config_dir),
-                &McpContext {
-                    version: 1,
-                    project_path: recent_path,
-                    ui_dirty: false,
-                    dirty_scope: "none".to_string(),
-                    full_access: settings.full_access,
-                    revision: 0,
-                    updated_at: "1970-01-01T00:00:00.000Z".to_string(),
-                },
+                &McpContextRegistry::default(),
             )
             .map_err(std::io::Error::other)?;
 
             app.manage(state);
+            app.manage(ProjectWindowState::default());
 
             if settings.enabled {
                 let app_handle = app.handle().clone();
@@ -862,14 +1207,14 @@ mod tests {
 
         let result = (|| -> Result<(), String> {
             let state = McpState::new(config_dir.clone(), PathBuf::new());
-            assert!(update_mcp_port(&state, 0).is_err());
+            assert!(update_mcp_port(&state, 0, None).is_err());
 
-            let custom_status = update_mcp_port(&state, 43123)?;
+            let custom_status = update_mcp_port(&state, 43123, None)?;
             assert_eq!(custom_status.port, 43123);
             assert_eq!(custom_status.default_port, DEFAULT_MCP_PORT);
             assert_eq!(load_or_create_settings(&config_dir)?.port, 43123);
 
-            let reset_status = update_mcp_port(&state, DEFAULT_MCP_PORT)?;
+            let reset_status = update_mcp_port(&state, DEFAULT_MCP_PORT, None)?;
             assert_eq!(reset_status.port, DEFAULT_MCP_PORT);
             assert_eq!(load_or_create_settings(&config_dir)?.port, DEFAULT_MCP_PORT);
             Ok(())
@@ -877,5 +1222,25 @@ mod tests {
 
         let _ = fs::remove_dir_all(&config_dir);
         result.expect("custom and default MCP ports should persist in mcp-settings.json");
+    }
+
+    #[test]
+    fn duplicate_project_paths_resolve_to_the_existing_window() {
+        let project_path = PathBuf::from(r"D:\game\project.configra.json");
+        let mut paths = HashMap::new();
+        paths.insert("main".to_string(), project_path.clone());
+        paths.insert(
+            "project-other".to_string(),
+            PathBuf::from(r"D:\game\other.configra.json"),
+        );
+
+        assert_eq!(
+            project_window_for_path(&paths, &project_path, None).as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            project_window_for_path(&paths, &project_path, Some("main")),
+            None
+        );
     }
 }
