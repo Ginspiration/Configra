@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   Background,
   Controls,
@@ -22,6 +22,10 @@ const nodeTypes: NodeTypes = {
 type GraphCanvasProps = {
   showMiniMap: boolean;
   theme: ResolvedTheme;
+  focusRequest?: {
+    tableId: string;
+    sequence: number;
+  };
   onOpenTableData(tableId: string): void;
   onOpenTableContext(tableId: string, position: { x: number; y: number }): void;
   onOpenCanvasContext(position: { x: number; y: number }, graphPosition: GraphPosition): void;
@@ -30,6 +34,7 @@ type GraphCanvasProps = {
 function GraphCanvasInner({
   showMiniMap,
   theme,
+  focusRequest,
   onOpenTableData,
   onOpenTableContext,
   onOpenCanvasContext,
@@ -37,8 +42,31 @@ function GraphCanvasInner({
   const project = useEditorStore((state) => state.project);
   const moveTable = useEditorStore((state) => state.moveTable);
   const selectTable = useEditorStore((state) => state.selectTable);
-  const { screenToFlowPosition } = useReactFlow();
-  const { nodes, edges } = useMemo(() => projectToFlow(project), [project]);
+  const { screenToFlowPosition, getNode, getZoom, setCenter } = useReactFlow();
+  const { nodes: mappedNodes, edges } = useMemo(() => projectToFlow(project), [project]);
+  const nodes = useMemo(
+    () =>
+      mappedNodes.map((node) =>
+        node.id === focusRequest?.tableId
+          ? { ...node, data: { ...node.data, focusPulse: focusRequest.sequence } }
+          : node,
+      ),
+    [focusRequest, mappedNodes],
+  );
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    const table = project.tables.find((item) => item.id === focusRequest.tableId);
+    if (!table) return;
+
+    const node = getNode(focusRequest.tableId);
+    const width = node?.measured?.width ?? node?.width ?? 210;
+    const height = node?.measured?.height ?? node?.height ?? Math.max(84, 42 + table.columns.length * 20);
+    void setCenter(table.position.x + width / 2, table.position.y + height / 2, {
+      duration: 450,
+      zoom: Math.max(0.85, getZoom()),
+    });
+  }, [focusRequest?.sequence, focusRequest?.tableId, getNode, getZoom, setCenter]);
 
   const handleNodeDragStop: OnNodeDrag<TableFlowNode> = (_, node) => {
     moveTable(node.id, node.position);

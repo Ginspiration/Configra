@@ -81,7 +81,7 @@ export default function AppMenu({ open, items, label, onOpenChange }: AppMenuPro
         }}
       >
         <span className="app-menu__icon" aria-hidden="true">☰</span>
-        <span>{label}</span>
+        <span className="app-menu__label">{label}</span>
       </button>
 
       {open ? (

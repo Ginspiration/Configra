@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { confirm as confirmDialog, message } from '@tauri-apps/plugin-dialog';
 import AppMenu from './appMenu/AppMenu';
@@ -105,6 +114,24 @@ type DirectoryPickerWindow = Window & {
 };
 
 const MCP_LOG_VISIBLE_STORAGE_KEY = 'configra:mcp-log-visible';
+const TABLE_LIST_WIDTH_STORAGE_KEY = 'configra:table-list-width';
+const DEFAULT_TABLE_LIST_WIDTH = 205;
+const MIN_TABLE_LIST_WIDTH = 160;
+const MAX_TABLE_LIST_WIDTH = 420;
+
+const clampTableListWidth = (width: number) =>
+  Math.min(MAX_TABLE_LIST_WIDTH, Math.max(MIN_TABLE_LIST_WIDTH, width));
+
+const initialTableListWidth = () => {
+  try {
+    const savedWidth = Number(window.localStorage.getItem(TABLE_LIST_WIDTH_STORAGE_KEY));
+    return Number.isFinite(savedWidth) && savedWidth > 0
+      ? clampTableListWidth(savedWidth)
+      : DEFAULT_TABLE_LIST_WIDTH;
+  } catch {
+    return DEFAULT_TABLE_LIST_WIDTH;
+  }
+};
 
 const initialMcpLogVisible = () => {
   try {
@@ -166,7 +193,19 @@ export default function App() {
   const [mcpBusy, setMcpBusy] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isStarting, setIsStarting] = useState(isDesktopRuntime);
+  const [tableListWidth, setTableListWidth] = useState(initialTableListWidth);
+  const [isResizingTableList, setIsResizingTableList] = useState(false);
+  const [tableFocusRequest, setTableFocusRequest] = useState<{
+    tableId: string;
+    sequence: number;
+  }>();
   const windowLabelRef = useRef(isDesktopRuntime() ? getCurrentWindow().label : 'browser');
+  const tableFocusSequenceRef = useRef(0);
+  const tableListResizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+  }>();
   const projectSessionId = windowLabelRef.current;
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
@@ -186,6 +225,55 @@ export default function App() {
   dirtyScopeRef.current = dirtyScope;
   mcpFullAccessRef.current = mcpStatus?.fullAccess ?? false;
   tRef.current = t;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TABLE_LIST_WIDTH_STORAGE_KEY, String(tableListWidth));
+    } catch {
+      // Keep resizing available even if localStorage is unavailable.
+    }
+  }, [tableListWidth]);
+
+  const handleTableListResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      tableListResizeRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startWidth: tableListWidth,
+      };
+      setIsResizingTableList(true);
+    },
+    [tableListWidth],
+  );
+
+  const handleTableListResizeMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = tableListResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    setTableListWidth(clampTableListWidth(resize.startWidth + event.clientX - resize.startX));
+  }, []);
+
+  const handleTableListResizeEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = tableListResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    tableListResizeRef.current = undefined;
+    setIsResizingTableList(false);
+  }, []);
+
+  const handleTableListResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const direction = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+      if (direction === 0) return;
+      event.preventDefault();
+      setTableListWidth((width) => clampTableListWidth(width + direction * 10));
+    },
+    [],
+  );
 
   useEffect(() => {
     const syncTheme = () => setResolvedTheme(applyTheme(themePreference));
@@ -516,6 +604,15 @@ export default function App() {
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
   }, [addColumn, selectedTable]);
+
+  const focusTableOnCanvas = useCallback(
+    (tableId: string) => {
+      selectTable(tableId);
+      tableFocusSequenceRef.current += 1;
+      setTableFocusRequest({ tableId, sequence: tableFocusSequenceRef.current });
+    },
+    [selectTable],
+  );
 
   const openRowsModal = useCallback(
     (tableId = selectedTable?.id) => {
@@ -1130,9 +1227,19 @@ export default function App() {
         />
         <div className="brand-block">
           <strong>Configra</strong>
-          <span title={projectPath}>{projectPath?.split(/[\\/]/).pop() ?? t('unsavedProject')}</span>
-          <span>{t('errorCount', { count: errorCount })}</span>
-          {warningCount > 0 ? <span>{t('warningCount', { count: warningCount })}</span> : null}
+          <span className="brand-block__project" title={projectPath}>
+            {projectPath?.split(/[\\/]/).pop() ?? t('unsavedProject')}
+          </span>
+        </div>
+        <div className="toolbar__validation" aria-label={t('issues')}>
+          <span className={`toolbar__validation-item ${errorCount > 0 ? 'is-error' : 'is-clear'}`}>
+            {t('errorCount', { count: errorCount })}
+          </span>
+          {warningCount > 0 ? (
+            <span className="toolbar__validation-item is-warning">
+              {t('warningCount', { count: warningCount })}
+            </span>
+          ) : null}
         </div>
         <input
           ref={fileInputRef}
@@ -1147,11 +1254,25 @@ export default function App() {
         />
       </header>
 
-      <main className="main-region">
+      <main
+        className={`main-region ${isResizingTableList ? 'is-resizing' : ''}`}
+        style={{ '--table-list-width': `${tableListWidth}px` } as CSSProperties}
+      >
         <aside className="table-list-panel">
           <div className="panel-heading">
-            <h2>{t('tables')}</h2>
-            <span>{project.tables.length}</span>
+            <div className="panel-heading__title">
+              <h2>{t('tables')}</h2>
+              <span className="panel-heading__count">{project.tables.length}</span>
+            </div>
+            <button
+              type="button"
+              className="panel-heading__action"
+              title={t('newTable')}
+              aria-label={t('newTable')}
+              onClick={() => addTable()}
+            >
+              +
+            </button>
           </div>
           <div className="table-list">
             {project.tables.map((table) => (
@@ -1160,30 +1281,51 @@ export default function App() {
                 type="button"
                 className={`table-list-item ${table.id === selectedTableId ? 'is-active' : ''}`}
                 title={table.remark?.trim() || undefined}
-                onClick={() => selectTable(table.id)}
+                onClick={() => focusTableOnCanvas(table.id)}
                 onDoubleClick={() => openRowsModal(table.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   openTableContextMenu(table.id, { x: event.clientX, y: event.clientY });
                 }}
               >
-                <span>
-                  {table.name}
-                  {table.remark?.trim() ? ` — ${table.remark.trim()}` : ''}
+                <span className="table-list-item__name">{table.name}</span>
+                <span className="table-list-item__meta">
+                  {table.remark?.trim() ? (
+                    <small className="table-list-item__remark">{table.remark.trim()}</small>
+                  ) : null}
+                  <small className="table-list-item__stats">
+                    {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
+                  </small>
                 </span>
-                <small>
-                  {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
-                </small>
               </button>
             ))}
           </div>
           {status ? <div className="status-line">{status}</div> : null}
         </aside>
 
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-label={t('resizeTableList')}
+          aria-orientation="vertical"
+          aria-valuemin={MIN_TABLE_LIST_WIDTH}
+          aria-valuemax={MAX_TABLE_LIST_WIDTH}
+          aria-valuenow={tableListWidth}
+          tabIndex={0}
+          title={t('resizeTableList')}
+          onPointerDown={handleTableListResizeStart}
+          onPointerMove={handleTableListResizeMove}
+          onPointerUp={handleTableListResizeEnd}
+          onPointerCancel={handleTableListResizeEnd}
+          onDoubleClick={() => setTableListWidth(DEFAULT_TABLE_LIST_WIDTH)}
+          onKeyDown={handleTableListResizeKeyDown}
+        />
+
         <section className="canvas-panel" aria-label="Graph canvas">
           <GraphCanvas
             showMiniMap={showMiniMap}
             theme={resolvedTheme}
+            focusRequest={tableFocusRequest}
             onOpenTableData={openRowsModal}
             onOpenTableContext={openTableContextMenu}
             onOpenCanvasContext={openCanvasContextMenu}

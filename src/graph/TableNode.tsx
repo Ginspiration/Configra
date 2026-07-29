@@ -18,6 +18,7 @@ function TableNode({ data }: NodeProps) {
   const selectedTableId = useEditorStore((state) => state.selectedTableId);
   const selectTable = useEditorStore((state) => state.selectTable);
   const tableId = typeof data.tableId === 'string' ? data.tableId : '';
+  const focusPulse = typeof data.focusPulse === 'number' ? data.focusPulse : 0;
   const table = project.tables.find((item) => item.id === tableId);
   const updateNodeInternals = useUpdateNodeInternals();
   const handleLayoutKey = project.tables
@@ -66,7 +67,9 @@ function TableNode({ data }: NodeProps) {
   return (
     <button
       type="button"
-      className={`table-node ${selectedTableId === table.id ? 'is-selected' : ''}`}
+      className={`table-node ${selectedTableId === table.id ? 'is-selected' : ''} ${
+        focusPulse > 0 ? `is-locating-${focusPulse % 2 === 0 ? 'even' : 'odd'}` : ''
+      }`}
       onClick={() => selectTable(table.id)}
     >
       <div className="table-node__title" title={table.remark?.trim() || undefined}>
