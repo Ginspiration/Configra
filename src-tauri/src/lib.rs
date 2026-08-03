@@ -29,7 +29,6 @@ struct McpSettings {
     full_access: bool,
     #[serde(default = "default_mcp_port")]
     port: u16,
-    token: String,
 }
 
 impl Default for McpSettings {
@@ -39,7 +38,6 @@ impl Default for McpSettings {
             enabled: false,
             full_access: false,
             port: DEFAULT_MCP_PORT,
-            token: Uuid::new_v4().simple().to_string(),
         }
     }
 }
@@ -209,7 +207,7 @@ impl McpState {
                             return Ok(());
                         }
                         return Err(format!(
-                            "The previous MCP process is still running, but did not pass the authenticated health check at 127.0.0.1:{}. Restart the service or inspect the MCP log.",
+                            "The previous MCP process is still running, but did not pass the health check at 127.0.0.1:{}. Restart the service or inspect the MCP log.",
                             settings.port
                         ));
                     }
@@ -249,7 +247,7 @@ impl McpState {
 
         if is_port_occupied(settings.port) {
             return Err(format!(
-                "MCP could not start because 127.0.0.1:{} is occupied by another process that did not pass this editor's authenticated health check. Stop the process using that port, then restart MCP.",
+                "MCP could not start because 127.0.0.1:{} is occupied by another process that did not pass this editor's health check. Stop the process using that port, then restart MCP.",
                 settings.port
             ));
         }
@@ -264,8 +262,6 @@ impl McpState {
             .arg(&self.config_dir)
             .arg("--port")
             .arg(settings.port.to_string())
-            .arg("--token")
-            .arg(&settings.token)
             .arg("--repo")
             .arg(&self.repo_dir)
             .arg("--parent-pid")
@@ -466,8 +462,8 @@ fn probe_mcp_health(settings: &McpSettings) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
     let request = format!(
-        "GET /health/{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-        settings.token, settings.port
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        settings.port
     );
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
@@ -507,7 +503,7 @@ fn format_process_exit(
 
 fn format_startup_timeout(port: u16, diagnostics: &str) -> String {
     let base = format!(
-        "MCP did not pass its authenticated health check on 127.0.0.1:{port} within {} seconds. The service was stopped. This can be caused by a slow or blocked Node.js startup; retry MCP after checking the diagnostic output.",
+        "MCP did not pass its health check on 127.0.0.1:{port} within {} seconds. The service was stopped. This can be caused by a slow or blocked Node.js startup; retry MCP after checking the diagnostic output.",
         MCP_STARTUP_TIMEOUT.as_secs()
     );
     if diagnostics.is_empty() {
@@ -605,10 +601,6 @@ fn load_or_create_settings(config_dir: &Path) -> Result<McpSettings, String> {
     if path.exists() {
         let mut settings: McpSettings = read_json(&path)?;
         let mut changed = false;
-        if settings.token.len() < 16 {
-            settings.token = Uuid::new_v4().simple().to_string();
-            changed = true;
-        }
         if settings.port == 0 {
             settings.port = DEFAULT_MCP_PORT;
             changed = true;
@@ -696,7 +688,7 @@ fn status_for(
         full_access,
         port: settings.port,
         default_port: DEFAULT_MCP_PORT,
-        connection_url: format!("http://127.0.0.1:{}/mcp/{}", settings.port, settings.token),
+        connection_url: format!("http://127.0.0.1:{}/mcp", settings.port),
         error: state.last_error.lock().ok().and_then(|error| error.clone()),
     }
 }

@@ -681,7 +681,7 @@ Exit codes:
 The source desktop application now manages a local Streamable HTTP MCP service.
 
 - The toolbar Settings entry opens a categorized settings panel; its AI / MCP category starts/stops the service and persists its enabled state.
-- The service listens only on `127.0.0.1` and uses a per-install token in the URL. Its default port is `37631`; Settings → AI / MCP can apply another port or reset it to the default. The selected port persists in `mcp-settings.json`, and an enabled service restarts automatically after a port change.
+- The service listens only on `127.0.0.1` and serves MCP at the fixed `/mcp` path. Its default port is `37631`; Settings → AI / MCP can apply another port or reset it to the default. The selected port persists in `mcp-settings.json`, and an enabled service restarts automatically after a port change.
 - The canonical server/source ID is `configra`; initialization advertises tools only. Unsupported `resources/*` calls return `CAPABILITY_NOT_SUPPORTED`.
 - The connection URL is available through the toolbar copy button.
 - MCP is source desktop only; browser mode and packaged sidecars are not supported yet.

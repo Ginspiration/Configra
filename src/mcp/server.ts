@@ -30,7 +30,6 @@ import {
 export type ServerOptions = {
   configDir: string;
   port: number;
-  token: string;
   repoDir: string;
   parentPid?: number;
 };
@@ -177,8 +176,6 @@ const parseArgs = (argv: string[]): ServerOptions => {
   }
   const configDir = path.resolve(values.get('config-dir') ?? '.codex-run/mcp');
   const repoDir = path.resolve(values.get('repo') ?? process.cwd());
-  const token = values.get('token') ?? process.env.CONFIGRA_MCP_TOKEN;
-  if (!token || token.length < 16) throw new Error('MCP token must contain at least 16 characters.');
   const port = Number(values.get('port') ?? '37631');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('MCP port is invalid.');
   const parentPidRaw = values.get('parent-pid');
@@ -186,7 +183,7 @@ const parseArgs = (argv: string[]): ServerOptions => {
   if (parentPid !== undefined && (!Number.isInteger(parentPid) || parentPid <= 0)) {
     throw new Error('MCP parent PID is invalid.');
   }
-  return { configDir, repoDir, token, port, parentPid };
+  return { configDir, repoDir, port, parentPid };
 };
 
 const atomicWriteJson = async (filePath: string, value: unknown) => {
@@ -1120,9 +1117,8 @@ export async function startMcpHttpServer(options: ServerOptions) {
   await fs.mkdir(options.configDir, { recursive: true });
   const logger = createMcpLogger(path.join(options.configDir, 'mcp-logs.jsonl'));
   const app = createMcpExpressApp({ host: '127.0.0.1' });
-  const encodedToken = encodeURIComponent(options.token);
-  const mcpPath = `/mcp/${encodedToken}`;
-  const healthPath = `/health/${encodedToken}`;
+  const mcpPath = '/mcp';
+  const healthPath = '/health';
 
   app.use((req, res, next) => {
     if (!isLoopback(req.socket.remoteAddress)) {

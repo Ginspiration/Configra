@@ -26,10 +26,9 @@ const parseToolText = (rawResult: unknown) => {
 };
 
 describe('Configra MCP server', () => {
-  it('keeps previous diagnostics and exposes a token-protected health check', async () => {
+  it('keeps previous diagnostics and exposes a health check', async () => {
     const root = mkdtempSync(join(tmpdir(), 'configra-mcp-health-'));
     const configDir = join(root, 'config');
-    const token = '0123456789abcdef0123456789abcdef';
     mkdirSync(configDir, { recursive: true });
     writeFileSync(
       join(configDir, 'mcp-logs.jsonl'),
@@ -37,15 +36,12 @@ describe('Configra MCP server', () => {
       'utf8',
     );
 
-    const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
+    const started = await startMcpHttpServer({ configDir, port: 0, repoDir: repoRoot });
     runningServers.push(started.httpServer);
 
     const health = await fetch(`http://127.0.0.1:${started.port}${started.healthPath}`);
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({ ok: true, service: 'configra' });
-
-    const unauthorized = await fetch(`http://127.0.0.1:${started.port}/health/not-the-token`);
-    expect(unauthorized.status).toBe(404);
 
     const logs = readFileSync(join(configDir, 'mcp-logs.jsonl'), 'utf8');
     expect(logs).toContain('Previous startup diagnostic.');
@@ -112,12 +108,11 @@ describe('Configra MCP server', () => {
     mkdirSync(configDir, { recursive: true });
     writeContext('none');
 
-    const token = '0123456789abcdef0123456789abcdef';
-    const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
+    const started = await startMcpHttpServer({ configDir, port: 0, repoDir: repoRoot });
     runningServers.push(started.httpServer);
     const client = new Client({ name: 'configra-test', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
+      new URL(`http://127.0.0.1:${started.port}/mcp`),
     );
     await client.connect(transport);
 
@@ -334,7 +329,7 @@ describe('Configra MCP server', () => {
 
     const secondClient = new Client({ name: 'configra-test-2', version: '1.0.0' });
     await secondClient.connect(new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
+      new URL(`http://127.0.0.1:${started.port}/mcp`),
     ));
     const [concurrentPreviewA, concurrentPreviewB] = await Promise.all([
       client.callTool({
@@ -404,7 +399,7 @@ describe('Configra MCP server', () => {
     expect(stale.isError).toBe(true);
     expect(parseToolText(stale).error).toMatchObject({ code: 'STALE_BASE_HASH' });
 
-    const resourcesResponse = await fetch(`http://127.0.0.1:${started.port}/mcp/${token}`, {
+    const resourcesResponse = await fetch(`http://127.0.0.1:${started.port}/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'resources/list', params: {} }),
@@ -431,12 +426,11 @@ describe('Configra MCP server', () => {
   it('returns PROJECT_NOT_OPEN as a structured tool error', async () => {
     const root = mkdtempSync(join(tmpdir(), 'configra-mcp-no-project-'));
     const configDir = join(root, 'config');
-    const token = '0123456789abcdef0123456789abcdef';
-    const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
+    const started = await startMcpHttpServer({ configDir, port: 0, repoDir: repoRoot });
     runningServers.push(started.httpServer);
     const client = new Client({ name: 'configra-test', version: '1.0.0' });
     await client.connect(new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
+      new URL(`http://127.0.0.1:${started.port}/mcp`),
     ));
 
     const result = await client.callTool({ name: 'configra_inspect_project', arguments: {} });
@@ -503,12 +497,11 @@ describe('Configra MCP server', () => {
       'utf8',
     );
 
-    const token = '0123456789abcdef0123456789abcdef';
-    const started = await startMcpHttpServer({ configDir, port: 0, token, repoDir: repoRoot });
+    const started = await startMcpHttpServer({ configDir, port: 0, repoDir: repoRoot });
     runningServers.push(started.httpServer);
     const client = new Client({ name: 'configra-multi-project-test', version: '1.0.0' });
     await client.connect(new StreamableHTTPClientTransport(
-      new URL(`http://127.0.0.1:${started.port}/mcp/${token}`),
+      new URL(`http://127.0.0.1:${started.port}/mcp`),
     ));
 
     const listed = parseToolText(await client.callTool({
