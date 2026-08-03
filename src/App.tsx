@@ -12,8 +12,10 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { confirm as confirmDialog, message } from '@tauri-apps/plugin-dialog';
 import AppMenu from './appMenu/AppMenu';
 import GraphCanvas from './graph/GraphCanvas';
-import DataGridModal from './dataGrid/DataGridModal';
+import DataGridModal, { type DataGridFocusRequest } from './dataGrid/DataGridModal';
 import ContextMenu, { type ContextMenuItem } from './contextMenu/ContextMenu';
+import ImportReportDialog from './import/ImportReportDialog';
+import TableImportDialog from './import/TableImportDialog';
 import McpLogWindow from './mcp/McpLogWindow';
 import SettingsPanel from './settings/SettingsPanel';
 import StartupScreen from './startup/StartupScreen';
@@ -34,7 +36,7 @@ import {
   exportDesktopFiles,
 } from './export/desktopExport';
 import { parseProjectFileText } from './file/projectFile';
-import type { GraphPosition } from './model/types';
+import type { GraphPosition, ProjectFile } from './model/types';
 import {
   clearMcpLogs,
   claimProjectWindow,
@@ -95,6 +97,12 @@ type MenuState =
       x: number;
       y: number;
     };
+
+type ImportPending = {
+  project: ProjectFile;
+  name: string;
+  path?: string;
+};
 
 type BrowserWritableFile = {
   write: (contents: string) => Promise<void>;
@@ -173,6 +181,7 @@ export default function App() {
   const dirtyScope = useEditorStore((state) => state.dirtyScope);
   const loadProject = useEditorStore((state) => state.loadProject);
   const reloadProject = useEditorStore((state) => state.reloadProject);
+  const appendRows = useEditorStore((state) => state.appendRows);
   const markClean = useEditorStore((state) => state.markClean);
   const newProject = useEditorStore((state) => state.newProject);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -182,8 +191,12 @@ export default function App() {
   const [showMiniMap, setShowMiniMap] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAppMenu, setShowAppMenu] = useState(false);
+  const [importPending, setImportPending] = useState<ImportPending>();
+  const [tableImportTableId, setTableImportTableId] = useState<string>();
   const [showDataGrid, setShowDataGrid] = useState(false);
   const [editingTableId, setEditingTableId] = useState<string>();
+  const [dataGridFocusRequest, setDataGridFocusRequest] = useState<DataGridFocusRequest>();
+  const dataGridFocusSequenceRef = useRef(0);
   const [projectPath, setProjectPath] = useState<string>();
   const [status, setStatus] = useState('');
   const [menu, setMenu] = useState<MenuState>();
@@ -412,13 +425,32 @@ export default function App() {
         setStatus(t('projectAlreadyOpen'));
         return;
       }
-      if (loadProjectText(selected.text, selected.name, selected.path)) {
-        await rememberRecentProjectPath(selected.path);
-      }
+      setImportPending({ project: parsed.project, name: selected.name, path: selected.path });
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [confirmReplaceProject, loadProjectText, t]);
+  }, [confirmReplaceProject, t]);
+
+  const confirmImport = useCallback(
+    (candidate: ProjectFile) => {
+      if (!importPending) return;
+      loadProject(candidate);
+      setProjectPath(importPending.path);
+      setStatus(t('importedFile', { name: importPending.name }));
+      setImportPending(undefined);
+      if (isDesktopRuntime() && importPending.path) {
+        void rememberRecentProjectPath(importPending.path);
+      }
+    },
+    [importPending, loadProject, t],
+  );
+
+  const cancelImport = useCallback(async () => {
+    setImportPending(undefined);
+    if (isDesktopRuntime() && projectPath) {
+      await claimProjectWindow(windowLabelRef.current, projectPath).catch(() => undefined);
+    }
+  }, [projectPath]);
 
   const openDesktopProjectInNewWindow = useCallback(async () => {
     try {
@@ -615,8 +647,17 @@ export default function App() {
   );
 
   const openRowsModal = useCallback(
-    (tableId = selectedTable?.id) => {
+    (tableId = selectedTable?.id, focus?: { rowId: string; columnId: string }) => {
       if (!tableId) return;
+      if (focus) {
+        dataGridFocusSequenceRef.current += 1;
+        setDataGridFocusRequest({
+          tableId,
+          rowId: focus.rowId,
+          columnId: focus.columnId,
+          sequence: dataGridFocusSequenceRef.current,
+        });
+      }
       setEditingTableId(tableId);
       selectTable(tableId);
       setShowDataGrid(true);
@@ -663,7 +704,13 @@ export default function App() {
   }, [t]);
 
   const importFile = async (file: File) => {
-    loadProjectText(await file.text(), file.name);
+    const text = await file.text();
+    const parsed = parseProjectFileText(text, t);
+    if (!parsed.ok) {
+      setStatus(parsed.error);
+      return;
+    }
+    setImportPending({ project: parsed.project, name: file.name });
   };
 
   const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
@@ -680,6 +727,11 @@ export default function App() {
           label: t('edit'),
           shortcut: 'R',
           onSelect: () => openRowsModal(table.id),
+        },
+        {
+          id: 'import-json',
+          label: t('importJson'),
+          onSelect: () => setTableImportTableId(table.id),
         },
         { id: 'table-separator-export', type: 'separator' },
         {
@@ -1348,6 +1400,7 @@ export default function App() {
         issues={issues}
         theme={resolvedTheme}
         t={t}
+        focusRequest={dataGridFocusRequest}
         onOpenTable={openRowsModal}
         onClose={() => setShowDataGrid(false)}
       />
@@ -1374,6 +1427,33 @@ export default function App() {
         onCopyMcpAddress={copyMcpAddress}
         t={t}
       />
+
+      <ImportReportDialog
+        open={importPending !== undefined}
+        currentProject={project}
+        incomingProject={importPending?.project}
+        incomingName={importPending?.name ?? ''}
+        t={t}
+        onCancel={cancelImport}
+        onConfirm={confirmImport}
+      />
+
+      {tableImportTableId ? (
+        <TableImportDialog
+          project={project}
+          tableId={tableImportTableId}
+          t={t}
+          onCancel={() => setTableImportTableId(undefined)}
+          onConfirm={(rows) => {
+            appendRows(tableImportTableId, rows);
+            const importTableName =
+              project.tables.find((item) => item.id === tableImportTableId)?.name ?? '';
+            setStatus(t('importedRows', { count: rows.length, name: importTableName }));
+            setTableImportTableId(undefined);
+            setMenu(undefined);
+          }}
+        />
+      ) : null}
 
       {mcpStatus?.enabled ? (
         <McpLogWindow

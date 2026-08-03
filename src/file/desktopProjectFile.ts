@@ -170,6 +170,24 @@ export async function pickProjectFileText(title: string) {
   return readProjectFileText(selected);
 }
 
+export async function pickJsonFileText(title: string) {
+  const selected = await open({
+    title,
+    multiple: false,
+    filters: [
+      {
+        name: 'JSON',
+        extensions: ['json'],
+      },
+    ],
+  });
+
+  if (!selected || Array.isArray(selected)) return undefined;
+
+  const text = await readTextFile(selected);
+  return { path: selected, name: fileNameFromPath(selected), text };
+}
+
 export async function pickProjectSavePath() {
   return save({
     title: 'Save project',

@@ -1545,6 +1545,251 @@ h3 {
   min-height: 0;
 }
 
+.import-modal {
+  grid-template-rows: 44px minmax(0, 1fr) auto;
+  width: min(720px, calc(100vw - 48px));
+  height: min(640px, calc(100vh - 48px));
+}
+
+.import-modal__body {
+  display: block;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+}
+
+.import-modal__empty {
+  margin: 0;
+}
+
+.import-modal__summary {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-muted);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.import-modal__section {
+  margin-top: 12px;
+}
+
+.import-modal__section .panel-heading {
+  padding: 0 2px 4px;
+}
+
+.import-modal__section .panel-heading h3 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.import-modal__issues {
+  padding: 0;
+}
+
+.import-conflict-list {
+  display: grid;
+  gap: 8px;
+}
+
+.import-conflict {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  padding: 8px 10px;
+}
+
+.import-conflict__tables {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.import-conflict__side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.import-conflict__label {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.import-conflict__name {
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.import-conflict__meta {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.import-conflict__arrow {
+  color: var(--muted);
+  text-align: center;
+}
+
+.import-conflict__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-conflict__actions select {
+  min-width: 120px;
+}
+
+.import-conflict__rename {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.import-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding: 8px 12px;
+}
+
+.import-modal__hint {
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.import-source-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.import-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.import-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.import-paste-area {
+  min-height: 160px;
+  padding: 8px 10px;
+  background: var(--field-bg);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.import-mode-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.import-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field-bg);
+  cursor: pointer;
+}
+
+.import-mode-option:hover:not(.is-disabled) {
+  border-color: var(--line-strong);
+}
+
+.import-mode-option.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.import-mode-option.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.import-mode-option input[type='radio'] {
+  width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 3px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.import-mode-option__body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.import-mode-option strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.import-mode-option small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.import-issue__row {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.import-issue {
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.import-issue__badge {
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.import-issue__badge.is-new {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.import-issue__badge.is-existing {
+  background: var(--panel-muted);
+  color: var(--muted);
+}
+
 .choice-editor {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2195,5 +2440,9 @@ h3 {
 
   .settings-port-error {
     text-align: left;
+  }
+
+  .import-mode-list {
+    grid-template-columns: 1fr;
   }
 }

@@ -74,4 +74,25 @@ describe('editor dirty scopes', () => {
       dirtyScope: 'none',
     });
   });
+
+  it('appends imported rows with fresh defaults and marks content dirty', () => {
+    const project = createSampleProject();
+    const table = project.tables[0];
+    useEditorStore.getState().loadProject(project);
+    const beforeCount = table.rows.length;
+
+    useEditorStore
+      .getState()
+      .appendRows(table.id, [
+        { _rowId: 'imported_row', values: { [table.columns[0].id]: 'ImportedValue' } },
+      ]);
+
+    const nextTable = useEditorStore
+      .getState()
+      .project.tables.find((item) => item.id === table.id);
+    expect(nextTable?.rows).toHaveLength(beforeCount + 1);
+    expect(nextTable?.rows[beforeCount]._rowId).toBe('imported_row');
+    expect(nextTable?.rows[beforeCount].values[table.columns[0].id]).toBe('ImportedValue');
+    expect(useEditorStore.getState()).toMatchObject({ isDirty: true, dirtyScope: 'content' });
+  });
 });

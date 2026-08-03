@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { createSampleProject } from '../model/sampleProject';
 import { createEmptyProject } from '../model/projectFactory';
-import type { ConfigColumn, ConfigTable, GraphPosition, ProjectFile } from '../model/types';
+import type {
+  ConfigColumn,
+  ConfigRow,
+  ConfigTable,
+  GraphPosition,
+  ProjectFile,
+} from '../model/types';
 import {
   createDefaultRow,
   defaultValueForColumn,
@@ -33,6 +39,7 @@ type EditorStore = {
   updateCell(tableId: string, rowId: string, columnId: string, value: unknown): void;
   deleteRow(tableId: string, rowId: string): void;
   deleteRows(tableId: string, rowIds: string[]): void;
+  appendRows(tableId: string, rows: ConfigRow[]): void;
 
   loadProject(project: ProjectFile): void;
   reloadProject(project: ProjectFile, preserveLayout?: boolean): void;
@@ -372,6 +379,33 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ),
         },
         ...markDirty('deleteRows', state.dirtyScope),
+      };
+    }),
+
+  appendRows: (tableId, rows) =>
+    set((state) => {
+      let appended = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+        appended = true;
+
+        return {
+          ...table,
+          rows: [
+            ...table.rows,
+            ...rows.map((row) => createDefaultRow(table, row._rowId || makeId('row'), row.values)),
+          ],
+        };
+      });
+
+      if (!appended) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        ...markDirty('appendRows', state.dirtyScope),
       };
     }),
 

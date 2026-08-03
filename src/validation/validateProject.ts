@@ -94,6 +94,8 @@ const validateType = (
 export function validateProject(project: ProjectFile, t: Translator): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const registryEntries = new Map<string, { tableId: string; rowId: string }>();
+  const seenTableIds = new Map<string, string>();
+  const seenTableNames = new Map<string, string>();
 
   const pushIssue = (issue: Omit<ValidationIssue, 'id'>, code: string) => {
     issues.push({
@@ -107,6 +109,118 @@ export function validateProject(project: ProjectFile, t: Translator): Validation
     const identity = table.identity;
     const identityKeyColumn = findColumn(table, identity?.keyColumnId);
     const identityValueColumn = findColumn(table, identity?.valueColumnId);
+
+    if (!table.id.trim()) {
+      pushIssue(
+        {
+          severity: 'error',
+          tableId: table.id,
+          message: t('validationTableIdEmpty', { table: table.name }),
+        },
+        'table-id-empty',
+      );
+    } else {
+      const firstTableName = seenTableIds.get(table.id);
+      if (firstTableName !== undefined) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            message: t('validationTableIdDuplicate', {
+              table: table.name,
+              id: table.id,
+              firstTable: firstTableName,
+            }),
+          },
+          'table-id-duplicate',
+        );
+      } else {
+        seenTableIds.set(table.id, table.name);
+      }
+    }
+
+    const trimmedTableName = table.name.trim();
+    if (trimmedTableName) {
+      const firstTableName = seenTableNames.get(trimmedTableName);
+      if (firstTableName !== undefined) {
+        pushIssue(
+          {
+            severity: 'warning',
+            tableId: table.id,
+            message: t('validationTableNameDuplicate', {
+              table: table.name,
+              firstTable: firstTableName,
+            }),
+          },
+          'table-name-duplicate',
+        );
+      } else {
+        seenTableNames.set(trimmedTableName, table.name);
+      }
+    }
+
+    const seenColumnIds = new Map<string, string>();
+    const seenRowIds = new Set<string>();
+
+    for (const column of table.columns) {
+      if (!column.id.trim()) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            columnId: column.id,
+            message: t('validationColumnIdEmpty', { table: table.name }),
+          },
+          'column-id-empty',
+        );
+      } else {
+        const firstColumnName = seenColumnIds.get(column.id);
+        if (firstColumnName !== undefined) {
+          pushIssue(
+            {
+              severity: 'error',
+              tableId: table.id,
+              columnId: column.id,
+              message: t('validationColumnIdDuplicate', {
+                table: table.name,
+                column: column.name,
+                id: column.id,
+                firstColumn: firstColumnName,
+              }),
+            },
+            'column-id-duplicate',
+          );
+        } else {
+          seenColumnIds.set(column.id, column.name);
+        }
+      }
+    }
+
+    for (const row of table.rows) {
+      if (!row._rowId.trim()) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            rowId: row._rowId,
+            message: t('validationRowIdEmpty', { table: table.name }),
+          },
+          'row-id-empty',
+        );
+      } else if (seenRowIds.has(row._rowId)) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: table.id,
+            rowId: row._rowId,
+            message: t('validationRowIdDuplicate', { table: table.name, rowId: row._rowId }),
+          },
+          'row-id-duplicate',
+        );
+      } else {
+        seenRowIds.add(row._rowId);
+      }
+    }
 
     if (primaryColumns.length > 1) {
       pushIssue(

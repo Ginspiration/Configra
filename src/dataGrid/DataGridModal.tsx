@@ -27,6 +27,14 @@ import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
 import TablePreviewModal from './TablePreviewModal';
 import { filterChoiceOptions, type ChoiceOption } from './choiceSearch';
+import { referenceValueKey, resolveReferenceTarget } from './referenceNavigation';
+
+export type DataGridFocusRequest = {
+  tableId: string;
+  rowId: string;
+  columnId: string;
+  sequence: number;
+};
 
 type DataGridModalProps = {
   open: boolean;
@@ -35,8 +43,9 @@ type DataGridModalProps = {
   issues: ValidationIssue[];
   theme: ResolvedTheme;
   t: Translator;
+  focusRequest?: DataGridFocusRequest;
   onClose(): void;
-  onOpenTable(tableId: string): void;
+  onOpenTable(tableId: string, focus?: { rowId: string; columnId: string }): void;
 };
 
 type ChoiceCellData = {
@@ -47,6 +56,7 @@ type ChoiceCellData = {
   searchPlaceholder: string;
   noMatchesLabel: string;
   clearLabel: string;
+  onNavigate?: () => void;
 };
 
 type ChoiceCell = CustomCell<ChoiceCellData>;
@@ -89,8 +99,6 @@ const toInputValue = (value: unknown) => {
 };
 
 const parseNumber = (value: string) => (value.trim() === '' ? '' : Number(value));
-
-const valueKey = (value: unknown) => JSON.stringify([typeof value, value]);
 
 const columnRemark = (column: ConfigColumn) => column.remark?.trim() ?? '';
 
@@ -241,7 +249,7 @@ const optionCellData = (column: ConfigColumn, project: ProjectFile) => {
     return (column.enumValues ?? []).map((value) => ({
       label: value,
       value,
-      key: valueKey(value),
+      key: referenceValueKey(value),
     }));
   }
 
@@ -255,7 +263,7 @@ const optionCellData = (column: ConfigColumn, project: ProjectFile) => {
     .map((row) => ({
       label: formatRefOptionLabel(targetTable, targetColumn, row),
       value: row.values[targetColumn.id],
-      key: valueKey(row.values[targetColumn.id]),
+      key: referenceValueKey(row.values[targetColumn.id]),
     }))
     .filter((item) => item.value !== undefined && item.value !== null && item.value !== '');
 };
@@ -275,7 +283,7 @@ function ChoiceEditor({
   const listboxId = useId();
   const choiceValue = value as ChoiceCell;
   const data = choiceValue.data;
-  const selectedKey = valueKey(data.value);
+  const selectedKey = referenceValueKey(data.value);
   const filteredOptions = useMemo(
     () => filterChoiceOptions(data.options, query),
     [data.options, query],
@@ -415,10 +423,30 @@ const choiceCellRenderer: CustomRenderer<ChoiceCell> = {
   kind: GridCellKind.Custom,
   isMatch: (cell): cell is ChoiceCell =>
     (cell.data as { kind?: unknown } | undefined)?.kind === 'choice-cell',
-  draw: ({ ctx, rect, theme, cell }) => {
+  needsHover: (cell) => Boolean(cell.data.onNavigate),
+  needsHoverPosition: true,
+  onClick: ({ cell, posX, bounds, theme, preventDefault }) => {
+    if (!cell.data.onNavigate) return undefined;
+
+    const horizontalPadding = theme.cellHorizontalPadding;
+    const dropdownWidth = 18;
+    const navigateWidth = 22;
+    const navigateRight = bounds.width - horizontalPadding - dropdownWidth;
+    const navigateLeft = navigateRight - navigateWidth;
+    if (posX < navigateLeft || posX > navigateRight) return undefined;
+
+    preventDefault();
+    cell.data.onNavigate();
+    return undefined;
+  },
+  draw: ({ ctx, rect, theme, cell, hoverX, overrideCursor }) => {
     const horizontalPadding = theme.cellHorizontalPadding;
     const arrowWidth = 18;
-    const textWidth = Math.max(0, rect.width - horizontalPadding * 2 - arrowWidth);
+    const navigateWidth = cell.data.onNavigate ? 22 : 0;
+    const textWidth = Math.max(
+      0,
+      rect.width - horizontalPadding * 2 - arrowWidth - navigateWidth,
+    );
 
     ctx.save();
     ctx.beginPath();
@@ -434,6 +462,31 @@ const choiceCellRenderer: CustomRenderer<ChoiceCell> = {
       rect.x + horizontalPadding,
       rect.y + rect.height / 2,
     );
+
+    if (cell.data.onNavigate) {
+      const navigateRight = rect.width - horizontalPadding - arrowWidth;
+      const navigateLeft = navigateRight - navigateWidth;
+      const isNavigateHovered =
+        hoverX !== undefined && hoverX >= navigateLeft && hoverX <= navigateRight;
+      if (isNavigateHovered) overrideCursor?.('pointer');
+
+      const iconCenterX = rect.x + navigateLeft + navigateWidth / 2;
+      const iconCenterY = rect.y + rect.height / 2;
+      ctx.strokeStyle = isNavigateHovered ? theme.linkColor : theme.textLight;
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.moveTo(iconCenterX - 5, iconCenterY - 3);
+      ctx.lineTo(iconCenterX - 5, iconCenterY + 5);
+      ctx.lineTo(iconCenterX + 3, iconCenterY + 5);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(iconCenterX - 1, iconCenterY + 1);
+      ctx.lineTo(iconCenterX + 5, iconCenterY - 5);
+      ctx.moveTo(iconCenterX + 1, iconCenterY - 5);
+      ctx.lineTo(iconCenterX + 5, iconCenterY - 5);
+      ctx.lineTo(iconCenterX + 5, iconCenterY - 1);
+      ctx.stroke();
+    }
 
     const arrowCenterX = rect.x + rect.width - horizontalPadding - 4;
     const arrowCenterY = rect.y + rect.height / 2;
@@ -457,6 +510,7 @@ export default function DataGridModal({
   issues,
   theme,
   t,
+  focusRequest,
   onClose,
   onOpenTable,
 }: DataGridModalProps) {
@@ -468,6 +522,7 @@ export default function DataGridModal({
   const updateColumn = useEditorStore((state) => state.updateColumn);
   const updateCell = useEditorStore((state) => state.updateCell);
   const gridRef = useRef<DataEditorRef>(null);
+  const handledFocusSequenceRef = useRef<number>();
   const hoverTimeoutRef = useRef<number>();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
@@ -583,7 +638,10 @@ export default function DataGridModal({
 
       if (column.type === 'enum' || column.type === 'ref') {
         const options = optionCellData(column, project);
-        const selected = options.find((option) => valueKey(option.value) === valueKey(value));
+        const selected = options.find(
+          (option) => referenceValueKey(option.value) === referenceValueKey(value),
+        );
+        const referenceTarget = resolveReferenceTarget(project, column, value);
 
         return {
           kind: GridCellKind.Custom,
@@ -598,6 +656,13 @@ export default function DataGridModal({
             searchPlaceholder: t('searchChoices'),
             noMatchesLabel: t('noMatchingChoices'),
             clearLabel: t('clearChoice'),
+            onNavigate: referenceTarget
+              ? () =>
+                  onOpenTable(referenceTarget.tableId, {
+                    rowId: referenceTarget.rowId,
+                    columnId: referenceTarget.columnId,
+                  })
+              : undefined,
           },
           themeOverride,
         };
@@ -611,7 +676,7 @@ export default function DataGridModal({
         themeOverride,
       };
     },
-    [errorCells, isDarkTheme, project, t, table],
+    [errorCells, isDarkTheme, onOpenTable, project, t, table],
   );
 
   const onCellEdited = useCallback(
@@ -963,6 +1028,13 @@ export default function DataGridModal({
     }
 
     const uppercaseTargets = [...uppercaseTargetMap.values()];
+    const menuColumn = table.columns[cellMenu.colIndex];
+    const menuRow = table.rows[cellMenu.rowIndex];
+    const referenceTarget = resolveReferenceTarget(
+      project,
+      menuColumn,
+      menuColumn && menuRow ? menuRow.values[menuColumn.id] : undefined,
+    );
 
     return [
       {
@@ -970,6 +1042,21 @@ export default function DataGridModal({
         type: 'label',
         label: hasExistingRow ? t('rowLabel', { index: cellMenu.rowIndex + 1 }) : t('blankRow'),
       },
+      ...(referenceTarget
+        ? [
+            {
+              id: 'open-reference',
+              label: t('goToReferencedRow', { table: referenceTarget.tableName }),
+              shortcut: '↗',
+              onSelect: () =>
+                onOpenTable(referenceTarget.tableId, {
+                  rowId: referenceTarget.rowId,
+                  columnId: referenceTarget.columnId,
+                }),
+            } satisfies ContextMenuItem,
+            { id: 'row-separator-reference', type: 'separator' as const },
+          ]
+        : []),
       {
         id: 'insert-above',
         label: t('insertRowAbove'),
@@ -1025,6 +1112,8 @@ export default function DataGridModal({
     getSelectedRowIndexes,
     insertRowAt,
     cellMenu,
+    onOpenTable,
+    project,
     selection,
     t,
     table,
@@ -1084,6 +1173,19 @@ export default function DataGridModal({
     },
     [columns.length, gridRowCount],
   );
+
+  useEffect(() => {
+    if (!table || !focusRequest || focusRequest.tableId !== table.id) return;
+    if (handledFocusSequenceRef.current === focusRequest.sequence) return;
+
+    const col = table.columns.findIndex((column) => column.id === focusRequest.columnId);
+    const row = table.rows.findIndex((item) => item._rowId === focusRequest.rowId);
+    if (col < 0 || row < 0) return;
+
+    handledFocusSequenceRef.current = focusRequest.sequence;
+    focusGridCell([col, row]);
+    requestAnimationFrame(() => gridRef.current?.focus());
+  }, [focusGridCell, focusRequest, table]);
 
   const focusGridColumn = useCallback(
     (columnId: string) => {
