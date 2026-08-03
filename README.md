@@ -13,23 +13,31 @@
 
 - 使用 React Flow 展示可拖动的表节点。
 - 根据 `ref` 字段自动生成表到表的关系箭头。
-- 左侧表列表支持点击选中、双击编辑。
+- 左侧表列表支持点击选中、双击编辑，显示备注和字段/行数统计，宽度可拖动调整并记忆。
 - 使用 Glide Data Grid 在弹窗中编辑行数据。
 - 表属性、字段编辑、问题列表都集成在行数据编辑弹窗中。
-- 行数据编辑弹窗支持全屏。
+- 行数据编辑弹窗支持全屏、内置搜索并定位到匹配单元格、填充柄和平滑滚动。
+- 行号可点击；支持多行、多矩形选择。
 - 字段类型支持 `int`、`float`、`string`、`bool`、`enum`、`ref`、`json`。
 - 字段支持主键、必填、自增。
-- `enum` 和 `ref` 单元格使用下拉编辑。
-- 表格支持多行、多单元格选择。
-- 粘贴多行文本到单列时，会按非空行自动分配到多行。
-- 表格右键菜单支持上方插入行、下方插入行、追加行、全部大写、复制行 JSON、删除行。
-- 左上角应用菜单集中提供新建工程、保存、导入、导出和设置。
+- 字段可用 `export: false` 从导出中排除。
+- `enum` 和 `ref` 单元格使用下拉编辑，下拉支持输入过滤搜索。
+- `ref` 单元格可跳转到被引用的目标行（单元格内导航按钮或右键“跳转到引用行”）。
+- 行数据编辑弹窗提供“表格预览”字段总览，展示字段结构、备注、类型、属性徽章和导出标记，点击字段可定位到对应列。
+- 表格右键菜单支持上方插入行、下方插入行、追加行、全部大写、复制行 JSON、删除行；列头右键可填写字段备注。
+- 粘贴多行文本到单列时，会按非空行自动分配到多行；粘贴超过已有行数时自动创建行。
+- 左上角应用菜单集中提供新建工程、保存、导入、导出全部和设置。
+- 导出全部会把所有表 JSON 和 `config_ids.json` 导出到目录；覆盖已有文件前确认，桌面模式写后逐个读回校验。
+- 导入工程文件时显示合并报告：识别同 ID 或同名的表冲突，可逐表选择覆盖、跳过或重命名，并对比新增/既有校验问题。
+- 表右键菜单支持从 JSON 数组导入行数据（粘贴或文件），支持严格模式和自增模式，导入前显示逐行校验报告。
 - 画布和表节点右键菜单支持新建表、编辑、单表导出、删除、ID 注册表操作和小地图切换。
 - 小地图可隐藏和显示。
-- 默认中文，支持切换英文。
+- 支持浅色、深色、跟随系统三种主题；默认中文，支持切换英文。
+- 顶部工具栏实时显示校验错误和警告数量。
 - 支持必填、类型、主键、引用、枚举、JSON、ID 注册表等校验。
 - 浏览器模式支持保存/导入 `.configra.json`。
 - Tauri 桌面模式支持保存到当前工程文件。
+- 桌面模式启动时显示加载屏，窗口标题显示当前工程文件名。
 - 桌面模式会自动加载最近打开的工程。
 - 桌面模式支持通过“在新窗口中打开”或 `Ctrl+Alt+O` 同时打开多个工程；每个工程独立保存、校验和处理未保存状态，同一路径只会打开一个窗口。
 - 新建、导入其他工程或关闭桌面应用前，如果存在未保存修改，会提示保存。
@@ -67,6 +75,12 @@ Windows 下也可以双击 `start-debug.bat`，或运行 `npm run debug`。首�
 npm run build
 ```
 
+运行测试（Vitest）：
+
+```bash
+npm run test
+```
+
 检查 Tauri/Rust 部分：
 
 ```bash
@@ -87,6 +101,15 @@ cargo check
 Dialogue.speaker_id -> Speaker.id
 ```
 
+## 界面行为
+
+- 顶部工具栏：左侧是应用菜单（新建工程、保存、导入、导出全部、设置），中间显示当前工程文件名，右侧实时显示错误和警告数量。
+- 左侧表列表：点击选中并聚焦画布节点，双击打开行数据编辑弹窗，右键打开表操作菜单；表项显示备注和字段/行数统计，列表宽度可拖动调整（160–420px）并记忆。
+- 画布：表节点展示表名、字段列表以及 `PK`、`AI`、必填和 `ref` 目标标记；拖动保存位置，双击打开编辑弹窗，右键打开表操作菜单。
+- 右键画布空白处可新建表、复制/下载 ID 注册表或切换小地图。
+- 设置面板按“界面”（语言、主题、小地图）和“AI / MCP”分类。
+- 除输入框、文本框、下拉框和可编辑控件外，原生浏览器右键菜单会被禁用。
+
 ## 主要工作流
 
 1. 在画布上新建或选择一张表。
@@ -94,7 +117,7 @@ Dialogue.speaker_id -> Speaker.id
 3. 在弹窗中编辑表名、ID 注册表、字段和行数据。
 4. 将字段类型设置为 `ref`，并选择目标表和目标字段。
 5. 根据问题列表修复校验错误。
-6. 右键表节点，复制或导出该表 JSON。
+6. 右键表节点，复制或导出该表 JSON，或使用“导入 JSON”批量导入行数据。
 7. 使用左上角应用菜单新建、保存、导入或导出工程；右键画布空白处可新建表、切换小地图或导出 `config_ids.json`。
 
 ## `ref` 引用语义
@@ -120,6 +143,8 @@ Dialogue.speaker_id -> Speaker.id
 - `Ctrl+O`：导入工程。
 - `Ctrl+Shift+N`：新建空白工程。
 - `Ctrl+N`：新建表。
+- `S`：保存工程。
+- `O`：导入工程。
 - `N`：新建表。
 - `R`：打开当前选中表的编辑弹窗。
 - `F`：给当前选中表新增字段。
@@ -140,19 +165,27 @@ Dialogue.speaker_id -> Speaker.id
 - `bool` 字段显示为布尔值。
 - `int` 和 `float` 字段会按数字解析输入。
 - `enum` 字段使用字段配置中的枚举选项。
-- `ref` 字段使用目标表目标字段的值作为选项。
+- `ref` 字段使用目标表目标字段的值作为选项，下拉支持输入过滤搜索。
 - `json` 字段允许输入合法 JSON 字符串，导出时会尽量解析为 JSON 值。
 - 已有行下方会显示空白行，编辑空白行会自动创建新行。
 - 如果主键字段是第一列，该列会冻结。
 - 每张表的列宽会保存到 `localStorage`。
+- 内置搜索会定位并高亮匹配单元格，同时显示当前序号和匹配总数。
+- 支持填充柄，可快速向下/向右填充。
+- 支持平滑滚动；行号可点击（点击即选中整行）。
+- `ref` 单元格可以点击单元格内导航按钮或使用右键“跳转到引用行”，直接打开目标表并定位到对应的目标行和字段。
+- 行数据编辑弹窗顶部提供“表格预览”按钮，打开字段总览后点击字段名可定位到网格中的对应列。
+- 列头悬停会显示字段备注；右键列头可填写或修改字段备注。
 
 粘贴行为：
 
 - 支持普通矩形区域粘贴。
 - 单列粘贴时，如果内容包含换行或空行，会拆成多行；每个非空、去除首尾空白后的文本占一行。
+- 粘贴超过已有行数时会自动创建新行；粘贴值会按字段类型解析。
 
 右键行为：
 
+- 如果右键点中的是有效的 `ref` 单元格，会显示“跳转到引用行”，打开目标表并定位到对应单元格。
 - 上方插入行。
 - 下方插入行。
 - 追加到末尾。
@@ -263,6 +296,7 @@ SOUND_CLICK (1)
 - 每行输出一个对象。
 - 对象 key 使用字段展示名。
 - 不输出 `_rowId` 和编辑器内部元数据。
+- `export: false` 的字段会被跳过。
 - `json` 字段如果是合法 JSON 字符串，导出时会解析为 JSON 值。
 
 ID 注册表 JSON：
@@ -272,23 +306,33 @@ ID 注册表 JSON：
 - value 来自配置的运行时 ID 字段。
 - key 或 value 为空的行会跳过。
 
-一键导出使用当前编辑器内存中的数据，包括尚未保存到工程文件的修改。桌面模式覆盖已有文件后会逐个读回校验，全部一致后才显示导出成功。
+一键导出全部表时使用当前编辑器内存中的数据，包括尚未保存到工程文件的修改。文件名会做安全化处理，重名自动加数字后缀；桌面模式先选择目标目录，覆盖已有文件前会确认，写完后逐个读回校验，全部一致才显示成功；浏览器模式优先使用目录选择器，否则逐个下载文件。
 
 ## 保存和导入
 
 浏览器模式：
 
 - 保存会下载 `project.configra.json`。
-- 导入会打开文件选择器，读取并校验后替换当前工程。
+- 导入会打开文件选择器，先解析并做结构校验，再显示合并报告。
 
 桌面模式：
 
-- 启动时会尝试加载最近保存或打开的工程路径。
+- 启动时会尝试加载最近保存或打开的工程路径，加载期间显示启动屏。
 - 如果没有最近工程，则显示示例工程。
 - 保存会写回当前工程文件。
 - 新工程没有文件路径时，第一次保存会弹出保存位置选择框。
 - 新建或导入其他工程前，如果有未保存修改，会提示保存。
 - 关闭应用前，如果有未保存修改，会提示保存。
+- 窗口标题会显示当前工程文件名。
+
+### 导入与合并
+
+导入工程文件时不会直接替换当前工程，而是先显示导入报告：
+
+- 自动检测与当前工程的冲突：待导入表的稳定 ID 已存在于当前工程，或表 ID 不同但表名相同。
+- 每个冲突表可选择“覆盖”“跳过”或“重命名”；重命名会生成新的显示名（必要时新的稳定 ID），并自动更新指向该表的 `ref` 目标。
+- 无冲突的新表直接加入；位置与现有表重叠时自动偏移。
+- 报告会列出合并后候选工程的校验问题，并标注“新增”与“既有”；存在新增错误或导入文件为空时不允许导入。
 
 Tauri 命令实现位置是 `src-tauri/src/lib.rs`：
 
@@ -314,6 +358,7 @@ type ValidationIssue = {
 
 已实现校验：
 
+- 字段名为空是错误。
 - 必填字段不能为空。
 - `int` 必须是整数。
 - `float` 必须是有限数字。
@@ -339,17 +384,29 @@ Configra/
 |-- AGENTS.md
 |-- README.md
 |-- package.json
+|-- scripts/
+|   `-- start-debug.mjs
 |-- schemas/
 |   `-- data-patch.schema.json
 |-- src/
+|   |-- appMenu/
+|   |   `-- AppMenu.tsx
 |   |-- App.tsx
 |   |-- cli/
+|   |   |-- cfg.test.ts
 |   |   `-- cfg.ts
 |   |-- contextMenu/
 |   |   `-- ContextMenu.tsx
 |   |-- dataGrid/
-|   |   `-- DataGridModal.tsx
+|   |   |-- DataGridModal.tsx
+|   |   |-- TablePreviewModal.tsx
+|   |   |-- choiceSearch.ts
+|   |   |-- choiceSearch.test.ts
+|   |   |-- referenceNavigation.ts
+|   |   `-- referenceNavigation.test.ts
 |   |-- export/
+|   |   |-- desktopExport.test.ts
+|   |   |-- desktopExport.ts
 |   |   `-- exportTables.ts
 |   |-- file/
 |   |   |-- desktopProjectFile.ts
@@ -357,30 +414,56 @@ Configra/
 |   |-- graph/
 |   |   |-- GraphCanvas.tsx
 |   |   |-- TableNode.tsx
+|   |   |-- graphMapping.test.ts
 |   |   `-- graphMapping.ts
+|   |-- import/
+|   |   |-- ImportReportDialog.tsx
+|   |   |-- TableImportDialog.tsx
+|   |   |-- mergeProject.test.ts
+|   |   |-- mergeProject.ts
+|   |   |-- tableRowImport.test.ts
+|   |   `-- tableRowImport.ts
 |   |-- inspector/
 |   |   |-- ColumnEditor.tsx
 |   |   `-- TableInspector.tsx
+|   |-- mcp/
+|   |   |-- McpLogWindow.tsx
+|   |   |-- protocol.ts
+|   |   |-- server.test.ts
+|   |   `-- server.ts
 |   |-- model/
+|   |   |-- projectFactory.ts
 |   |   |-- referenceSemantics.ts
+|   |   |-- rowFactory.ts
 |   |   |-- sampleProject.ts
 |   |   |-- schemaUtils.ts
 |   |   `-- types.ts
-|   |-- mcp/
-|   |   |-- protocol.ts
-|   |   `-- server.ts
 |   |-- patch/
+|   |   |-- dataPatch.test.ts
 |   |   `-- dataPatch.ts
+|   |-- settings/
+|   |   `-- SettingsPanel.tsx
+|   |-- startup/
+|   |   `-- StartupScreen.tsx
 |   |-- store/
+|   |   |-- editorStore.test.ts
 |   |   `-- editorStore.ts
 |   |-- validation/
+|   |   |-- validateProject.test.ts
 |   |   `-- validateProject.ts
 |   |-- i18n.ts
+|   |-- main.tsx
+|   |-- theme.ts
 |   `-- styles/
 |       `-- app.css
 `-- src-tauri/
+    |-- Cargo.toml
+    |-- tauri.conf.json
+    |-- capabilities/
+    |   `-- default.json
     `-- src/
-        `-- lib.rs
+        |-- lib.rs
+        `-- main.rs
 ```
 
 ## 当前不做的内容
@@ -391,6 +474,8 @@ Configra/
 - 插件系统。
 - 复杂导出模板。
 - 安装包、自动更新或发布流程打磨。
+- 权限系统。
+- 完整电子表格公式引擎。
 
 项目应继续聚焦游戏配置编辑闭环：表结构、行数据、引用、校验、保存/加载和 JSON 导出。
 
@@ -399,15 +484,15 @@ Configra/
 Run batch edits without starting Vite or Tauri:
 
 ```bash
-npm run --silent cfg -- inspect --project <file> --json
-npm run --silent cfg -- query rows --project <file> --query <file|-> --json
-npm run --silent cfg -- validate --project <file> --json
-npm run --silent cfg -- patch check --project <file> --patch <file|-> --json
-npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] --json
-npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> --json
-npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> --json
-npm run --silent cfg -- export all --project <file> --out <directory> --json
-npm run --silent cfg -- export ids --project <file> --out <file> --json
+npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]
+npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]
+npm run --silent cfg -- validate --project <file> [--json]
+npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]
+npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]
+npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]
+npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--overwrite] [--json]
+npm run --silent cfg -- export all --project <file> --out <directory> [--overwrite] [--json]
+npm run --silent cfg -- export ids --project <file> --out <file> [--overwrite] [--json]
 ```
 
 Patch files use stable IDs only and follow `schemas/data-patch.schema.json`.
@@ -441,13 +526,13 @@ Exit codes:
 2. 打开顶部“设置”，进入“AI / MCP”分类并开启本机 MCP 服务。
 3. 在设置面板中点击“复制 MCP 地址”，把地址配置到支持 Streamable HTTP 的 AI 客户端。
 
-服务只监听 `127.0.0.1`，默认端口是 `37631`。可以在“设置 → AI / MCP”中指定其他 `1–65535` 端口或恢复默认端口；端口和开关状态都会写入应用配置目录的 `mcp-settings.json`，下次启动桌面应用时继续使用。URL 包含本机生成的访问 Token。
+服务只监听 `127.0.0.1`，默认端口是 `37631`。可以在“设置 → AI / MCP”中开启/关闭服务、修改或恢复默认端口、重启服务、切换日志窗口显示和复制连接地址；端口和开关状态都会写入应用配置目录的 `mcp-settings.json`，下次启动桌面应用时继续使用。URL 包含本机生成的访问 Token。
 
 服务的 canonical ID 是 `configra`，初始化能力只声明 `tools`。不支持的 `resources/*` 请求会稳定返回 `CAPABILITY_NOT_SUPPORTED`，不会被伪装成另一个资源服务器。
 
 MCP 只操作桌面窗口中已打开且已保存的工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。`configra_list_projects` 返回当前工程及其 `projectId`；当打开多个工程时，所有工程相关工具都必须显式传入目标 `projectId`，避免依赖当前焦点窗口猜测目标。仅蓝图布局发生变化时不会阻断该工程的 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”按工程明确放行 MCP 操作，此时 MCP 应用可能替换该工程窗口中未保存的内容，但不会授权其他工程。
 
-MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接、工具调用记录及工具显式指定的 `projectId`。收起后窗口会变成右下角的小按钮，点击即可恢复；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中。
+MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接、工具调用记录及工具显式指定的 `projectId`。收起后窗口会变成右下角的小按钮，点击即可恢复；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中，日志窗口右键菜单可以清空当前日志。
 
 ### MCP 自解释契约
 
