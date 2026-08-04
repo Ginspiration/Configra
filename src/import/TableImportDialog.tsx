@@ -39,13 +39,20 @@ export default function TableImportDialog({
   const hasAutoIncrement = (table?.columns.some((column) => column.autoIncrement) ?? false);
 
   const parseResult = useMemo(
-    () => (table && hasText ? parseTableJsonImport(text, table, t) : undefined),
-    [hasText, table, text, t],
+    () => (table && hasText ? parseTableJsonImport(text, table, t, mode) : undefined),
+    [hasText, mode, table, text, t],
   );
 
   const report = useMemo(() => {
     if (!table || !parseResult?.ok) return undefined;
-    return buildTableImportReport(project, tableId, parseResult.rows, mode, t);
+    return buildTableImportReport(
+      project,
+      tableId,
+      parseResult.rows,
+      mode,
+      t,
+      parseResult.issues,
+    );
   }, [mode, parseResult, project, t, table, tableId]);
 
   const parseIssues: TableImportIssue[] =
@@ -60,7 +67,7 @@ export default function TableImportDialog({
     !parseResult?.ok ||
     !report ||
     report.blocked ||
-    (mode === 'auto-increment' && !hasAutoIncrement);
+    (mode !== 'strict' && !hasAutoIncrement);
 
   const pickFile = async () => {
     if (isDesktopRuntime()) {
@@ -203,6 +210,27 @@ export default function TableImportDialog({
                   </small>
                 </span>
               </label>
+              <label
+                className={`import-mode-option ${
+                  !hasAutoIncrement ? 'is-disabled' : ''
+                } ${mode === 'partial' ? 'is-selected' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="import-mode"
+                  checked={mode === 'partial'}
+                  disabled={!hasAutoIncrement}
+                  onChange={() => setMode('partial')}
+                />
+                <span className="import-mode-option__body">
+                  <strong>{t('importModePartial')}</strong>
+                  <small>
+                    {hasAutoIncrement
+                      ? t('importModePartialDescription')
+                      : t('importModeAutoUnavailable')}
+                  </small>
+                </span>
+              </label>
             </div>
           </section>
 
@@ -276,7 +304,11 @@ export default function TableImportDialog({
         </div>
 
         <div className="import-modal__footer">
-          {errors > 0 ? <span className="import-modal__hint">{t('importBlockedHint')}</span> : null}
+          {errors > 0 ? (
+            <span className="import-modal__hint">
+              {mode === 'partial' ? t('importPartialHint') : t('importBlockedHint')}
+            </span>
+          ) : null}
           <div className="data-modal__actions">
             <button type="button" className="button" onClick={onCancel}>
               {t('cancel')}
@@ -287,7 +319,9 @@ export default function TableImportDialog({
               disabled={blocked}
               onClick={confirm}
             >
-              {warnings > 0 ? t('importStillImport') : t('importConfirm')}
+              {warnings > 0 || (mode === 'partial' && errors > 0)
+                ? t('importStillImport')
+                : t('importConfirm')}
             </button>
           </div>
         </div>

@@ -118,6 +118,49 @@ describe('parseTableJsonImport', () => {
     expect(parsed.issues[0].rowIndex).toBe(0);
   });
 
+  it('skips unknown fields with warnings in partial mode', () => {
+    const parsed = parseTableJsonImport(
+      '[{"id":1,"name":"A","nope":2}]',
+      soundTable(),
+      t,
+      'partial',
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].id).toBe(1);
+    expect(parsed.rows[0].name).toBe('A');
+    expect(parsed.rows[0].nope).toBeUndefined();
+    expect(parsed.issues).toHaveLength(1);
+    expect(parsed.issues[0].severity).toBe('warning');
+    expect(parsed.issues[0].message).toContain('field nope');
+    expect(parsed.issues[0].rowIndex).toBe(0);
+  });
+
+  it('keeps invalid known-field values as-is with warnings in partial mode', () => {
+    const parsed = parseTableJsonImport(
+      '[{"id":1,"name":"A","volume":"loud"}]',
+      soundTable(),
+      t,
+      'partial',
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.rows[0].volume).toBe('loud');
+    expect(parsed.issues).toHaveLength(1);
+    expect(parsed.issues[0].severity).toBe('warning');
+    expect(parsed.issues[0].columnId).toBe('volume');
+  });
+
+  it('skips non-object rows with warnings in partial mode', () => {
+    const parsed = parseTableJsonImport('[5, {"id": 9, "name": "B"}]', soundTable(), t, 'partial');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].name).toBe('B');
+    expect(parsed.issues.some((issue) => issue.severity === 'warning')).toBe(true);
+  });
+
   it('coerces int, float, bool and json values leniently', () => {
     const parsed = parseTableJsonImport(
       '[{"id":"5","name":"A","enabled":"true","volume":"1.5","kind":"sfx","meta":{"a":1}}]',
@@ -216,6 +259,82 @@ describe('buildTableImportReport', () => {
     expect(report.blocked).toBe(false);
     expect(report.rows[0].values.id).toBe(3);
     expect(report.rows[1].values.id).toBe(4);
+  });
+
+  it('regenerates the auto-increment column and keeps skipped-field warnings in partial mode', () => {
+    const table = soundTable();
+    const report = buildTableImportReport(
+      project([table]),
+      table.id,
+      [
+        { id: 999, name: 'A', nope: 1 },
+        { id: 999, name: 'B' },
+      ],
+      'partial',
+      t,
+      [{ severity: 'warning', rowIndex: 0, columnName: 'nope', message: 'skipped' }],
+    );
+
+    expect(report.blocked).toBe(false);
+    expect(report.rows[0].values.id).toBe(3);
+    expect(report.rows[0].values.name).toBe('A');
+    expect(report.rows[1].values.id).toBe(4);
+    expect(report.warningCount).toBe(1);
+    expect(report.issues[0]).toMatchObject({
+      severity: 'warning',
+      rowIndex: 0,
+      columnName: 'nope',
+    });
+  });
+
+  it('does not block validation errors in partial mode', () => {
+    const table = identityTable();
+    const report = buildTableImportReport(
+      project([table]),
+      table.id,
+      [{ code: 'SOUND_CLICK', id: 999, name: 'Dup' }],
+      'partial',
+      t,
+    );
+
+    expect(report.blocked).toBe(false);
+    expect(report.errorCount).toBeGreaterThan(0);
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0].values.id).toBe(3);
+  });
+
+  it('keeps invalid known-field values in partial mode rows', () => {
+    const table = soundTable();
+    const report = buildTableImportReport(
+      project([table]),
+      table.id,
+      [{ id: 999, name: 'A', volume: 'loud' }],
+      'partial',
+      t,
+    );
+
+    expect(report.blocked).toBe(false);
+    expect(report.rows[0].values.volume).toBe('loud');
+    expect(report.errorCount).toBeGreaterThan(0);
+  });
+
+  it('blocks partial mode when the table has no auto-increment column', () => {
+    const table: ConfigTable = {
+      ...soundTable(),
+      columns: soundTable().columns.map((item) =>
+        item.id === 'id' ? { ...item, autoIncrement: false } : item,
+      ),
+    };
+    const report = buildTableImportReport(
+      project([table]),
+      table.id,
+      [{ id: 9, name: 'A' }],
+      'partial',
+      t,
+    );
+
+    expect(report.blocked).toBe(true);
+    expect(report.issues[0].message).toContain('no auto-increment');
   });
 
   it('blocks auto-increment mode when the table has no auto-increment column', () => {

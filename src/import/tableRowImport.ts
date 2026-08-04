@@ -8,7 +8,7 @@ import type {
 } from '../model/types';
 import { validateProject } from '../validation/validateProject';
 
-export type TableImportMode = 'strict' | 'auto-increment';
+export type TableImportMode = 'strict' | 'auto-increment' | 'partial';
 
 /** Imported row values keyed by stable column id. */
 export type TableImportRow = Record<string, unknown>;
@@ -22,7 +22,7 @@ export type TableImportIssue = {
 };
 
 export type TableImportParseResult =
-  | { ok: true; rows: TableImportRow[] }
+  | { ok: true; rows: TableImportRow[]; issues: TableImportIssue[] }
   | { ok: false; issues: TableImportIssue[] };
 
 export type TableImportReport = {
@@ -94,6 +94,7 @@ export function parseTableJsonImport(
   text: string,
   table: ConfigTable,
   t: Translator,
+  mode: TableImportMode = 'strict',
 ): TableImportParseResult {
   let raw: unknown;
 
@@ -113,7 +114,7 @@ export function parseTableJsonImport(
   for (const [index, item] of raw.entries()) {
     if (!isRecord(item)) {
       issues.push({
-        severity: 'error',
+        severity: mode === 'partial' ? 'warning' : 'error',
         rowIndex: index,
         message: t('importRowObject', { row: index + 1 }),
       });
@@ -125,26 +126,50 @@ export function parseTableJsonImport(
     for (const [key, value] of Object.entries(item)) {
       const column = columnForKey(table, key);
       if (!column) {
-        issues.push({
-          severity: 'error',
-          rowIndex: index,
-          message: t('importUnknownField', { row: index + 1, field: key }),
-        });
+        if (mode === 'partial') {
+          issues.push({
+            severity: 'warning',
+            rowIndex: index,
+            columnName: key,
+            message: t('importSkippedField', { row: index + 1, field: key }),
+          });
+        } else {
+          issues.push({
+            severity: 'error',
+            rowIndex: index,
+            message: t('importUnknownField', { row: index + 1, field: key }),
+          });
+        }
         continue;
       }
 
       const coerced = coerceValue(column, value);
       if (!coerced.ok) {
-        issues.push({
-          severity: 'error',
-          rowIndex: index,
-          columnId: column.id,
-          columnName: column.name,
-          message: t('importInvalidValue', {
-            row: index + 1,
-            column: column.name || column.id,
-          }),
-        });
+        if (mode === 'partial') {
+          // 部分导入不阻止导入：按原样保留值，由用户到表配置中手动修复。
+          issues.push({
+            severity: 'warning',
+            rowIndex: index,
+            columnId: column.id,
+            columnName: column.name,
+            message: t('importInvalidValueKept', {
+              row: index + 1,
+              column: column.name || column.id,
+            }),
+          });
+          values[column.id] = value;
+        } else {
+          issues.push({
+            severity: 'error',
+            rowIndex: index,
+            columnId: column.id,
+            columnName: column.name,
+            message: t('importInvalidValue', {
+              row: index + 1,
+              column: column.name || column.id,
+            }),
+          });
+        }
         continue;
       }
 
@@ -154,8 +179,9 @@ export function parseTableJsonImport(
     rows.push(values);
   }
 
-  if (issues.length > 0) return { ok: false, issues };
-  return { ok: true, rows };
+  const errors = issues.filter((issue) => issue.severity === 'error');
+  if (errors.length > 0) return { ok: false, issues };
+  return { ok: true, rows, issues };
 }
 
 const nextAutoIncrementStart = (table: ConfigTable, column: ConfigColumn) => {
@@ -172,6 +198,7 @@ export function buildTableImportReport(
   incoming: TableImportRow[],
   mode: TableImportMode,
   t: Translator,
+  incomingIssues: TableImportIssue[] = [],
 ): TableImportReport {
   const table = project.tables.find((item) => item.id === tableId);
   if (!table) {
@@ -195,7 +222,8 @@ export function buildTableImportReport(
   }
 
   const autoIncrementColumn = table.columns.find((column) => column.autoIncrement);
-  if (mode === 'auto-increment' && !autoIncrementColumn) {
+  const autoIncrementMode = mode === 'auto-increment' || mode === 'partial';
+  if (autoIncrementMode && !autoIncrementColumn) {
     return {
       rows: [],
       issues: [{ severity: 'error', message: t('importNoAutoIncrement') }],
@@ -206,14 +234,14 @@ export function buildTableImportReport(
   }
 
   const autoIncrementStart =
-    mode === 'auto-increment' && autoIncrementColumn
+    autoIncrementMode && autoIncrementColumn
       ? nextAutoIncrementStart(table, autoIncrementColumn)
       : 0;
 
   const rows = incoming.map((values, index) => {
     const row = createDefaultRow(table, makeId('row'), values);
 
-    if (mode === 'auto-increment' && autoIncrementColumn) {
+    if (autoIncrementMode && autoIncrementColumn) {
       row.values[autoIncrementColumn.id] = autoIncrementStart + index;
     }
 
@@ -230,18 +258,21 @@ export function buildTableImportReport(
 
   const rowIndexByRowId = new Map(rows.map((row, index) => [row._rowId, index]));
   const columnById = new Map(table.columns.map((column) => [column.id, column]));
-  const issues = validateProject(candidate, t)
-    .filter((issue) => issue.rowId !== undefined && importedRowIds.has(issue.rowId))
-    .map((issue) => {
-      const column = issue.columnId ? columnById.get(issue.columnId) : undefined;
-      return {
-        severity: issue.severity,
-        rowIndex: rowIndexByRowId.get(issue.rowId ?? ''),
-        columnId: issue.columnId,
-        columnName: column?.name,
-        message: issue.message,
-      } satisfies TableImportIssue;
-    });
+  const issues = [
+    ...incomingIssues,
+    ...validateProject(candidate, t)
+      .filter((issue) => issue.rowId !== undefined && importedRowIds.has(issue.rowId))
+      .map((issue) => {
+        const column = issue.columnId ? columnById.get(issue.columnId) : undefined;
+        return {
+          severity: issue.severity,
+          rowIndex: rowIndexByRowId.get(issue.rowId ?? ''),
+          columnId: issue.columnId,
+          columnName: column?.name,
+          message: issue.message,
+        } satisfies TableImportIssue;
+      }),
+  ];
 
   const errorCount = issues.filter((issue) => issue.severity === 'error').length;
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
@@ -251,6 +282,7 @@ export function buildTableImportReport(
     issues,
     errorCount,
     warningCount,
-    blocked: errorCount > 0,
+    // 部分导入不阻止导入，报错由用户导入后手动进表配置修复。
+    blocked: mode === 'partial' ? false : errorCount > 0,
   };
 }
