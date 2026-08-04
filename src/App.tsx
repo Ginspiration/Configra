@@ -378,32 +378,35 @@ export default function App() {
     saveProjectRef.current = saveProject;
   }, [saveProject]);
 
-  const confirmReplaceProject = useCallback(async (prompt: string) => {
-    if (!isDirtyRef.current) return true;
+  const confirmReplaceProject = useCallback(
+    async (prompt: string, labels?: { save: string; discard: string }) => {
+      if (!isDirtyRef.current) return true;
 
-    if (!isDesktopRuntime()) {
-      if (!window.confirm(prompt)) return false;
-      return saveProject();
-    }
+      if (!isDesktopRuntime()) {
+        if (!window.confirm(prompt)) return false;
+        return saveProject();
+      }
 
-    const saveLabel = t('saveAndContinue');
-    const discardLabel = t('discardAndContinue');
-    const result = await message(prompt, {
-      title: t('unsavedChangesTitle'),
-      kind: 'warning',
-      buttons: {
-        yes: saveLabel,
-        no: discardLabel,
-        cancel: t('cancel'),
-      },
-    });
+      const saveLabel = labels?.save ?? t('saveAndContinue');
+      const discardLabel = labels?.discard ?? t('discardAndContinue');
+      const result = await message(prompt, {
+        title: t('unsavedChangesTitle'),
+        kind: 'warning',
+        buttons: {
+          yes: saveLabel,
+          no: discardLabel,
+          cancel: t('cancel'),
+        },
+      });
 
-    if (result === saveLabel || result === 'Yes') {
-      return saveProject();
-    }
+      if (result === saveLabel || result === 'Yes') {
+        return saveProject();
+      }
 
-    return result === discardLabel || result === 'No';
-  }, [saveProject, t]);
+      return result === discardLabel || result === 'No';
+    },
+    [saveProject, t],
+  );
 
   const createNewProject = useCallback(async () => {
     if (!(await confirmReplaceProject(t('unsavedChangesNewMessage')))) return;
@@ -466,6 +469,43 @@ export default function App() {
       await claimProjectWindow(windowLabelRef.current, projectPath).catch(() => undefined);
     }
   }, [projectPath]);
+
+  // 刷新配置：重新读取磁盘上的工程文件并覆盖内存状态。
+  // 有未保存修改时先提示保存或放弃；仅布局脏时保留当前画布布局（与 MCP 重载语义一致）。
+  const refreshProjectFromDisk = useCallback(async () => {
+    if (!isDesktopRuntime() || !projectPath) return;
+
+    if (
+      !(await confirmReplaceProject(t('unsavedChangesRefreshMessage'), {
+        save: t('saveAndRefresh'),
+        discard: t('discardAndRefresh'),
+      }))
+    ) {
+      return;
+    }
+
+    try {
+      const file = await readProjectFileText(projectPath);
+      const parsed = parseProjectFileText(file.text, t);
+      if (!parsed.ok) {
+        setStatus(parsed.error);
+        return;
+      }
+
+      const preserveLayout = dirtyScopeRef.current === 'layout';
+      reloadProject(parsed.project, preserveLayout);
+      setOpenGridWindows((prev) =>
+        prev.filter((window) =>
+          parsed.project.tables.some((table) => table.id === window.tableId),
+        ),
+      );
+      setMenu(undefined);
+      setShowAppMenu(false);
+      setStatus(t('projectRefreshed'));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }, [confirmReplaceProject, projectPath, reloadProject, t]);
 
   const openDesktopProjectInNewWindow = useCallback(async () => {
     try {
@@ -876,6 +916,18 @@ export default function App() {
       ...(isDesktopRuntime()
         ? [
             {
+              id: 'refresh-project',
+              label: t('refreshProject'),
+              disabled: projectPath === undefined,
+              onSelect: () => {
+                void refreshProjectFromDisk();
+              },
+            } satisfies ContextMenuItem,
+          ]
+        : []),
+      ...(isDesktopRuntime()
+        ? [
+            {
               id: 'open-project-new-window',
               label: t('openProjectInNewWindow'),
               shortcut: 'Ctrl+Alt+O',
@@ -901,6 +953,8 @@ export default function App() {
       exportAllJsonFiles,
       isExporting,
       openDesktopProjectInNewWindow,
+      projectPath,
+      refreshProjectFromDisk,
       saveProject,
       t,
       triggerImportProject,

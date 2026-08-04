@@ -2,8 +2,10 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react';
@@ -59,7 +61,12 @@ export default function WindowFrame({
 }: WindowFrameProps) {
   const generatedId = useId();
   const windowId = windowIdProp ?? generatedId;
-  const { register, unregister, update } = useWindowManager();
+  const { register, unregister, update, raise, isFront, zIndexOf } = useWindowManager();
+  // 遮罩层基线 30（与 app.css 的 .window-backdrop 一致），再叠加窗口自身的层叠顺序。
+  const stackedZIndex = useMemo(() => {
+    const zIndex = zIndexOf(windowId);
+    return zIndex !== undefined ? 30 + zIndex : undefined;
+  }, [windowId, zIndexOf]);
 
   const [innerMinimized, setInnerMinimized] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -89,9 +96,19 @@ export default function WindowFrame({
     setIsFullscreen((value) => !value);
   }, []);
 
-  // 任务栏回调始终指向最新状态/函数。
-  const toggleMinimizedRef = useRef<() => void>(() => undefined);
-  toggleMinimizedRef.current = () => setMinimized(!minimized);
+  // 任务栏回调始终指向最新状态/函数。点击语义与系统任务栏一致：
+  // 最小化时恢复并提升到前台；已是最前面的窗口则最小化；被其他窗口遮挡时提升到前台。
+  const toggleRef = useRef<() => void>(() => undefined);
+  toggleRef.current = () => {
+    if (minimized) {
+      setMinimized(false);
+      raise(windowId);
+    } else if (isFront(windowId)) {
+      setMinimized(true);
+    } else {
+      raise(windowId);
+    }
+  };
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
@@ -99,7 +116,7 @@ export default function WindowFrame({
     register(windowId, {
       label: titleRef.current?.textContent?.trim() ?? '',
       minimized,
-      toggle: () => toggleMinimizedRef.current(),
+      toggle: () => toggleRef.current(),
       close: () => closeRef.current(),
     });
     return () => unregister(windowId);
@@ -167,11 +184,61 @@ export default function WindowFrame({
     [toggleFullscreen],
   );
 
+  // 点击模态遮罩（窗口面板外）的语义，与桌面窗口管理器一致：
+  // 点到其他窗口的面板 → 把该窗口置顶（切换到它）；
+  // 点到主界面区域 → 对话框（如设置/预览）关闭，其余窗口最小化以回到主界面。
+  const onBackdropMouseDown = useCallback(
+    (event: ReactMouseEvent) => {
+      if (event.target !== event.currentTarget) return;
+      const point = { x: event.clientX, y: event.clientY };
+
+      let targetId: string | undefined;
+      let targetZIndex = -1;
+      for (const frame of document.querySelectorAll<HTMLElement>('[data-window-id]')) {
+        if (frame.dataset.windowId === windowId) continue;
+        const rect = frame.getBoundingClientRect();
+        if (
+          point.x < rect.left ||
+          point.x > rect.right ||
+          point.y < rect.top ||
+          point.y > rect.bottom
+        ) {
+          continue;
+        }
+        const frameZIndex = Number(frame.style.zIndex) || 0;
+        if (frameZIndex > targetZIndex) {
+          targetZIndex = frameZIndex;
+          targetId = frame.dataset.windowId;
+        }
+      }
+
+      if (targetId) {
+        raise(targetId);
+        return;
+      }
+
+      if (closeOnBackdropClick) {
+        onClose();
+        return;
+      }
+      minimizeWindow();
+    },
+    [closeOnBackdropClick, minimizeWindow, onClose, raise, windowId],
+  );
+
+  const panelStyle: CSSProperties | undefined = useMemo(() => {
+    const style: CSSProperties = {};
+    if (position) Object.assign(style, { left: position.x, top: position.y });
+    if (stackedZIndex !== undefined) style.zIndex = stackedZIndex;
+    return Object.keys(style).length > 0 ? style : undefined;
+  }, [position, stackedZIndex]);
+
   const panel = (
     <section
       ref={panelRef}
+      data-window-id={windowId}
       className={`window-frame ${className} ${isFullscreen ? 'is-fullscreen' : ''} ${position ? 'is-dragged' : ''}`}
-      style={position ? { left: position.x, top: position.y } : undefined}
+      style={panelStyle}
       role="dialog"
       aria-modal={modal}
       onContextMenu={onContextMenu}
@@ -227,11 +294,10 @@ export default function WindowFrame({
   return (
     <div
       className={`window-backdrop ${isFullscreen ? 'is-fullscreen' : ''} ${minimized ? 'is-minimized' : ''}`}
+      style={stackedZIndex !== undefined ? { zIndex: stackedZIndex } : undefined}
       role="presentation"
       onContextMenu={(event) => event.preventDefault()}
-      onMouseDown={(event) => {
-        if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
-      }}
+      onMouseDown={onBackdropMouseDown}
     >
       {minimized ? null : panel}
     </div>

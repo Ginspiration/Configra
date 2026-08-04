@@ -13,16 +13,24 @@ export type ManagedWindow = {
   id: string;
   label: string;
   minimized: boolean;
+  /** 层叠顺序：数值越大越靠前；由注册顺序和“提升到前台”操作共同决定。 */
+  zIndex: number;
   toggle(): void;
   close(): void;
 };
 
 type WindowManagerContextValue = {
-  register(id: string, window: Omit<ManagedWindow, 'id'>): void;
+  register(id: string, window: Omit<ManagedWindow, 'id' | 'zIndex'>): void;
   unregister(id: string): void;
-  update(id: string, patch: Partial<Omit<ManagedWindow, 'id' | 'toggle' | 'close'>>): void;
-  /** 恢复（取消最小化）指定窗口，供外部（如重新打开同一窗口）调用。 */
+  update(id: string, patch: Partial<Omit<ManagedWindow, 'id' | 'toggle' | 'close' | 'zIndex'>>): void;
+  /** 恢复（取消最小化）并提升到前台，供外部（如重新打开同一窗口）调用。 */
   restore(id: string): void;
+  /** 把窗口提升到前台（提高其层叠顺序）。 */
+  raise(id: string): void;
+  /** 判断窗口是否为当前最前面的非最小化窗口（任务栏按钮点击语义使用）。 */
+  isFront(id: string): boolean;
+  /** 查询窗口的层叠顺序；未注册时返回 undefined。 */
+  zIndexOf(id: string): number | undefined;
 };
 
 const WindowManagerContext = createContext<WindowManagerContextValue>({
@@ -30,6 +38,9 @@ const WindowManagerContext = createContext<WindowManagerContextValue>({
   unregister: () => undefined,
   update: () => undefined,
   restore: () => undefined,
+  raise: () => undefined,
+  isFront: () => false,
+  zIndexOf: () => undefined,
 });
 
 export function useWindowManager(): WindowManagerContextValue {
@@ -38,10 +49,14 @@ export function useWindowManager(): WindowManagerContextValue {
 
 export function WindowManagerProvider({ children }: { children: ReactNode }) {
   const [windows, setWindows] = useState<ManagedWindow[]>([]);
+  const zCounterRef = useRef(0);
 
-  const register = useCallback((id: string, entry: Omit<ManagedWindow, 'id'>) => {
+  const register = useCallback((id: string, entry: Omit<ManagedWindow, 'id' | 'zIndex'>) => {
+    zCounterRef.current += 1;
     setWindows((prev) =>
-      prev.some((window) => window.id === id) ? prev : [...prev, { id, ...entry }],
+      prev.some((window) => window.id === id)
+        ? prev
+        : [...prev, { id, ...entry, zIndex: zCounterRef.current }],
     );
   }, []);
 
@@ -50,7 +65,7 @@ export function WindowManagerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const update = useCallback(
-    (id: string, patch: Partial<Omit<ManagedWindow, 'id' | 'toggle' | 'close'>>) => {
+    (id: string, patch: Partial<Omit<ManagedWindow, 'id' | 'toggle' | 'close' | 'zIndex'>>) => {
       setWindows((prev) => {
         const target = prev.find((window) => window.id === id);
         if (!target) return prev;
@@ -62,17 +77,51 @@ export function WindowManagerProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const restore = useCallback((id: string) => {
-    setWindows((prev) =>
-      prev.some((window) => window.id === id && window.minimized)
-        ? prev.map((window) => (window.id === id ? { ...window, minimized: false } : window))
-        : prev,
-    );
+  const raise = useCallback((id: string) => {
+    setWindows((prev) => {
+      const target = prev.find((window) => window.id === id);
+      if (!target) return prev;
+      const maxZIndex = prev.reduce((max, window) => Math.max(max, window.zIndex), 0);
+      if (target.zIndex === maxZIndex) return prev;
+      return prev.map((window) =>
+        window.id === id ? { ...window, zIndex: maxZIndex + 1 } : window,
+      );
+    });
   }, []);
 
+  const isFront = useCallback(
+    (id: string) => {
+      const visible = windows.filter((window) => !window.minimized);
+      if (visible.length === 0) return false;
+      const frontZIndex = visible.reduce((max, window) => Math.max(max, window.zIndex), 0);
+      return visible.some((window) => window.id === id && window.zIndex === frontZIndex);
+    },
+    [windows],
+  );
+
+  const zIndexOf = useCallback(
+    (id: string) => windows.find((window) => window.id === id)?.zIndex,
+    [windows],
+  );
+
+  // 最小化状态由窗口组件自身持有，这里只按镜像状态决定动作：
+  // 最小化时触发组件侧恢复并提升层级，否则直接把窗口提升到前台。
+  const restore = useCallback(
+    (id: string) => {
+      const window = windows.find((entry) => entry.id === id);
+      if (!window) return;
+      if (window.minimized) {
+        window.toggle();
+      } else {
+        raise(id);
+      }
+    },
+    [raise, windows],
+  );
+
   const value = useMemo(
-    () => ({ register, unregister, update, restore }),
-    [register, restore, unregister, update],
+    () => ({ register, unregister, update, restore, raise, isFront, zIndexOf }),
+    [isFront, raise, register, restore, unregister, update, zIndexOf],
   );
 
   return (
