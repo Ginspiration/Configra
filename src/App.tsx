@@ -70,6 +70,7 @@ import {
   writeTextFile,
 } from './file/desktopProjectFile';
 import { translate, type Language } from './i18n';
+import { useWindowManager } from './window/WindowManager';
 import {
   applyTheme,
   getThemePreference,
@@ -97,6 +98,11 @@ type MenuState =
       x: number;
       y: number;
     };
+
+type OpenGridWindow = {
+  tableId: string;
+  focus?: DataGridFocusRequest;
+};
 
 type ImportPending = {
   project: ProjectFile;
@@ -179,6 +185,7 @@ export default function App() {
   const deleteTable = useEditorStore((state) => state.deleteTable);
   const isDirty = useEditorStore((state) => state.isDirty);
   const dirtyScope = useEditorStore((state) => state.dirtyScope);
+  const dirtyTableIds = useEditorStore((state) => state.dirtyTableIds);
   const loadProject = useEditorStore((state) => state.loadProject);
   const reloadProject = useEditorStore((state) => state.reloadProject);
   const appendRows = useEditorStore((state) => state.appendRows);
@@ -187,15 +194,16 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [language, setLanguage] = useState<Language>('zh');
   const [themePreference, setThemePreference] = useState<ThemePreference>(getThemePreference);
+  const { restore: restoreWindow } = useWindowManager();
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(getThemePreference()));
   const [showMiniMap, setShowMiniMap] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAppMenu, setShowAppMenu] = useState(false);
   const [importPending, setImportPending] = useState<ImportPending>();
   const [tableImportTableId, setTableImportTableId] = useState<string>();
-  const [showDataGrid, setShowDataGrid] = useState(false);
-  const [editingTableId, setEditingTableId] = useState<string>();
-  const [dataGridFocusRequest, setDataGridFocusRequest] = useState<DataGridFocusRequest>();
+  const [openGridWindows, setOpenGridWindows] = useState<OpenGridWindow[]>([]);
+  const openGridWindowsRef = useRef<OpenGridWindow[]>([]);
+  openGridWindowsRef.current = openGridWindows;
   const dataGridFocusSequenceRef = useRef(0);
   const [projectPath, setProjectPath] = useState<string>();
   const [status, setStatus] = useState('');
@@ -306,8 +314,14 @@ export default function App() {
   }, [projectPath]);
 
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
-  const editingTable = project.tables.find((table) => table.id === editingTableId) ?? selectedTable;
   const issues = useMemo(() => validateProject(project, t), [project, t]);
+  const dirtyTableNames = useMemo(
+    () =>
+      dirtyTableIds
+        .map((tableId) => project.tables.find((table) => table.id === tableId)?.name)
+        .filter((name): name is string => Boolean(name)),
+    [dirtyTableIds, project.tables],
+  );
   const errorCount = issues.filter((issue) => issue.severity === 'error').length;
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
 
@@ -321,6 +335,7 @@ export default function App() {
 
       loadProject(result.project);
       setProjectPath(path);
+      setOpenGridWindows([]);
       setStatus(t('importedFile', { name }));
       return true;
     },
@@ -403,8 +418,7 @@ export default function App() {
     }
     newProject();
     setProjectPath(undefined);
-    setEditingTableId(undefined);
-    setShowDataGrid(false);
+    setOpenGridWindows([]);
     setMenu(undefined);
     setShowAppMenu(false);
     setStatus(t('newProjectCreated'));
@@ -436,6 +450,7 @@ export default function App() {
       if (!importPending) return;
       loadProject(candidate);
       setProjectPath(importPending.path);
+      setOpenGridWindows([]);
       setStatus(t('importedFile', { name: importPending.name }));
       setImportPending(undefined);
       if (isDesktopRuntime() && importPending.path) {
@@ -649,21 +664,41 @@ export default function App() {
   const openRowsModal = useCallback(
     (tableId = selectedTable?.id, focus?: { rowId: string; columnId: string }) => {
       if (!tableId) return;
+
+      let nextFocus: DataGridFocusRequest | undefined;
       if (focus) {
         dataGridFocusSequenceRef.current += 1;
-        setDataGridFocusRequest({
+        nextFocus = {
           tableId,
           rowId: focus.rowId,
           columnId: focus.columnId,
           sequence: dataGridFocusSequenceRef.current,
-        });
+        };
       }
-      setEditingTableId(tableId);
+
+      const alreadyOpen = openGridWindowsRef.current.some(
+        (window) => window.tableId === tableId,
+      );
+      if (alreadyOpen) {
+        if (nextFocus) {
+          setOpenGridWindows((prev) =>
+            prev.map((window) =>
+              window.tableId === tableId ? { ...window, focus: nextFocus } : window,
+            ),
+          );
+        }
+        restoreWindow(`data-grid-${tableId}`);
+      } else {
+        setOpenGridWindows((prev) => [...prev, { tableId, focus: nextFocus }]);
+      }
       selectTable(tableId);
-      setShowDataGrid(true);
     },
-    [selectTable, selectedTable?.id],
+    [restoreWindow, selectTable, selectedTable?.id],
   );
+
+  const closeGridWindow = useCallback((tableId: string) => {
+    setOpenGridWindows((prev) => prev.filter((window) => window.tableId !== tableId));
+  }, []);
 
   const deleteTableById = useCallback((tableId = selectedTable?.id) => {
     if (!tableId) return;
@@ -1014,10 +1049,11 @@ export default function App() {
         const replacedUnsavedContent =
           dirtyScopeRef.current === 'content' && mcpFullAccessRef.current;
         reloadProject(parsed.project, preserveLayout);
-        if (editingTableId && !parsed.project.tables.some((table) => table.id === editingTableId)) {
-          setEditingTableId(undefined);
-          setShowDataGrid(false);
-        }
+        setOpenGridWindows((prev) =>
+          prev.filter((window) =>
+            parsed.project.tables.some((table) => table.id === window.tableId),
+          ),
+        );
         setStatus(
           preserveLayout
             ? t('mcpLayoutPreserved')
@@ -1029,7 +1065,7 @@ export default function App() {
         setStatus(error instanceof Error ? error.message : String(error));
       }
     },
-    [editingTableId, projectPath, reloadProject, t],
+    [projectPath, reloadProject, t],
   );
 
   useEffect(() => {
@@ -1169,6 +1205,29 @@ export default function App() {
     triggerImportProject,
   ]);
 
+  // 桌面模式下拦截浏览器快捷键（F5/Ctrl+R 刷新、Ctrl+P 打印、Ctrl+U 查看源码、
+  // Alt+左右方向键历史导航），避免误操作刷新 WebView 丢失编辑状态。
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const key = event.key.toLowerCase();
+      const isBrowserShortcut =
+        key === 'f5' ||
+        (event.ctrlKey && key === 'r') ||
+        (event.ctrlKey && key === 'p') ||
+        (event.ctrlKey && key === 'u') ||
+        (event.altKey && (key === 'arrowleft' || key === 'arrowright'));
+      if (isBrowserShortcut) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
+  }, []);
+
   const preventNativeContextMenu = useCallback((event: React.MouseEvent) => {
     const target = event.target;
     if (
@@ -1284,6 +1343,14 @@ export default function App() {
           </span>
         </div>
         <div className="toolbar__validation" aria-label={t('issues')}>
+          {dirtyTableIds.length > 0 ? (
+            <span
+              className="toolbar__validation-item is-dirty"
+              title={dirtyTableNames.join('、')}
+            >
+              * {t('unsavedTablesCount', { count: dirtyTableIds.length })}
+            </span>
+          ) : null}
           <span className={`toolbar__validation-item ${errorCount > 0 ? 'is-error' : 'is-clear'}`}>
             {t('errorCount', { count: errorCount })}
           </span>
@@ -1340,7 +1407,18 @@ export default function App() {
                   openTableContextMenu(table.id, { x: event.clientX, y: event.clientY });
                 }}
               >
-                <span className="table-list-item__name">{table.name}</span>
+                <span className="table-list-item__name">
+                  {dirtyTableIds.includes(table.id) ? (
+                    <span
+                      className="table-list-item__dirty"
+                      title={t('unsavedTable')}
+                      aria-label={t('unsavedTable')}
+                    >
+                      *
+                    </span>
+                  ) : null}
+                  {table.name}
+                </span>
                 <span className="table-list-item__meta">
                   {table.remark?.trim() ? (
                     <small className="table-list-item__remark">{table.remark.trim()}</small>
@@ -1393,17 +1471,25 @@ export default function App() {
         </section>
       </main>
 
-      <DataGridModal
-        open={showDataGrid}
-        table={editingTable}
-        project={project}
-        issues={issues}
-        theme={resolvedTheme}
-        t={t}
-        focusRequest={dataGridFocusRequest}
-        onOpenTable={openRowsModal}
-        onClose={() => setShowDataGrid(false)}
-      />
+      {openGridWindows.map((window) => {
+        const table = project.tables.find((item) => item.id === window.tableId);
+        if (!table) return null;
+        return (
+          <DataGridModal
+            key={window.tableId}
+            windowId={`data-grid-${window.tableId}`}
+            open
+            table={table}
+            project={project}
+            issues={issues}
+            theme={resolvedTheme}
+            t={t}
+            focusRequest={window.focus}
+            onOpenTable={openRowsModal}
+            onClose={() => closeGridWindow(window.tableId)}
+          />
+        );
+      })}
 
       <SettingsPanel
         open={showSettings}

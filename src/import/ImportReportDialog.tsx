@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import WindowFrame from '../window/WindowFrame';
 import type { Translator } from '../i18n';
 import type { ProjectFile } from '../model/types';
 import {
@@ -87,35 +88,13 @@ export default function ImportReportDialog({
   const warnings = report.issues.filter((issue) => issue.severity === 'warning');
 
   return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      onContextMenu={(event) => event.preventDefault()}
+    <WindowFrame
+      className="data-modal import-modal"
+      title={t('importReportTitle')}
+      subtitle={incomingName}
+      onClose={onCancel}
+      t={t}
     >
-      <section
-        className="data-modal import-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('importReportTitle')}
-      >
-        <div className="data-modal__header">
-          <div>
-            <h2>{t('importReportTitle')}</h2>
-            <span>{incomingName}</span>
-          </div>
-          <div className="data-modal__actions">
-            <button
-              type="button"
-              className="icon-button"
-              onClick={onCancel}
-              aria-label={t('close')}
-              title={t('close')}
-            >
-              ×
-            </button>
-          </div>
-        </div>
-
         <div className="import-modal__body">
           {emptyFile ? (
             <p className="empty-copy import-modal__empty">{t('importEmptyFile')}</p>
@@ -240,7 +219,7 @@ export default function ImportReportDialog({
           {report.newErrorCount > 0 ? (
             <span className="import-modal__hint">{t('importBlockedHint')}</span>
           ) : null}
-          <div className="data-modal__actions">
+          <div className="import-modal__actions">
             <button type="button" className="button" onClick={onCancel}>
               {t('cancel')}
             </button>
@@ -254,7 +233,6 @@ export default function ImportReportDialog({
             </button>
           </div>
         </div>
-      </section>
-    </div>
+    </WindowFrame>
   );
 }

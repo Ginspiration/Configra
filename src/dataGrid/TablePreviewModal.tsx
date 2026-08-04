@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import WindowFrame from '../window/WindowFrame';
 import type { ConfigColumn, ConfigTable } from '../model/types';
 import type { Translator } from '../i18n';
 
@@ -29,33 +30,20 @@ export default function TablePreviewModal({
   }, [onClose]);
 
   return (
-    <div className="table-preview-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="table-preview"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="table-preview-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="table-preview__header">
-          <div>
-            <h2 id="table-preview-title">{t('tablePreviewTitle', { name: table.name })}</h2>
-            <p>
-              {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
-              {table.remark?.trim() ? ` · ${table.remark.trim()}` : ''}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={onClose}
-            aria-label={t('close')}
-            title={t('close')}
-          >
-            ×
-          </button>
-        </header>
-
+    <WindowFrame
+      className="table-preview"
+      title={t('tablePreviewTitle', { name: table.name })}
+      subtitle={
+        <>
+          {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
+          {table.remark?.trim() ? ` · ${table.remark.trim()}` : ''}
+        </>
+      }
+      closeOnBackdropClick
+      onClose={onClose}
+      t={t}
+    >
+      <div className="table-preview__body">
         <p className="table-preview__hint">{t('tablePreviewHint')}</p>
 
         <div className="table-preview__content">
@@ -138,7 +126,7 @@ export default function TablePreviewModal({
             <p className="table-preview__empty">{t('noFields')}</p>
           )}
         </div>
-      </section>
-    </div>
+      </div>
+    </WindowFrame>
   );
 }

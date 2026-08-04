@@ -2,6 +2,8 @@ export type Language = 'zh' | 'en';
 
 const en = {
   theme: 'Theme',
+  unsavedTable: 'Unsaved',
+  unsavedTablesCount: '{count} unsaved tables',
   themeDark: 'Dark',
   themeLight: 'Light',
   themeSystem: 'Follow system',
@@ -44,6 +46,8 @@ const en = {
   hideMiniMap: 'Hide Mini Map',
   enterFullscreen: 'Enter Fullscreen',
   exitFullscreen: 'Exit Fullscreen',
+  minimizeWindow: 'Minimize window',
+  restoreWindow: 'Restore window',
   inspector: 'Inspector',
   identityKeyField: 'Symbol key field',
   identityNamespace: 'ID namespace',
@@ -266,6 +270,8 @@ export type TranslationKey = keyof typeof en;
 
 const zh: Record<TranslationKey, string> = {
   theme: '主题',
+  unsavedTable: '未保存',
+  unsavedTablesCount: '{count} 张表未保存',
   themeDark: '深色',
   themeLight: '浅色',
   themeSystem: '跟随系统',
@@ -308,6 +314,8 @@ const zh: Record<TranslationKey, string> = {
   hideMiniMap: '隐藏小地图',
   enterFullscreen: '进入全屏',
   exitFullscreen: '退出全屏',
+  minimizeWindow: '最小化窗口',
+  restoreWindow: '恢复窗口',
   inspector: '属性',
   identityKeyField: '符号 Key 字段',
   identityNamespace: 'ID 命名空间',

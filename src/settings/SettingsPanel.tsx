@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { McpStatus } from '../file/desktopProjectFile';
+import WindowFrame from '../window/WindowFrame';
 import {
   languageLabels,
   type Language,
@@ -99,35 +100,14 @@ export default function SettingsPanel({
   };
 
   return (
-    <div
-      className="settings-backdrop"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+    <WindowFrame
+      className="settings-panel"
+      title={t('settings')}
+      subtitle={t('settingsDescription')}
+      closeOnBackdropClick
+      onClose={onClose}
+      t={t}
     >
-      <aside
-        className="settings-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="settings-panel__header">
-          <div>
-            <h2 id="settings-title">{t('settings')}</h2>
-            <p>{t('settingsDescription')}</p>
-          </div>
-          <button
-            type="button"
-            className="settings-panel__close"
-            aria-label={t('closeSettings')}
-            title={t('closeSettings')}
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-
         <div className="settings-panel__body">
           <nav className="settings-categories" aria-label={t('settingsCategories')}>
             <span className="settings-categories__label">{t('settingsCategories')}</span>
@@ -366,7 +346,6 @@ export default function SettingsPanel({
             )}
           </div>
         </div>
-      </aside>
-    </div>
+    </WindowFrame>
   );
 }

@@ -25,6 +25,7 @@ import { useEditorStore } from '../store/editorStore';
 import { formatRefOptionLabel } from '../model/schemaUtils';
 import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
+import WindowFrame from '../window/WindowFrame';
 import TablePreviewModal from './TablePreviewModal';
 import { filterChoiceOptions, type ChoiceOption } from './choiceSearch';
 import { referenceValueKey, resolveReferenceTarget } from './referenceNavigation';
@@ -38,6 +39,8 @@ export type DataGridFocusRequest = {
 
 type DataGridModalProps = {
   open: boolean;
+  /** 任务栏中的窗口唯一 ID（同一张表的编辑窗口保持稳定）。 */
+  windowId?: string;
   table?: ConfigTable;
   project: ProjectFile;
   issues: ValidationIssue[];
@@ -505,6 +508,7 @@ const choiceCellRenderers = [choiceCellRenderer];
 
 export default function DataGridModal({
   open,
+  windowId,
   table,
   project,
   issues,
@@ -521,10 +525,12 @@ export default function DataGridModal({
   const deleteRows = useEditorStore((state) => state.deleteRows);
   const updateColumn = useEditorStore((state) => state.updateColumn);
   const updateCell = useEditorStore((state) => state.updateCell);
+  const isTableDirty = useEditorStore((state) =>
+    table ? state.dirtyTableIds.includes(table.id) : false,
+  );
   const gridRef = useRef<DataEditorRef>(null);
   const handledFocusSequenceRef = useRef<number>();
   const hoverTimeoutRef = useRef<number>();
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [showSearch, setShowSearch] = useState(false);
@@ -1306,50 +1312,40 @@ export default function DataGridModal({
   if (!open || !table) return null;
 
   return (
-    <div
-      className={`modal-backdrop ${isFullscreen ? 'is-fullscreen' : ''}`}
-      role="presentation"
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <section
-        className={`data-modal ${isFullscreen ? 'is-fullscreen' : ''}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('edit')}
-      >
-        <div className="data-modal__header">
-          <div>
-            <h2>
-              {table.name} {t('edit')}
-            </h2>
-            <span>
-              {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
-              {tableIssueCount > 0 ? ` / ${tableIssueCount}` : ''}
-              {selectedRowCount > 0 ? ` / ${t('selectedRowsCount', { count: selectedRowCount })}` : ''}
-              {searchStatus ? ` / ${searchStatus}` : ''}
+    <WindowFrame
+      windowId={windowId}
+      className="data-modal"
+      title={
+        <>
+          {isTableDirty ? (
+            <span className="dirty-mark" title={t('unsavedTable')} aria-label={t('unsavedTable')}>
+              *
             </span>
-          </div>
-          <div className="data-modal__actions">
-            <button type="button" className="button" onClick={() => setShowTablePreview(true)}>
-              {t('tablePreview')}
-            </button>
-            <button type="button" className="button" onClick={() => setShowSearch(true)} title="Ctrl+F">
-              {t('search')}
-            </button>
-            <button
-              type="button"
-              className="icon-button icon-button--compact"
-              onClick={() => setIsFullscreen((value) => !value)}
-              aria-label={isFullscreen ? t('exitFullscreen') : t('enterFullscreen')}
-              title={isFullscreen ? t('exitFullscreen') : t('enterFullscreen')}
-            >
-              {isFullscreen ? '⇲' : '⛶'}
-            </button>
-            <button type="button" className="icon-button" onClick={onClose} aria-label="Close" title="Close">
-              ×
-            </button>
-          </div>
-        </div>
+          ) : null}
+          {table.name} {t('edit')}
+        </>
+      }
+      subtitle={
+        <>
+          {t('fieldsRows', { fields: table.columns.length, rows: table.rows.length })}
+          {tableIssueCount > 0 ? ` / ${tableIssueCount}` : ''}
+          {selectedRowCount > 0 ? ` / ${t('selectedRowsCount', { count: selectedRowCount })}` : ''}
+          {searchStatus ? ` / ${searchStatus}` : ''}
+        </>
+      }
+      actions={
+        <>
+          <button type="button" className="button" onClick={() => setShowTablePreview(true)}>
+            {t('tablePreview')}
+          </button>
+          <button type="button" className="button" onClick={() => setShowSearch(true)} title="Ctrl+F">
+            {t('search')}
+          </button>
+        </>
+      }
+      onClose={onClose}
+      t={t}
+    >
         <div className="data-modal__body">
           <aside className="data-modal__side">
             <div className="data-modal__inspector">
@@ -1458,7 +1454,6 @@ export default function DataGridModal({
             />
           </div>
         </div>
-      </section>
       {cellMenu ? (
         <ContextMenu
           x={cellMenu.x}
@@ -1522,6 +1517,6 @@ export default function DataGridModal({
           onSelectColumn={focusGridColumn}
         />
       ) : null}
-    </div>
+    </WindowFrame>
   );
 }

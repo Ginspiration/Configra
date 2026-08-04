@@ -18,6 +18,9 @@ function TableNode({ data }: NodeProps) {
   const selectedTableId = useEditorStore((state) => state.selectedTableId);
   const selectTable = useEditorStore((state) => state.selectTable);
   const tableId = typeof data.tableId === 'string' ? data.tableId : '';
+  const isDirtyTable = useEditorStore((state) =>
+    tableId ? state.dirtyTableIds.includes(tableId) : false,
+  );
   const focusPulse = typeof data.focusPulse === 'number' ? data.focusPulse : 0;
   const table = project.tables.find((item) => item.id === tableId);
   const updateNodeInternals = useUpdateNodeInternals();
@@ -73,6 +76,7 @@ function TableNode({ data }: NodeProps) {
       onClick={() => selectTable(table.id)}
     >
       <div className="table-node__title" title={table.remark?.trim() || undefined}>
+        {isDirtyTable ? <span className="table-node__dirty">*</span> : null}
         {table.name || table.id}
         {table.remark?.trim() ? (
           <span className="table-node__remark"> {shortRemark(table.remark)}</span>
@@ -106,7 +110,6 @@ function TableNode({ data }: NodeProps) {
               <span className="table-node__type">{column.type}</span>
               {column.primary ? <span className="table-node__badge">PK</span> : null}
               {column.autoIncrement ? <span className="table-node__badge">AI</span> : null}
-              {column.required ? <span className="table-node__required">*</span> : null}
               {column.type === 'ref' && column.ref ? (
                 <span className="table-node__ref">
                   {'-> '}

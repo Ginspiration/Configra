@@ -22,6 +22,8 @@ type EditorStore = {
   selectedTableId?: string;
   isDirty: boolean;
   dirtyScope: DirtyScope;
+  /** 有未保存内容修改的表 id（按修改顺序去重）；纯布局修改不记录。 */
+  dirtyTableIds: string[];
 
   selectTable(tableId: string): void;
   addTable(position?: GraphPosition): string;
@@ -65,11 +67,15 @@ const markDirty = (reason: string, currentScope: DirtyScope, nextScope: DirtySco
   } as const;
 };
 
+const mergeDirtyTableIds = (current: string[], tableId: string) =>
+  current.includes(tableId) ? current : [...current, tableId];
+
 export const useEditorStore = create<EditorStore>((set) => ({
   project: initialProject,
   selectedTableId: initialProject.tables[0]?.id,
   isDirty: false,
   dirtyScope: 'none',
+  dirtyTableIds: [],
 
   selectTable: (tableId) => set({ selectedTableId: tableId }),
 
@@ -91,6 +97,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       return {
         project: { ...state.project, tables: [...state.project.tables, table] },
         selectedTableId: table.id,
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, table.id),
         ...markDirty('addTable', state.dirtyScope),
       };
     });
@@ -116,6 +123,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateTable', state.dirtyScope),
       };
     }),
@@ -178,6 +186,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           };
         }),
       },
+      dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
       ...markDirty('addColumn', state.dirtyScope),
     })),
 
@@ -214,6 +223,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateColumn', state.dirtyScope),
       };
     }),
@@ -248,6 +258,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('moveColumn', state.dirtyScope),
       };
     }),
@@ -270,6 +281,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           };
         }),
       },
+      dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
       ...markDirty('deleteColumn', state.dirtyScope),
     })),
 
@@ -291,6 +303,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           };
         }),
       },
+      dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
       ...markDirty('addRow', state.dirtyScope),
     }));
 
@@ -318,6 +331,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           };
         }),
       },
+      dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
       ...markDirty('insertRow', state.dirtyScope),
     }));
 
@@ -348,6 +362,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateCell', state.dirtyScope),
       };
     }),
@@ -362,6 +377,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
             : table,
         ),
       },
+      dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
       ...markDirty('deleteRow', state.dirtyScope),
     })),
 
@@ -378,6 +394,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
               : table,
           ),
         },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('deleteRows', state.dirtyScope),
       };
     }),
@@ -405,6 +422,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('appendRows', state.dirtyScope),
       };
     }),
@@ -415,6 +433,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       selectedTableId: project.tables[0]?.id,
       isDirty: false,
       dirtyScope: 'none',
+      dirtyTableIds: [],
     }),
 
   reloadProject: (project, preserveLayout = false) =>
@@ -442,10 +461,11 @@ export const useEditorStore = create<EditorStore>((set) => ({
           : project.tables[0]?.id,
         isDirty: hasUnsavedLayout,
         dirtyScope: hasUnsavedLayout ? 'layout' : 'none',
+        dirtyTableIds: [],
       };
     }),
 
-  markClean: () => set({ isDirty: false, dirtyScope: 'none' }),
+  markClean: () => set({ isDirty: false, dirtyScope: 'none', dirtyTableIds: [] }),
 
   newProject: () =>
     set({
@@ -453,5 +473,6 @@ export const useEditorStore = create<EditorStore>((set) => ({
       selectedTableId: undefined,
       isDirty: false,
       dirtyScope: 'none',
+      dirtyTableIds: [],
     }),
 }));

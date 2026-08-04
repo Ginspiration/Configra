@@ -160,9 +160,10 @@ React Flow 画布行为：
 
 重要行为：
 
-- 编辑器以弹窗打开。
+- 编辑器以弹窗打开，同一工程可同时打开多张表的编辑窗口（任务栏按钮可切换/恢复）。
 - 表属性、ID 注册表、字段和问题列表都集成在弹窗侧栏中。
-- 支持全屏模式。
+- 所有窗口（编辑弹窗、设置、导入、预览、MCP 日志等）统一由 `src/window/WindowFrame.tsx` 提供标题栏：拖动移动、双击标题栏全屏、最小化、关闭；窗口控制与底部任务栏由 `src/window/WindowManager.tsx` 统一管理。
+- 底部任务栏横向排列所有打开/最小化的窗口，按钮过多时横向滑动。
 - 关闭按钮是 `X`。
 - 搜索使用 Glide 内置搜索，并会定位到匹配单元格。
 - 单元格双击后进入编辑。
@@ -695,9 +696,9 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
 - `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
-- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a small button in the bottom-right corner, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity and optional target `projectId` to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
+- While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a bottom taskbar button, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity and optional target `projectId` to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.
 - MCP lifecycle/config files live in the Tauri application config directory as `mcp-settings.json`, the version-2 multi-project registry `mcp-context.json`, per-project permissions in `mcp-project-access.json`, per-project event files under `mcp-events/`, and `mcp-logs.jsonl`.
 
-MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, opening two projects in separate windows, duplicate-path window focusing, explicit multi-project routing, cross-project confirmation rejection, per-project events and Full Access, service restart persistence, custom-port persistence and default reset, log-window minimize/restore from the bottom-right launcher, and process cleanup after the last window closes.
+MCP verification should include `src/mcp/server.test.ts`, `src/store/editorStore.test.ts`, `npm run tauri:dev`, opening two projects in separate windows, duplicate-path window focusing, explicit multi-project routing, cross-project confirmation rejection, per-project events and Full Access, service restart persistence, custom-port persistence and default reset, log-window minimize/restore from the bottom taskbar, and process cleanup after the last window closes.
