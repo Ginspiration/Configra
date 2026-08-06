@@ -1408,8 +1408,8 @@ export default function DataGridModal({
                       : '',
                 );
               }}
-              cellActivationBehavior="double-click"
-              editOnType={false}
+              cellActivationBehavior="second-click"
+              editOnType
               rowMarkers="clickable-number"
               rowSelectionMode="multi"
               rangeSelect="multi-rect"
