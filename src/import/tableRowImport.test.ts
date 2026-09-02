@@ -229,6 +229,28 @@ describe('buildTableImportReport', () => {
     expect(report.issues.filter((issue) => issue.rowIndex === 1).length).toBeGreaterThan(0);
   });
 
+  it('overwrites existing primary-key IDs and appends new IDs', () => {
+    const table = soundTable();
+    const report = buildTableImportReport(
+      project([table]),
+      table.id,
+      [
+        { id: 2, name: 'Win Updated' },
+        { id: 3, name: 'New' },
+      ],
+      'overwrite-id',
+      t,
+    );
+
+    expect(report.blocked).toBe(false);
+    expect(report.overwrittenCount).toBe(1);
+    expect(report.rows[0]).toMatchObject({
+      _rowId: 'row_2',
+      values: { id: 2, name: 'Win Updated' },
+    });
+    expect(report.rows[1].values.id).toBe(3);
+  });
+
   it('rejects duplicate ID registry keys in strict mode', () => {
     const table = identityTable();
     const report = buildTableImportReport(

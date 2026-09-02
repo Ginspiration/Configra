@@ -1584,8 +1584,8 @@ export default function App() {
           tableId={tableImportTableId}
           t={t}
           onCancel={() => setTableImportTableId(undefined)}
-          onConfirm={(rows) => {
-            appendRows(tableImportTableId, rows);
+          onConfirm={(rows, mode) => {
+            appendRows(tableImportTableId, rows, mode === 'overwrite-id');
             const importTableName =
               project.tables.find((item) => item.id === tableImportTableId)?.name ?? '';
             setStatus(t('importedRows', { count: rows.length, name: importTableName }));

@@ -228,10 +228,10 @@ export default function WindowFrame({
 
   const panelStyle: CSSProperties | undefined = useMemo(() => {
     const style: CSSProperties = {};
-    if (position) Object.assign(style, { left: position.x, top: position.y });
+    if (position && !isFullscreen) Object.assign(style, { left: position.x, top: position.y });
     if (stackedZIndex !== undefined) style.zIndex = stackedZIndex;
     return Object.keys(style).length > 0 ? style : undefined;
-  }, [position, stackedZIndex]);
+  }, [isFullscreen, position, stackedZIndex]);
 
   const panel = (
     <section

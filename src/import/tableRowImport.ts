@@ -8,7 +8,7 @@ import type {
 } from '../model/types';
 import { validateProject } from '../validation/validateProject';
 
-export type TableImportMode = 'strict' | 'auto-increment' | 'partial';
+export type TableImportMode = 'strict' | 'overwrite-id' | 'auto-increment' | 'partial';
 
 /** Imported row values keyed by stable column id. */
 export type TableImportRow = Record<string, unknown>;
@@ -30,6 +30,7 @@ export type TableImportReport = {
   issues: TableImportIssue[];
   errorCount: number;
   warningCount: number;
+  overwrittenCount: number;
   blocked: boolean;
 };
 
@@ -39,6 +40,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const columnForKey = (table: ConfigTable, key: string): ConfigColumn | undefined =>
   table.columns.find((column) => column.name === key) ??
   table.columns.find((column) => column.id === key);
+
+const valueKey = (value: unknown) => `${typeof value}:${String(value)}`;
 
 type CoerceResult = { ok: true; value: unknown } | { ok: false };
 
@@ -207,6 +210,7 @@ export function buildTableImportReport(
       issues: [{ severity: 'error', message: t('noTableSelected') }],
       errorCount: 1,
       warningCount: 0,
+      overwrittenCount: 0,
       blocked: true,
     };
   }
@@ -217,6 +221,19 @@ export function buildTableImportReport(
       issues: [{ severity: 'error', message: t('importNoRows') }],
       errorCount: 1,
       warningCount: 0,
+      overwrittenCount: 0,
+      blocked: true,
+    };
+  }
+
+  const primaryColumn = table.columns.find((column) => column.primary);
+  if (mode === 'overwrite-id' && !primaryColumn) {
+    return {
+      rows: [],
+      issues: [{ severity: 'error', message: t('importModeOverwriteIdUnavailable') }],
+      errorCount: 1,
+      warningCount: 0,
+      overwrittenCount: 0,
       blocked: true,
     };
   }
@@ -229,6 +246,7 @@ export function buildTableImportReport(
       issues: [{ severity: 'error', message: t('importNoAutoIncrement') }],
       errorCount: 1,
       warningCount: 0,
+      overwrittenCount: 0,
       blocked: true,
     };
   }
@@ -238,8 +256,18 @@ export function buildTableImportReport(
       ? nextAutoIncrementStart(table, autoIncrementColumn)
       : 0;
 
+  const existingRowByPrimaryValue = new Map(
+    primaryColumn
+      ? table.rows.map((row) => [valueKey(row.values[primaryColumn.id]), row] as const)
+      : [],
+  );
+
   const rows = incoming.map((values, index) => {
-    const row = createDefaultRow(table, makeId('row'), values);
+    const existingRow =
+      mode === 'overwrite-id' && primaryColumn
+        ? existingRowByPrimaryValue.get(valueKey(values[primaryColumn.id]))
+        : undefined;
+    const row = createDefaultRow(table, existingRow?._rowId ?? makeId('row'), values);
 
     if (autoIncrementMode && autoIncrementColumn) {
       row.values[autoIncrementColumn.id] = autoIncrementStart + index;
@@ -249,19 +277,40 @@ export function buildTableImportReport(
   });
 
   const importedRowIds = new Set(rows.map((row) => row._rowId));
+  const existingRowIds = new Set(table.rows.map((row) => row._rowId));
+  const overwrittenRowIds = new Set(
+    mode === 'overwrite-id'
+      ? rows.filter((row) => existingRowIds.has(row._rowId)).map((row) => row._rowId)
+      : [],
+  );
   const candidate: ProjectFile = {
     ...project,
     tables: project.tables.map((item) =>
-      item.id === tableId ? { ...item, rows: [...item.rows, ...rows] } : item,
+      item.id === tableId
+        ? {
+            ...item,
+            rows: [
+              ...item.rows.filter((row) => !overwrittenRowIds.has(row._rowId)),
+              ...rows,
+            ],
+          }
+        : item,
     ),
   };
 
   const rowIndexByRowId = new Map(rows.map((row, index) => [row._rowId, index]));
   const columnById = new Map(table.columns.map((column) => [column.id, column]));
+  const originalIssueIds = new Set(validateProject(project, t).map((issue) => issue.id));
   const issues = [
     ...incomingIssues,
     ...validateProject(candidate, t)
-      .filter((issue) => issue.rowId !== undefined && importedRowIds.has(issue.rowId))
+      .filter(
+        (issue) =>
+          (issue.tableId === tableId &&
+            issue.rowId !== undefined &&
+            importedRowIds.has(issue.rowId)) ||
+          (mode === 'overwrite-id' && !originalIssueIds.has(issue.id)),
+      )
       .map((issue) => {
         const column = issue.columnId ? columnById.get(issue.columnId) : undefined;
         return {
@@ -282,6 +331,7 @@ export function buildTableImportReport(
     issues,
     errorCount,
     warningCount,
+    overwrittenCount: overwrittenRowIds.size,
     // 部分导入不阻止导入，报错由用户导入后手动进表配置修复。
     blocked: mode === 'partial' ? false : errorCount > 0,
   };

@@ -212,12 +212,17 @@ body {
 #portal {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 2147483646;
   pointer-events: none;
 }
 
 #portal > * {
   pointer-events: auto;
+}
+
+/* Keep text editors on the edited cell; Glide otherwise grows long values to 400px. */
+#portal [id^='gdg-overlay-']:has(.gdg-growing-entry) {
+  width: 0;
 }
 
 button,
@@ -684,8 +689,8 @@ button:focus-visible {
   z-index: 35;
   width: min(470px, calc(100vw - 28px));
   height: 270px;
-  background: #0f172a;
-  color: #dbeafe;
+  background: var(--panel);
+  color: var(--text);
   box-shadow: 0 18px 42px rgb(15 23 42 / 36%);
 }
 
@@ -695,8 +700,8 @@ button:focus-visible {
 }
 
 .mcp-log-window .window-frame__titlebar {
-  background: #172033;
-  border-bottom-color: #334155;
+  background: var(--panel-muted);
+  border-bottom-color: var(--line);
 }
 
 .mcp-log-window__title {
@@ -712,7 +717,7 @@ button:focus-visible {
 
 .mcp-log-window__title > span:last-child {
   overflow: hidden;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -751,7 +756,7 @@ body.has-taskbar .mcp-log-window {
 }
 
 .mcp-log-entry:hover {
-  background: rgb(255 255 255 / 4%);
+  background: var(--hover-bg);
 }
 
 .mcp-log-entry span {
@@ -761,22 +766,22 @@ body.has-taskbar .mcp-log-window {
 
 .mcp-log-entry time,
 .mcp-log-entry small {
-  color: #64748b;
+  color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
 }
 
 .mcp-log-entry--warning span {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .mcp-log-entry--error span {
-  color: #fca5a5;
+  color: var(--danger);
 }
 
 .mcp-log-window__empty {
   overflow: hidden;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1427,7 +1432,7 @@ h3 {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 85;
+  z-index: 2147483647;
   display: flex;
   align-items: center;
   height: 40px;

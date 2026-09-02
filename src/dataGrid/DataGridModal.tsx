@@ -8,7 +8,6 @@ import {
   type CustomRenderer,
   type DataEditorProps,
   type DataEditorRef,
-  type EditableGridCell,
   type GridCell,
   type GridColumn,
   type GridMouseEventArgs,
@@ -16,6 +15,7 @@ import {
   type HeaderClickedEventArgs,
   type Item,
   type ProvideEditorCallback,
+  type Theme,
 } from '@glideapps/glide-data-grid';
 import '@glideapps/glide-data-grid/dist/index.css';
 import type { ConfigColumn, ConfigTable, ProjectFile, ValidationIssue } from '../model/types';
@@ -29,6 +29,19 @@ import WindowFrame from '../window/WindowFrame';
 import TablePreviewModal from './TablePreviewModal';
 import { filterChoiceOptions, type ChoiceOption } from './choiceSearch';
 import { referenceValueKey, resolveReferenceTarget } from './referenceNavigation';
+import {
+  coerceGridValue,
+  computeFillPatternEdits,
+  editedCellValue,
+  ensureRowIdsForEdits,
+  fillValueModeForColumn,
+  normalizePasteValues,
+  selectedCellItems,
+  selectedRowIndexes,
+  selectionRanges,
+  toInputValue,
+  type GridEdit,
+} from './gridEditing';
 
 export type DataGridFocusRequest = {
   tableId: string;
@@ -92,16 +105,11 @@ type HeaderTooltipState = {
 };
 
 type PasteHandler = (target: Item, values: readonly (readonly string[])[]) => boolean;
-type PasteValues = readonly (readonly string[])[];
 
-const toInputValue = (value: unknown) => {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string' || typeof value === 'number') return String(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  return JSON.stringify(value);
+/** Glide DataGrid 的行拖拽回调未包含在官方 Props 类型中，但运行时支持。 */
+type RowMoveProps = {
+  onRowMoved: (startIndex: number, endIndex: number) => void;
 };
-
-const parseNumber = (value: string) => (value.trim() === '' ? '' : Number(value));
 
 const columnRemark = (column: ConfigColumn) => column.remark?.trim() ?? '';
 
@@ -164,6 +172,23 @@ const emptySelection = (): GridSelection => ({
   rows: CompactSelection.empty(),
 });
 
+const CELL_FLASH_MS = 450;
+const CELL_FLASH_COUNT = 2;
+const CELL_FLASH_LIGHT = '#93c5fd';
+const CELL_FLASH_DARK = '#1e3a5f';
+const CELL_FLASH_ACCENT_LIGHT = '#60a5fa';
+const CELL_FLASH_ACCENT_DARK = '#3b82f6';
+
+const mixHexColors = (from: string, to: string, ratio: number) => {
+  const channel = (hex: string, offset: number) => Number.parseInt(hex.slice(offset, offset + 2), 16);
+  const mix = (fromChannel: number, toChannel: number) =>
+    Math.round(fromChannel + (toChannel - fromChannel) * ratio);
+  const channels = [1, 3, 5]
+    .map((offset) => mix(channel(from, offset), channel(to, offset)))
+    .map((value) => value.toString(16).padStart(2, '0'));
+  return `#${channels.join('')}`;
+};
+
 const columnWidthStorageKey = (tableId: string) => `configra:column-widths:${tableId}`;
 
 const defaultColumnWidth = (column: ConfigColumn) =>
@@ -195,58 +220,6 @@ const writeColumnWidths = (tableId: string, widths: Record<string, number>) => {
   }
 };
 
-const parsePastedValue = (column: ConfigColumn, rawValue: string): unknown => {
-  const value = rawValue.trim();
-  if (value === '') return '';
-
-  if (column.type === 'int') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.trunc(parsed) : rawValue;
-  }
-
-  if (column.type === 'float') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : rawValue;
-  }
-
-  if (column.type === 'bool') {
-    const normalized = value.toLowerCase();
-    if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
-    if (['false', '0', 'no', 'n'].includes(normalized)) return false;
-    return rawValue;
-  }
-
-  if (column.type === 'json') {
-    try {
-      return JSON.parse(rawValue);
-    } catch {
-      return rawValue;
-    }
-  }
-
-  return rawValue;
-};
-
-const splitPastedLines = (value: string) =>
-  value
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-const normalizePasteValues = (values: PasteValues): string[][] => {
-  const isSingleColumnPaste = values.length > 0 && values.every((row) => row.length <= 1);
-  if (!isSingleColumnPaste) return values.map((row) => [...row]);
-
-  const hasLineBreaks = values.some((row) => /[\r\n]/.test(row[0] ?? ''));
-  const hasBlankRows = values.some((row) => (row[0] ?? '').trim() === '');
-  if (!hasLineBreaks && !hasBlankRows) return values.map((row) => [...row]);
-
-  const lines = values.flatMap((row) => splitPastedLines(row[0] ?? ''));
-  return lines.length > 0 ? lines.map((line) => [line]) : values.map((row) => [...row]);
-};
-
 const optionCellData = (column: ConfigColumn, project: ProjectFile) => {
   if (column.type === 'enum') {
     return (column.enumValues ?? []).map((value) => ({
@@ -273,14 +246,16 @@ const optionCellData = (column: ConfigColumn, project: ProjectFile) => {
 
 function ChoiceEditor({
   value,
+  initialValue,
   onChange,
   onFinishedEditing,
 }: {
   value: GridCell;
+  initialValue?: string;
   onChange(newValue: GridCell): void;
   onFinishedEditing(newValue?: GridCell): void;
 }) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialValue ?? '');
   const [activeIndex, setActiveIndex] = useState(0);
   const optionsRef = useRef<HTMLDivElement>(null);
   const listboxId = useId();
@@ -521,7 +496,7 @@ export default function DataGridModal({
   const isDarkTheme = theme === 'dark';
   const addRow = useEditorStore((state) => state.addRow);
   const insertRow = useEditorStore((state) => state.insertRow);
-  const deleteRow = useEditorStore((state) => state.deleteRow);
+  const moveRow = useEditorStore((state) => state.moveRow);
   const deleteRows = useEditorStore((state) => state.deleteRows);
   const updateColumn = useEditorStore((state) => state.updateColumn);
   const updateCell = useEditorStore((state) => state.updateCell);
@@ -540,9 +515,13 @@ export default function DataGridModal({
   const [headerMenu, setHeaderMenu] = useState<HeaderMenuState>();
   const [remarkEditor, setRemarkEditor] = useState<RemarkEditorState>();
   const [headerTooltip, setHeaderTooltip] = useState<HeaderTooltipState>();
+  const [cellFlash, setCellFlash] = useState<{ col: number; row: number; startedAt: number }>();
+  const [cellFlashRatio, setCellFlashRatio] = useState(0);
   const gridRowCount = table ? table.rows.length + GHOST_ROW_COUNT : 0;
 
   useEffect(() => {
+    // StrictMode 会在开发模式重复执行挂载 effect；重置后需要允许 focusRequest 重新应用高亮。
+    handledFocusSequenceRef.current = undefined;
     setSelection(emptySelection());
     setCellMenu(undefined);
     setHeaderMenu(undefined);
@@ -553,6 +532,25 @@ export default function DataGridModal({
     setSearchStatus('');
     setColumnWidths(table ? readColumnWidths(table.id) : {});
   }, [table?.id]);
+
+  useEffect(() => {
+    if (!cellFlash) return;
+
+    let timer: number | undefined;
+    const step = () => {
+      const elapsed = Date.now() - cellFlash.startedAt;
+      if (elapsed >= CELL_FLASH_MS * CELL_FLASH_COUNT) {
+        setCellFlash(undefined);
+        setCellFlashRatio(0);
+        return;
+      }
+      setCellFlashRatio(1 - (elapsed % CELL_FLASH_MS) / CELL_FLASH_MS);
+      timer = window.setTimeout(step, 50);
+    };
+    step();
+
+    return () => window.clearTimeout(timer);
+  }, [cellFlash]);
 
   useEffect(
     () => () => {
@@ -584,23 +582,7 @@ export default function DataGridModal({
   );
 
   const getSelectedRowIndexes = useCallback(() => {
-    if (!table) return [];
-    const indexes = new Set<number>();
-
-    for (const rowIndex of selection.rows) {
-      if (rowIndex >= 0 && rowIndex < table.rows.length) indexes.add(rowIndex);
-    }
-
-    const currentRange = selection.current?.range;
-    if (currentRange) {
-      const start = Math.max(0, currentRange.y);
-      const end = Math.min(table.rows.length, currentRange.y + currentRange.height);
-      for (let index = start; index < end; index += 1) {
-        indexes.add(index);
-      }
-    }
-
-    return [...indexes].sort((left, right) => left - right);
+    return table ? selectedRowIndexes(selection, table.rows.length) : [];
   }, [selection, table]);
 
   const getCellContent = useCallback(
@@ -613,7 +595,7 @@ export default function DataGridModal({
 
       const value = row?.values[column.id] ?? '';
       const hasError = row ? errorCells.has(`${row._rowId}:${column.id}`) : false;
-      const themeOverride = hasError
+      const baseThemeOverride = hasError
         ? isDarkTheme
           ? { bgCell: '#3a2119', textDark: '#fed7aa' }
           : { bgCell: '#fff1ed', textDark: '#9a3412' }
@@ -623,10 +605,26 @@ export default function DataGridModal({
             ? { bgCell: '#172033', textLight: '#718096' }
             : { bgCell: '#fbfcfe', textLight: '#cbd5e1' };
 
+      const isFlashingCell =
+        cellFlash !== undefined &&
+        cellFlashRatio > 0 &&
+        cellFlash.col === col &&
+        cellFlash.row === rowIndex;
+      const themeOverride = isFlashingCell
+        ? {
+            ...baseThemeOverride,
+            bgCell: mixHexColors(
+              isDarkTheme ? CELL_FLASH_DARK : CELL_FLASH_LIGHT,
+              baseThemeOverride?.bgCell ?? (isDarkTheme ? '#111827' : '#ffffff'),
+              1 - cellFlashRatio,
+            ),
+          }
+        : baseThemeOverride;
+
       if (column.type === 'bool') {
         return {
           kind: GridCellKind.Boolean,
-          data: Boolean(value),
+          data: typeof value === 'boolean' ? value : null,
           allowOverlay: false,
           themeOverride,
         };
@@ -675,71 +673,49 @@ export default function DataGridModal({
       }
 
       return {
-        kind: column.type === 'json' ? GridCellKind.Markdown : GridCellKind.Text,
+        kind: GridCellKind.Text,
         data: toInputValue(value),
         displayData: toInputValue(value),
         allowOverlay: true,
+        allowWrapping: column.type === 'json',
         themeOverride,
       };
     },
-    [errorCells, isDarkTheme, onOpenTable, project, t, table],
+    [cellFlash, cellFlashRatio, errorCells, isDarkTheme, onOpenTable, project, t, table],
   );
 
-  const onCellEdited = useCallback(
-    ([col, rowIndex]: Item, newValue: EditableGridCell) => {
-      const column = table?.columns[col];
-      const row = table?.rows[rowIndex];
-      if (!table || !column) return;
+  const applyCellEdits = useCallback(
+    (items: readonly GridEdit[]) => {
+      if (!table) return;
 
-      let rowId = row?._rowId;
-      if (!rowId) {
-        for (let index = table.rows.length; index <= rowIndex; index += 1) {
-          rowId = addRow(table.id);
-        }
-      }
-      if (!rowId) return;
+      const rowIds = ensureRowIdsForEdits(
+        table.rows.map((row) => row._rowId),
+        items,
+        () => addRow(table.id),
+      );
 
-      if (newValue.kind === GridCellKind.Boolean) {
-        updateCell(table.id, rowId, column.id, Boolean(newValue.data));
-        return;
-      }
-
-      if (newValue.kind === GridCellKind.Number) {
-        updateCell(table.id, rowId, column.id, newValue.data ?? '');
-        return;
-      }
-
-      if (newValue.kind === GridCellKind.Custom) {
-        updateCell(
-          table.id,
-          rowId,
-          column.id,
-          (newValue.data as { value?: unknown }).value ?? '',
-        );
-        return;
-      }
-
-      if (newValue.kind === GridCellKind.Text || newValue.kind === GridCellKind.Markdown) {
-        updateCell(
-          table.id,
-          rowId,
-          column.id,
-          column.type === 'int' || column.type === 'float' ? parseNumber(newValue.data) : newValue.data,
-        );
+      for (const item of items) {
+        const [col, rowIndex] = item.location;
+        const column = table.columns[col];
+        const rowId = rowIds[rowIndex];
+        if (!column || !rowId) continue;
+        updateCell(table.id, rowId, column.id, editedCellValue(column, item.value, project));
       }
     },
-    [addRow, table, updateCell],
+    [addRow, project, table, updateCell],
+  );
+
+  const onCellEdited = useCallback<NonNullable<DataEditorProps['onCellEdited']>>(
+    (location, value) => applyCellEdits([{ location, value }]),
+    [applyCellEdits],
   );
 
   const onCellsEdited = useCallback<NonNullable<DataEditorProps['onCellsEdited']>>(
     (items) => {
-      for (const item of items) {
-        onCellEdited(item.location, item.value);
-      }
-
+      applyCellEdits(items);
       return true;
     },
-    [onCellEdited],
+    [applyCellEdits],
   );
 
   const addRowAtEnd = useCallback(() => {
@@ -783,18 +759,20 @@ export default function DataGridModal({
     [insertRow, table],
   );
 
-  const deleteSelectedRows = useCallback(() => {
-    if (!table) return;
+  const onRowMoved = useCallback<RowMoveProps['onRowMoved']>(
+    (startIndex, endIndex) => {
+      if (!table) return;
+      const targetIndex = moveRow(table.id, startIndex, endIndex);
+      if (targetIndex === undefined) return;
+      setSelection({
+        columns: CompactSelection.empty(),
+        rows: CompactSelection.fromSingleSelection(targetIndex),
+      });
+    },
+    [moveRow, table],
+  );
 
-    const rowIndexes = getSelectedRowIndexes();
-    const rowIds = rowIndexes
-      .map((rowIndex) => table.rows[rowIndex]?._rowId)
-      .filter((rowId): rowId is string => Boolean(rowId));
-    if (rowIds.length === 0) return;
-
-    deleteRows(table.id, rowIds);
-    setSelection(emptySelection());
-  }, [deleteRows, getSelectedRowIndexes, table]);
+  const rowMoveProps = useMemo<RowMoveProps>(() => ({ onRowMoved }), [onRowMoved]);
 
   const copyRowsAsJson = useCallback(async (rowIndexes: number[]) => {
     if (!table) return;
@@ -835,11 +813,59 @@ export default function DataGridModal({
         for (let colOffset = 0; colOffset < rowValues.length; colOffset += 1) {
           const column = table.columns[targetCol + colOffset];
           if (!column) continue;
-          updateCell(table.id, rowId, column.id, parsePastedValue(column, rowValues[colOffset]));
+          updateCell(
+            table.id,
+            rowId,
+            column.id,
+            coerceGridValue(column, rowValues[colOffset], project),
+          );
         }
       }
 
       return false;
+    },
+    [addRow, project, table, updateCell],
+  );
+
+  const onFillPattern = useCallback<NonNullable<DataEditorProps['onFillPattern']>>(
+    (event) => {
+      // 拦截 Glide 默认的循环复制，改用 Excel 式序列填充（1、2 → 3、4、5…）。
+      event.preventDefault();
+      if (!table) return;
+
+      const edits = computeFillPatternEdits(event.patternSource, event.fillDestination, {
+        getCellValue: (col, row) => table.rows[row]?.values[table.columns[col]?.id ?? ''],
+        getColumnMode: (col) => {
+          const column = table.columns[col];
+          return column ? fillValueModeForColumn(column) : 'copy';
+        },
+      });
+
+      const existingRowCount = table.rows.length;
+      const applicableEdits = edits.filter((edit) => {
+        const column = table.columns[edit.col];
+        if (!column) return false;
+        // 拖过表尾的空白行时跳过空值，避免无意义地创建真实行。
+        if (edit.row >= existingRowCount) {
+          return edit.value !== '' && edit.value !== undefined && edit.value !== null;
+        }
+        const current = table.rows[edit.row]?.values[column.id] ?? '';
+        return edit.value !== current;
+      });
+      if (applicableEdits.length === 0) return;
+
+      const rowIds = ensureRowIdsForEdits(
+        table.rows.map((row) => row._rowId),
+        applicableEdits.map((edit) => ({ location: [edit.col, edit.row] as Item })),
+        () => addRow(table.id),
+      );
+
+      for (const edit of applicableEdits) {
+        const column = table.columns[edit.col];
+        const rowId = rowIds[edit.row];
+        if (!column || !rowId) continue;
+        updateCell(table.id, rowId, column.id, edit.value);
+      }
     },
     [addRow, table, updateCell],
   );
@@ -858,21 +884,18 @@ export default function DataGridModal({
             .map((rowIndex) => table.rows[rowIndex]?._rowId)
             .filter((rowId): rowId is string => Boolean(rowId)),
         );
+        setSelection(emptySelection());
         return false;
       }
 
-      const range = nextSelection.current?.range;
-      if (!range) return false;
-
-      for (let y = range.y; y < range.y + range.height; y += 1) {
-        const row = table.rows[y];
-        if (!row) continue;
-
-        for (let x = range.x; x < range.x + range.width; x += 1) {
-          const column = table.columns[x];
-          if (!column) continue;
-          updateCell(table.id, row._rowId, column.id, '');
-        }
+      for (const [colIndex, rowIndex] of selectedCellItems(
+        nextSelection,
+        table.columns.length,
+        table.rows.length,
+      )) {
+        const row = table.rows[rowIndex];
+        const column = table.columns[colIndex];
+        if (row && column) updateCell(table.id, row._rowId, column.id, '');
       }
 
       return false;
@@ -985,9 +1008,7 @@ export default function DataGridModal({
       actionRowIndexes.length > 1
         ? t('deleteRowsCount', { count: actionRowIndexes.length })
         : t('deleteRow');
-    const selectedRanges = selection.current
-      ? [selection.current.range, ...(selection.current.rangeStack ?? [])]
-      : [];
+    const selectedRanges = selectionRanges(selection);
     const menuCellIsSelected =
       cellMenu.colIndex >= 0 &&
       selectedRanges.some(
@@ -1100,21 +1121,19 @@ export default function DataGridModal({
         danger: true,
         disabled: actionRowIndexes.length === 0,
         onSelect: () => {
-          if (actionRowIndexes.length > 1) {
-            deleteSelectedRows();
-            return;
-          }
-
-          const row = table.rows[actionRowIndexes[0]];
-          if (row) deleteRow(table.id, row._rowId);
+          const rowIds = actionRowIndexes
+            .map((rowIndex) => table.rows[rowIndex]?._rowId)
+            .filter((rowId): rowId is string => Boolean(rowId));
+          if (rowIds.length === 0) return;
+          deleteRows(table.id, rowIds);
+          setSelection(emptySelection());
         },
       },
     ];
   }, [
     addRowAtEnd,
     copyRowsAsJson,
-    deleteRow,
-    deleteSelectedRows,
+    deleteRows,
     getSelectedRowIndexes,
     insertRowAt,
     cellMenu,
@@ -1169,6 +1188,8 @@ export default function DataGridModal({
           rangeStack: [],
         },
       });
+      setCellFlash({ col, row, startedAt: Date.now() });
+      setCellFlashRatio(1);
 
       requestAnimationFrame(() => {
         gridRef.current?.scrollTo(col, row, 'both', 80, 80, {
@@ -1309,6 +1330,50 @@ export default function DataGridModal({
     [table],
   );
 
+  const gridTheme = useMemo(() => {
+    const accentLight = theme === 'dark' ? '#1e3a5f' : '#dbeafe';
+    const base: Partial<Theme> = {
+      accentColor: theme === 'dark' ? '#60a5fa' : '#2563eb',
+      accentFg: '#ffffff',
+      accentLight,
+      bgHeader: theme === 'dark' ? '#1e293b' : '#eef2f5',
+      bgHeaderHasFocus: theme === 'dark' ? '#29415f' : '#d9e4f4',
+      bgHeaderHovered: theme === 'dark' ? '#263852' : '#e4ebf5',
+      bgCell: theme === 'dark' ? '#111827' : '#ffffff',
+      bgCellMedium: theme === 'dark' ? '#172033' : '#fafafb',
+      bgBubble: theme === 'dark' ? '#263852' : '#e8eef6',
+      bgBubbleSelected: theme === 'dark' ? '#334d6d' : '#ffffff',
+      bgSearchResult: theme === 'dark' ? '#4a3a16' : '#fff9e3',
+      borderColor: theme === 'dark' ? '#3b4a60' : '#d5dce3',
+      drilldownBorder: 'transparent',
+      linkColor: theme === 'dark' ? '#93c5fd' : '#1d4ed8',
+      textDark: theme === 'dark' ? '#e5edf7' : '#18212c',
+      textMedium: theme === 'dark' ? '#a8b6c8' : '#657282',
+      textLight: theme === 'dark' ? '#7f8ea3' : '#7a8798',
+      textBubble: theme === 'dark' ? '#d7e2f0' : '#405063',
+      textHeader: theme === 'dark' ? '#d7e2f0' : '#405063',
+      textHeaderSelected: '#ffffff',
+      bgIconHeader: theme === 'dark' ? '#a8b6c8' : '#657282',
+      fgIconHeader: theme === 'dark' ? '#111827' : '#ffffff',
+      fontFamily:
+        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      baseFontStyle: '12px',
+      headerFontStyle: '600 12px',
+      editorFontSize: '12px',
+    };
+
+    // 跳转定位时选区填充色（accentLight）从高亮蓝渐隐回常态，重复 CELL_FLASH_COUNT 次形成闪烁。
+    if (cellFlash && cellFlashRatio > 0) {
+      base.accentLight = mixHexColors(
+        theme === 'dark' ? CELL_FLASH_ACCENT_DARK : CELL_FLASH_ACCENT_LIGHT,
+        accentLight,
+        1 - cellFlashRatio,
+      );
+    }
+
+    return base;
+  }, [cellFlash, cellFlashRatio, theme]);
+
   if (!open || !table) return null;
 
   return (
@@ -1381,6 +1446,7 @@ export default function DataGridModal({
               onCellEdited={onCellEdited}
               onCellsEdited={onCellsEdited}
               onPaste={onPaste}
+              onFillPattern={onFillPattern}
               onDelete={onDelete}
               onColumnResize={onColumnResize}
               onCellContextMenu={openCellMenu}
@@ -1388,6 +1454,7 @@ export default function DataGridModal({
               onItemHovered={onItemHovered}
               gridSelection={selection}
               onGridSelectionChange={(nextSelection) => setSelection(nextSelection)}
+              {...rowMoveProps}
               provideEditor={provideEditor}
               customRenderers={choiceCellRenderers}
               drawHeader={drawHeader}
@@ -1422,35 +1489,7 @@ export default function DataGridModal({
               width="100%"
               height="100%"
               getCellsForSelection
-              theme={{
-                accentColor: theme === 'dark' ? '#60a5fa' : '#2563eb',
-                accentFg: '#ffffff',
-                accentLight: theme === 'dark' ? '#1e3a5f' : '#dbeafe',
-                bgHeader: theme === 'dark' ? '#1e293b' : '#eef2f5',
-                bgHeaderHasFocus: theme === 'dark' ? '#29415f' : '#d9e4f4',
-                bgHeaderHovered: theme === 'dark' ? '#263852' : '#e4ebf5',
-                bgCell: theme === 'dark' ? '#111827' : '#ffffff',
-                bgCellMedium: theme === 'dark' ? '#172033' : '#fafafb',
-                bgBubble: theme === 'dark' ? '#263852' : '#e8eef6',
-                bgBubbleSelected: theme === 'dark' ? '#334d6d' : '#ffffff',
-                bgSearchResult: theme === 'dark' ? '#4a3a16' : '#fff9e3',
-                borderColor: theme === 'dark' ? '#3b4a60' : '#d5dce3',
-                drilldownBorder: 'transparent',
-                linkColor: theme === 'dark' ? '#93c5fd' : '#1d4ed8',
-                textDark: theme === 'dark' ? '#e5edf7' : '#18212c',
-                textMedium: theme === 'dark' ? '#a8b6c8' : '#657282',
-                textLight: theme === 'dark' ? '#7f8ea3' : '#7a8798',
-                textBubble: theme === 'dark' ? '#d7e2f0' : '#405063',
-                textHeader: theme === 'dark' ? '#d7e2f0' : '#405063',
-                textHeaderSelected: '#ffffff',
-                bgIconHeader: theme === 'dark' ? '#a8b6c8' : '#657282',
-                fgIconHeader: theme === 'dark' ? '#111827' : '#ffffff',
-                fontFamily:
-                  'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-                baseFontStyle: '12px',
-                headerFontStyle: '600 12px',
-                editorFontSize: '12px',
-              }}
+              theme={gridTheme}
             />
           </div>
         </div>

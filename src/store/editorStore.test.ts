@@ -95,4 +95,85 @@ describe('editor dirty scopes', () => {
     expect(nextTable?.rows[beforeCount].values[table.columns[0].id]).toBe('ImportedValue');
     expect(useEditorStore.getState()).toMatchObject({ isDirty: true, dirtyScope: 'content' });
   });
+
+  it('replaces imported rows with matching internal IDs and appends new rows', () => {
+    const project = createSampleProject();
+    const table = project.tables[0];
+    const existingRow = table.rows[0];
+    useEditorStore.getState().loadProject(project);
+
+    useEditorStore.getState().appendRows(
+      table.id,
+      [
+        { _rowId: existingRow._rowId, values: { [table.columns[0].id]: 'Replaced' } },
+        { _rowId: 'new_row', values: { [table.columns[0].id]: 'New' } },
+      ],
+      true,
+    );
+
+    const rows = useEditorStore.getState().project.tables[0].rows;
+    expect(rows).toHaveLength(table.rows.length + 1);
+    expect(rows[0]._rowId).toBe(existingRow._rowId);
+    expect(rows[0].values[table.columns[0].id]).toBe('Replaced');
+    expect(rows[rows.length - 1]?._rowId).toBe('new_row');
+  });
+
+  describe('moveRow', () => {
+    const loadThreeRowTable = () => {
+      const project = createSampleProject();
+      const table = project.tables[0];
+      table.rows.push({
+        _rowId: 'row_speaker_3',
+        values: { id: 1003, name: '商人' },
+      });
+      useEditorStore.getState().loadProject(project);
+      return table.id;
+    };
+
+    const rowIdsOf = (tableId: string) =>
+      useEditorStore.getState().project.tables.find((item) => item.id === tableId)!.rows.map(
+        (row) => row._rowId,
+      );
+
+    it('moves a row down and keeps every value attached to its row', () => {
+      const tableId = loadThreeRowTable();
+      useEditorStore.getState().markClean();
+
+      const landedAt = useEditorStore.getState().moveRow(tableId, 0, 2);
+
+      expect(landedAt).toBe(2);
+      expect(rowIdsOf(tableId)).toEqual(['row_speaker_2', 'row_speaker_3', 'row_speaker_1']);
+      const rows = useEditorStore.getState().project.tables[0].rows;
+      expect(rows[2].values).toEqual({ id: 1001, name: '人类' });
+      expect(useEditorStore.getState()).toMatchObject({ isDirty: true, dirtyScope: 'content' });
+    });
+
+    it('moves a row up', () => {
+      const tableId = loadThreeRowTable();
+
+      const landedAt = useEditorStore.getState().moveRow(tableId, 2, 0);
+
+      expect(landedAt).toBe(0);
+      expect(rowIdsOf(tableId)).toEqual(['row_speaker_3', 'row_speaker_1', 'row_speaker_2']);
+    });
+
+    it('clamps a target beyond the last row to the end of the table', () => {
+      const tableId = loadThreeRowTable();
+
+      const landedAt = useEditorStore.getState().moveRow(tableId, 0, 99);
+
+      expect(landedAt).toBe(2);
+      expect(rowIdsOf(tableId)).toEqual(['row_speaker_2', 'row_speaker_3', 'row_speaker_1']);
+    });
+
+    it('returns undefined and stays clean when the row does not move', () => {
+      const tableId = loadThreeRowTable();
+
+      expect(useEditorStore.getState().moveRow(tableId, 1, 1)).toBeUndefined();
+      expect(useEditorStore.getState().moveRow(tableId, 16, 0)).toBeUndefined();
+      expect(useEditorStore.getState().moveRow(tableId, 0, -5)).toBeUndefined();
+      expect(rowIdsOf(tableId)).toEqual(['row_speaker_1', 'row_speaker_2', 'row_speaker_3']);
+      expect(useEditorStore.getState().isDirty).toBe(false);
+    });
+  });
 });

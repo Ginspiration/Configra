@@ -38,10 +38,12 @@ type EditorStore = {
 
   addRow(tableId: string): string | undefined;
   insertRow(tableId: string, rowIndex: number): string | undefined;
+  /** 把一行从 sourceIndex 移动到 targetIndex，返回落点索引；无需移动时返回 undefined。 */
+  moveRow(tableId: string, sourceIndex: number, targetIndex: number): number | undefined;
   updateCell(tableId: string, rowId: string, columnId: string, value: unknown): void;
   deleteRow(tableId: string, rowId: string): void;
   deleteRows(tableId: string, rowIds: string[]): void;
-  appendRows(tableId: string, rows: ConfigRow[]): void;
+  appendRows(tableId: string, rows: ConfigRow[], replaceExisting?: boolean): void;
 
   loadProject(project: ProjectFile): void;
   reloadProject(project: ProjectFile, preserveLayout?: boolean): void;
@@ -338,6 +340,42 @@ export const useEditorStore = create<EditorStore>((set) => ({
     return inserted ? rowId : undefined;
   },
 
+  moveRow: (tableId, sourceIndex, targetIndex) => {
+    let landedAt: number | undefined;
+
+    set((state) => {
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+        if (sourceIndex < 0 || sourceIndex >= table.rows.length) return table;
+
+        const clampedTarget = Math.max(0, Math.min(targetIndex, table.rows.length - 1));
+        if (clampedTarget === sourceIndex) return table;
+
+        const rows = [...table.rows];
+        const [row] = rows.splice(sourceIndex, 1);
+        rows.splice(clampedTarget, 0, row);
+        updated = true;
+        landedAt = clampedTarget;
+
+        return { ...table, rows };
+      });
+
+      if (!updated) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables,
+        },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
+        ...markDirty('moveRow', state.dirtyScope),
+      };
+    });
+
+    return landedAt;
+  },
+
   updateCell: (tableId, rowId, columnId, value) =>
     set((state) => {
       let updated = false;
@@ -399,19 +437,27 @@ export const useEditorStore = create<EditorStore>((set) => ({
       };
     }),
 
-  appendRows: (tableId, rows) =>
+  appendRows: (tableId, rows, replaceExisting = false) =>
     set((state) => {
       let appended = false;
       const tables = state.project.tables.map((table) => {
         if (table.id !== tableId) return table;
         appended = true;
 
+        const importedRows = rows.map((row) =>
+          createDefaultRow(table, row._rowId || makeId('row'), row.values),
+        );
+        const replacements = new Map(importedRows.map((row) => [row._rowId, row]));
+        const existingRowIds = new Set(table.rows.map((row) => row._rowId));
+
         return {
           ...table,
-          rows: [
-            ...table.rows,
-            ...rows.map((row) => createDefaultRow(table, row._rowId || makeId('row'), row.values)),
-          ],
+          rows: replaceExisting
+            ? [
+                ...table.rows.map((row) => replacements.get(row._rowId) ?? row),
+                ...importedRows.filter((row) => !existingRowIds.has(row._rowId)),
+              ]
+            : [...table.rows, ...importedRows],
         };
       });
 

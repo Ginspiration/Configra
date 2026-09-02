@@ -15,7 +15,7 @@ type TableImportDialogProps = {
   tableId: string;
   t: Translator;
   onCancel: () => void;
-  onConfirm: (rows: ConfigRow[]) => void;
+  onConfirm: (rows: ConfigRow[], mode: TableImportMode) => void;
 };
 
 type ImportSource = 'file' | 'paste';
@@ -38,6 +38,7 @@ export default function TableImportDialog({
   const text = source === 'file' ? fileText : pasteText;
   const hasText = text.trim().length > 0;
   const hasAutoIncrement = (table?.columns.some((column) => column.autoIncrement) ?? false);
+  const hasPrimaryKey = table?.columns.some((column) => column.primary) ?? false;
 
   const parseResult = useMemo(
     () => (table && hasText ? parseTableJsonImport(text, table, t, mode) : undefined),
@@ -68,7 +69,8 @@ export default function TableImportDialog({
     !parseResult?.ok ||
     !report ||
     report.blocked ||
-    (mode !== 'strict' && !hasAutoIncrement);
+    ((mode === 'auto-increment' || mode === 'partial') && !hasAutoIncrement) ||
+    (mode === 'overwrite-id' && !hasPrimaryKey);
 
   const pickFile = async () => {
     if (isDesktopRuntime()) {
@@ -94,7 +96,7 @@ export default function TableImportDialog({
 
   const confirm = () => {
     if (!report || report.blocked) return;
-    onConfirm(report.rows);
+    onConfirm(report.rows, mode);
   };
 
   return (
@@ -166,6 +168,27 @@ export default function TableImportDialog({
                 <span className="import-mode-option__body">
                   <strong>{t('importModeStrict')}</strong>
                   <small>{t('importModeStrictDescription')}</small>
+                </span>
+              </label>
+              <label
+                className={`import-mode-option ${
+                  !hasPrimaryKey ? 'is-disabled' : ''
+                } ${mode === 'overwrite-id' ? 'is-selected' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="import-mode"
+                  checked={mode === 'overwrite-id'}
+                  disabled={!hasPrimaryKey}
+                  onChange={() => setMode('overwrite-id')}
+                />
+                <span className="import-mode-option__body">
+                  <strong>{t('importModeOverwriteId')}</strong>
+                  <small>
+                    {hasPrimaryKey
+                      ? t('importModeOverwriteIdDescription')
+                      : t('importModeOverwriteIdUnavailable')}
+                  </small>
                 </span>
               </label>
               <label
@@ -244,7 +267,13 @@ export default function TableImportDialog({
             ) : report ? (
               <>
                 <div className="import-modal__summary">
-                  {t('importRowsSummary', { count: report.rows.length, name: table.name })}
+                  {mode === 'overwrite-id'
+                    ? t('importOverwriteRowsSummary', {
+                        replaced: report.overwrittenCount,
+                        added: report.rows.length - report.overwrittenCount,
+                        name: table.name,
+                      })
+                    : t('importRowsSummary', { count: report.rows.length, name: table.name })}
                 </div>
                 {report.issues.length === 0 ? (
                   <p className="empty-copy">{t('noIssues')}</p>

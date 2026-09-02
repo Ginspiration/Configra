@@ -19,6 +19,29 @@ export type ManagedWindow = {
   close(): void;
 };
 
+export function rankManagedWindows(
+  windows: ManagedWindow[],
+  frontWindowId?: string,
+): ManagedWindow[] {
+  const ordered = [...windows].sort((left, right) => left.zIndex - right.zIndex);
+  const frontIndex = frontWindowId
+    ? ordered.findIndex((window) => window.id === frontWindowId)
+    : -1;
+
+  if (frontIndex >= 0) {
+    ordered.push(...ordered.splice(frontIndex, 1));
+  }
+
+  const unchanged = ordered.every(
+    (window, index) => windows[index] === window && window.zIndex === index + 1,
+  );
+  if (unchanged) return windows;
+
+  return ordered.map((window, index) =>
+    window.zIndex === index + 1 ? window : { ...window, zIndex: index + 1 },
+  );
+}
+
 type WindowManagerContextValue = {
   register(id: string, window: Omit<ManagedWindow, 'id' | 'zIndex'>): void;
   unregister(id: string): void;
@@ -49,19 +72,16 @@ export function useWindowManager(): WindowManagerContextValue {
 
 export function WindowManagerProvider({ children }: { children: ReactNode }) {
   const [windows, setWindows] = useState<ManagedWindow[]>([]);
-  const zCounterRef = useRef(0);
 
   const register = useCallback((id: string, entry: Omit<ManagedWindow, 'id' | 'zIndex'>) => {
-    zCounterRef.current += 1;
-    setWindows((prev) =>
-      prev.some((window) => window.id === id)
-        ? prev
-        : [...prev, { id, ...entry, zIndex: zCounterRef.current }],
-    );
+    setWindows((prev) => {
+      if (prev.some((window) => window.id === id)) return prev;
+      return rankManagedWindows([...prev, { id, ...entry, zIndex: 0 }], id);
+    });
   }, []);
 
   const unregister = useCallback((id: string) => {
-    setWindows((prev) => prev.filter((window) => window.id !== id));
+    setWindows((prev) => rankManagedWindows(prev.filter((window) => window.id !== id)));
   }, []);
 
   const update = useCallback(
@@ -79,13 +99,8 @@ export function WindowManagerProvider({ children }: { children: ReactNode }) {
 
   const raise = useCallback((id: string) => {
     setWindows((prev) => {
-      const target = prev.find((window) => window.id === id);
-      if (!target) return prev;
-      const maxZIndex = prev.reduce((max, window) => Math.max(max, window.zIndex), 0);
-      if (target.zIndex === maxZIndex) return prev;
-      return prev.map((window) =>
-        window.id === id ? { ...window, zIndex: maxZIndex + 1 } : window,
-      );
+      if (!prev.some((window) => window.id === id)) return prev;
+      return rankManagedWindows(prev, id);
     });
   }, []);
 
