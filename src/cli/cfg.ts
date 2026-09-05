@@ -978,7 +978,7 @@ const exportTableCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const outPath = toAbsolutePath(requiredOption(args, 'out'));
   const overwrite = args.flags.has('overwrite');
 
-  await writeTextFile(outPath, `${tableJson(loaded.project, table.id)}\n`, overwrite);
+  await writeTextFile(outPath, tableJson(loaded.project, table.id), overwrite);
 
   const body = {
     ok: true,
@@ -1000,7 +1000,7 @@ const exportIdsCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const outPath = toAbsolutePath(requiredOption(args, 'out'));
   const overwrite = args.flags.has('overwrite');
 
-  await writeTextFile(outPath, `${idRegistryJson(loaded.project)}\n`, overwrite);
+  await writeTextFile(outPath, idRegistryJson(loaded.project), overwrite);
 
   const body = {
     ok: true,
@@ -1066,7 +1066,7 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     }> = [];
     try {
       for (const [index, file] of files.entries()) {
-        await fs.writeFile(path.join(stageDir, `new-${index}`), `${file.text}\n`, 'utf8');
+        await fs.writeFile(path.join(stageDir, `new-${index}`), file.text, 'utf8');
       }
 
       for (const [index, file] of files.entries()) {

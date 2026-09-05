@@ -58,8 +58,10 @@ export function exportTableRows(project: ProjectFile, tableId: string): Record<s
   );
 }
 
+// 导出的 JSON 文本统一以单个换行符结尾：对 git diff 和文本工具友好，
+// 并保证复制、下载、导出、自动发布与 CLI 导出的文件字节一致。
 export function tableJson(project: ProjectFile, tableId: string) {
-  return JSON.stringify(exportTableRows(project, tableId), null, 2);
+  return `${JSON.stringify(exportTableRows(project, tableId), null, 2)}\n`;
 }
 
 export function exportIdRegistry(project: ProjectFile): Record<string, unknown> {
@@ -85,7 +87,7 @@ export function exportIdRegistry(project: ProjectFile): Record<string, unknown> 
 }
 
 export function idRegistryJson(project: ProjectFile) {
-  return JSON.stringify(exportIdRegistry(project), null, 2);
+  return `${JSON.stringify(exportIdRegistry(project), null, 2)}\n`;
 }
 
 export function projectJsonFiles(project: ProjectFile): ExportJsonFile[] {

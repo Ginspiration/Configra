@@ -54,6 +54,8 @@ type WindowManagerContextValue = {
   isFront(id: string): boolean;
   /** 查询窗口的层叠顺序；未注册时返回 undefined。 */
   zIndexOf(id: string): number | undefined;
+  /** 当前注册窗口的只读镜像；用于“主界面是否被浮窗遮挡”之类的全局判断。 */
+  windows: readonly ManagedWindow[];
 };
 
 const WindowManagerContext = createContext<WindowManagerContextValue>({
@@ -64,6 +66,7 @@ const WindowManagerContext = createContext<WindowManagerContextValue>({
   raise: () => undefined,
   isFront: () => false,
   zIndexOf: () => undefined,
+  windows: [],
 });
 
 export function useWindowManager(): WindowManagerContextValue {
@@ -135,8 +138,8 @@ export function WindowManagerProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ register, unregister, update, restore, raise, isFront, zIndexOf }),
-    [isFront, raise, register, restore, unregister, update, zIndexOf],
+    () => ({ register, unregister, update, restore, raise, isFront, zIndexOf, windows }),
+    [isFront, raise, register, restore, unregister, update, windows, zIndexOf],
   );
 
   return (

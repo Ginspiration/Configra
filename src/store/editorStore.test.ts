@@ -177,3 +177,106 @@ describe('editor dirty scopes', () => {
     });
   });
 });
+
+describe('editor undo/redo', () => {
+  const tableId = 'speaker';
+
+  beforeEach(() => {
+    useEditorStore.getState().loadProject(createSampleProject());
+  });
+
+  const cellValue = (rowId: string, columnId: string) =>
+    useEditorStore.getState().project.tables.find((table) => table.id === tableId)?.rows.find(
+      (row) => row._rowId === rowId,
+    )?.values[columnId];
+
+  const rowCount = () =>
+    useEditorStore.getState().project.tables.find((table) => table.id === tableId)?.rows.length;
+
+  it('undoes and redoes a cell edit', () => {
+    useEditorStore.getState().updateCell(tableId, 'row_speaker_1', 'name', '兽人');
+    expect(useEditorStore.getState().undoStacks[tableId]).toHaveLength(1);
+
+    useEditorStore.getState().undo(tableId);
+    expect(cellValue('row_speaker_1', 'name')).toBe('人类');
+    expect(useEditorStore.getState().redoStacks[tableId]).toHaveLength(1);
+
+    useEditorStore.getState().redo(tableId);
+    expect(cellValue('row_speaker_1', 'name')).toBe('兽人');
+    expect(useEditorStore.getState().undoStacks[tableId]).toHaveLength(1);
+  });
+
+  it('restores deleted rows on undo', () => {
+    useEditorStore.getState().deleteRows(tableId, ['row_speaker_2']);
+    expect(rowCount()).toBe(1);
+
+    useEditorStore.getState().undo(tableId);
+    expect(rowCount()).toBe(2);
+    expect(cellValue('row_speaker_2', 'name')).toBe('旁白');
+  });
+
+  it('restores column changes on undo', () => {
+    useEditorStore.getState().addColumn(tableId);
+    expect(useEditorStore.getState().project.tables[0].columns).toHaveLength(3);
+
+    useEditorStore.getState().undo(tableId);
+    expect(useEditorStore.getState().project.tables[0].columns).toHaveLength(2);
+  });
+
+  it('keeps table position while undoing content', () => {
+    useEditorStore.getState().moveTable(tableId, { x: 500, y: 500 });
+    useEditorStore.getState().updateCell(tableId, 'row_speaker_1', 'name', 'x');
+
+    useEditorStore.getState().undo(tableId);
+
+    const table = useEditorStore.getState().project.tables[0];
+    expect(table.position).toEqual({ x: 500, y: 500 });
+    expect(table.rows[0].values.name).toBe('人类');
+  });
+
+  it('records one undo entry per batch', () => {
+    const store = useEditorStore.getState();
+    store.beginUndoBatch(tableId);
+    try {
+      store.updateCell(tableId, 'row_speaker_1', 'name', 'a');
+      store.updateCell(tableId, 'row_speaker_1', 'id', 42);
+      store.updateCell(tableId, 'row_speaker_2', 'name', 'b');
+    } finally {
+      store.endUndoBatch();
+    }
+
+    expect(useEditorStore.getState().undoStacks[tableId]).toHaveLength(1);
+
+    useEditorStore.getState().undo(tableId);
+    const rows = useEditorStore.getState().project.tables[0].rows;
+    expect(rows[0].values).toEqual({ id: 1001, name: '人类' });
+    expect(rows[1].values).toEqual({ id: 1002, name: '旁白' });
+  });
+
+  it('does not record undo entries for layout moves or no-op updates', () => {
+    const store = useEditorStore.getState();
+    store.moveTable(tableId, { x: 1, y: 2 });
+    store.updateCell(tableId, 'row_speaker_1', 'name', '人类');
+
+    expect(useEditorStore.getState().undoStacks[tableId]).toBeUndefined();
+    expect(useEditorStore.getState().isDirty).toBe(true);
+  });
+
+  it('drops the undo stack when the table is deleted', () => {
+    useEditorStore.getState().updateCell(tableId, 'row_speaker_1', 'name', 'x');
+    expect(useEditorStore.getState().undoStacks[tableId]).toHaveLength(1);
+
+    useEditorStore.getState().deleteTable(tableId);
+    expect(useEditorStore.getState().undoStacks[tableId]).toBeUndefined();
+    expect(useEditorStore.getState().redoStacks[tableId]).toBeUndefined();
+  });
+
+  it('clears all undo stacks when the project is reloaded', () => {
+    useEditorStore.getState().updateCell(tableId, 'row_speaker_1', 'name', 'x');
+    expect(useEditorStore.getState().undoStacks[tableId]).toHaveLength(1);
+
+    useEditorStore.getState().reloadProject(createSampleProject());
+    expect(useEditorStore.getState().undoStacks).toEqual({});
+    expect(useEditorStore.getState().redoStacks).toEqual({});
+  });
+});

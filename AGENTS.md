@@ -98,11 +98,12 @@ Tauri
 顶部工具栏左侧包含 VS Code 风格的“菜单”下拉入口：
 
 - 新建工程。
+- 打开项目。选择工程文件后直接作为当前工程在本窗口打开，不经过导入报告；桌面模式下同样受“同一路径只允许一个窗口”约束并会记住最近工程。
 - 保存。
-- 导入。
+- 导入。把选择的工程按合并语义导入当前工程（冲突处理、校验报告、确认后才替换）。
 - 刷新配置（仅桌面模式，且需要有已保存的工程路径；重新读取磁盘上的工程文件覆盖内存状态）。
 - 导出。
-- 设置。设置面板按“界面”和“AI / MCP”分类，后续可继续扩展更多分类。
+- 设置。设置面板按“界面”、“发布”和“AI / MCP”分类，后续可继续扩展更多分类。
 
 新建工程会创建无表、无文件路径的空白工程，第一次保存时再选择路径。空白画布提供“新建第一张表”入口。
 
@@ -167,7 +168,9 @@ React Flow 画布行为：
 - 点击模态窗口遮罩（面板外）时：点到其他窗口的面板会把该窗口置顶（切换到它）；点到主界面区域时，设置/预览等可遮罩关闭的对话框关闭，其余窗口最小化回到主界面（任务栏可恢复）。
 - 底部任务栏横向排列所有打开/最小化的窗口，按钮过多时横向滑动；点击按钮按系统任务栏语义切换：最小化时恢复并置顶，被其他窗口遮挡时提升到前台，已在前台时最小化（窗口层叠顺序由 `WindowManager` 统一管理）。
 - 关闭按钮是 `X`。
-- 搜索使用 Glide 内置搜索，并会定位到匹配单元格。
+- 搜索使用 Glide 内置搜索，并会定位到匹配单元格；`Ctrl/Cmd+F` 会打开搜索浮层（通过 Glide 的 `onKeyDown` 回调拦截并 `cancel()` 接管）。
+- 行编辑窗口内的快捷键：`Ctrl/Cmd+Enter` 在当前行下方插入行、`Ctrl/Cmd+Shift+Enter` 在上方插入行（无选区时追加到末尾；复用右键菜单的插入/追加逻辑，插入选中并滚动定位）；`Esc` 关闭当前行编辑窗口（单元格编辑、右键菜单、备注编辑、表格预览等叠层优先消费 Esc，且仅本窗口处于前台时生效）。键位解析是纯函数，位于 `src/dataGrid/gridShortcuts.ts` 的 `resolveGridShortcut`。
+- 支持撤销/重做：标题栏提供撤销/重做按钮（随栈深禁用），快捷键为 `Ctrl/Cmd+Z` 与 `Ctrl/Cmd+Shift+Z` / `Ctrl/Cmd+Y`（焦点在输入框时让位给浏览器原生文本撤销）。实现是 store 内的按表快照栈，见第 11 节；粘贴、填充、多格编辑、全部大写等复合操作通过 `beginUndoBatch`/`endUndoBatch` 合并为一条记录。
 - 单元格编辑与 Excel 一致：单击选中单元格，再次单击已选中的单元格或双击进入编辑（不依赖系统双击时间判定）；选中单元格后直接键入字符会激活输入模式（`editOnType` 已开启；仅限 ASCII 字符，中文输入法候选上屏仍需双击进入编辑）。
 - 行标记使用可点击数字。
 - 按住行号上下拖动可以移动整行：只调整行顺序，不修改任何单元格数据；拖到已有行下方的空白行区域会把该行移动到表末尾；拖动结束后选中状态跟随被移动的行。该能力来自 Glide 的 `onRowMoved` 回调（未包含在其官方 Props 类型中，通过独立类型对象展开传入），行移动落点由 store 的 `moveRow` 落实。
@@ -307,6 +310,7 @@ SOUND_CLICK (1)
 - key 使用 `column.name || column.id`。
 - 不输出 `_rowId`、位置、字段配置和编辑器元数据。
 - `json` 字段如果是合法 JSON 字符串，导出前会解析。
+- 导出的 JSON 文本统一以单个换行符结尾；复制、下载、导出、自动发布与 CLI 导出的文件字节一致。
 
 ID 注册表导出：
 
@@ -318,6 +322,16 @@ ID 注册表导出：
 - 桌面模式会弹出保存路径并写文件。
 
 一键导出全部表时使用 Zustand 中的当前内存工程，包括未保存修改。桌面模式覆盖已有文件时使用布尔确认结果，并在每个文件写入后读回比较；只有全部一致才显示成功。
+
+### 保存时自动发布（仅桌面模式）
+
+设置 → “发布”分类里可以配置发布目录并开启“保存时自动发布”：
+
+- 开启开关时如果还没有目录，会先弹出目录选择；取消选择则保持关闭。
+- 每次保存成功后，自动把 `config_ids.json` 和全部表 JSON 静默覆盖写入发布目录，不弹覆盖确认，写入后逐文件读回校验。
+- 自动发布失败不影响保存结果：工程仍算保存成功，失败原因显示在状态栏。
+- “立即发布”按钮可以对当前内存工程手动触发一次发布；发布目录随设置保存在 `localStorage`（`configra:publish-settings`），为应用级全局设置。
+- 发布逻辑位于 `src/export/publishProject.ts`，设置持久化位于 `src/settings/publishSettings.ts`。
 
 ## 9. 校验规则
 
@@ -406,6 +420,7 @@ Store 状态：
 - `project`
 - `selectedTableId`
 - `isDirty`
+- `undoStacks` / `redoStacks`：按表 id 索引的撤销/重做快照栈，每栈上限 50 条
 
 Store action：
 
@@ -416,6 +431,7 @@ Store action：
 - `deleteTable`
 - `addColumn`
 - `updateColumn`
+- `moveColumn`
 - `deleteColumn`
 - `addRow`
 - `insertRow`
@@ -426,6 +442,17 @@ Store action：
 - `loadProject`
 - `markClean`
 - `newProject`
+- `beginUndoBatch` / `endUndoBatch`
+- `undo` / `redo`
+
+撤销/重做行为：
+
+- 快照内容是 `{ name, remark, columns, rows, identity }` 的深拷贝，不包含 `position`；撤销恢复表内容但保留画布位置。
+- 内容修改类 action（`updateTable`、`addColumn`、`updateColumn`、`moveColumn`、`deleteColumn`、`addRow`、`insertRow`、`moveRow`、`updateCell`、`deleteRow`、`deleteRows`、`appendRows`）在真正发生变更前压入快照并清空该表重做栈；`moveTable` 等纯布局变化不记录。
+- `beginUndoBatch(tableId)` 立即捕获一条快照，期间所有修改共用它；组件侧用 try/finally 配对 `endUndoBatch()`。
+- `undo`/`redo` 在撤销/重做栈间互换快照，并把目标表标记为内容脏。
+- `deleteTable` 移除该表的两条栈；`loadProject`/`newProject`/`reloadProject` 清空全部栈（外部 AI/CLI 改盘重载后不允许撤销到旧内存状态）。
+- 表的新建/删除本身不可撤销。
 
 脏状态行为：
 
@@ -445,12 +472,13 @@ Store action：
 
 ## 12. 快捷键
 
-快捷键实现在 `src/App.tsx`。
+快捷键实现在 `src/App.tsx`；行编辑窗口内的快捷键见第 5 节，键位解析纯函数在 `src/dataGrid/gridShortcuts.ts`。
 
 全局快捷键：
 
 - `Ctrl+S`：保存工程。
 - `Ctrl+O`：导入工程。
+- `Ctrl+Shift+O`：打开项目（选择工程文件在本窗口直接打开）。
 - `Ctrl+Shift+N`：新建空白工程。
 - `Ctrl+N`：新建表。
 - `S`：保存工程。
@@ -462,6 +490,11 @@ Store action：
 - `E`：下载当前选中表 JSON。
 - `M`：切换小地图。
 - `Delete`：删除当前选中表。
+- `?`：打开快捷键速查面板（`src/help/ShortcutCheatSheet.tsx`，应用菜单里也有同名入口；macOS 上 Ctrl 组合键对应 Cmd）。
+- `Ctrl+Z`：撤销（行编辑窗口内）。
+- `Ctrl+Shift+Z` / `Ctrl+Y`：重做（行编辑窗口内）。
+
+遮挡规则：存在任一未最小化的托管窗口（行编辑、设置、预览、对话框、MCP 日志等，由 `WindowManager` context 的 `windows` 列表判断）时，单键快捷键（含 `?`）不触发，避免焦点不在网格时误触删除表等动作；全部窗口最小化回任务栏后恢复。Ctrl/Cmd 组合键不受遮挡规则影响，浮窗内仍可 `Ctrl+S` 保存。设置面板或速查面板打开时全部全局快捷键暂停。
 
 事件目标在以下元素中时，不触发全局快捷键：
 
@@ -604,7 +637,6 @@ npm run tauri:dev
 
 不要把以下内容当作当前功能：
 
-- 撤销/重做。
 - CSV/Excel 导入。
 - 多人协作。
 - 插件系统。
@@ -618,11 +650,10 @@ npm run tauri:dev
 
 比较合理的下一步：
 
-- 基于 store patch 增加撤销/重做。
+- 扩大撤销范围（画布位置、表新建/删除）或改为跨表全局撤销栈。
 - 从 JSON 样例反推表结构。
 - 增加选中字符串单元格的批量查找替换。
 - 增加复制行功能。
-- 桌面模式增加导出目录配置。
 - 给导出和校验这些纯函数补测试。
 - 如果用户后续明确需要，再把某种语言的代码生成作为独立导出层。
 

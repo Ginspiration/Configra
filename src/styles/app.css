@@ -450,6 +450,67 @@ button:focus-visible {
   padding: 20px 24px 28px;
 }
 
+.shortcut-sheet {
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(560px, calc(100vw - 48px));
+  height: min(640px, calc(100vh - 48px));
+}
+
+.shortcut-sheet__body {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 22px;
+}
+
+.shortcut-sheet__group h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.shortcut-sheet__group ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-sheet__group li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 5px;
+  background: var(--panel-muted);
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.shortcut-sheet__group kbd {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.shortcut-sheet__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .settings-section {
   display: grid;
   gap: 14px;
@@ -680,6 +741,47 @@ button:focus-visible {
 .settings-connection > div {
   display: grid;
   gap: 4px;
+}
+
+.settings-publish-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.settings-publish-path {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  word-break: break-all;
+}
+
+.settings-publish-path.is-empty {
+  font-style: italic;
+}
+
+/* ---- 保存自动发布的顶部浮动提示：浮于所有窗口之上，不拦截鼠标 ---- */
+.publish-toast {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 2147483647;
+  transform: translate(-50%, -8px);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--hover-bg);
+  box-shadow: 0 8px 22px rgb(15 23 42 / 18%);
+  color: var(--accent-dark);
+  padding: 4px 14px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.publish-toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .mcp-log-window {

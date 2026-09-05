@@ -17,6 +17,14 @@ import {
 
 export type DirtyScope = 'none' | 'layout' | 'content';
 
+/** 撤销快照覆盖的表内容；position 属于画布布局，不参与撤销。 */
+export type TableSnapshot = Pick<
+  ConfigTable,
+  'name' | 'remark' | 'columns' | 'rows' | 'identity'
+>;
+
+export type UndoEntry = { snapshot: TableSnapshot };
+
 type EditorStore = {
   project: ProjectFile;
   selectedTableId?: string;
@@ -24,6 +32,10 @@ type EditorStore = {
   dirtyScope: DirtyScope;
   /** 有未保存内容修改的表 id（按修改顺序去重）；纯布局修改不记录。 */
   dirtyTableIds: string[];
+  /** 每张表的撤销栈：修改前快照，栈顶为最近一次。 */
+  undoStacks: Record<string, UndoEntry[]>;
+  /** 每张表的重做栈：undo 时捕获的“改后”快照。 */
+  redoStacks: Record<string, UndoEntry[]>;
 
   selectTable(tableId: string): void;
   addTable(position?: GraphPosition): string;
@@ -44,6 +56,12 @@ type EditorStore = {
   deleteRow(tableId: string, rowId: string): void;
   deleteRows(tableId: string, rowIds: string[]): void;
   appendRows(tableId: string, rows: ConfigRow[], replaceExisting?: boolean): void;
+
+  /** 开启撤销批量事务：捕获一次快照，期间所有修改合并为一条撤销记录。 */
+  beginUndoBatch(tableId: string): void;
+  endUndoBatch(): void;
+  undo(tableId: string): void;
+  redo(tableId: string): void;
 
   loadProject(project: ProjectFile): void;
   reloadProject(project: ProjectFile, preserveLayout?: boolean): void;
@@ -72,12 +90,57 @@ const markDirty = (reason: string, currentScope: DirtyScope, nextScope: DirtySco
 const mergeDirtyTableIds = (current: string[], tableId: string) =>
   current.includes(tableId) ? current : [...current, tableId];
 
+const UNDO_STACK_LIMIT = 50;
+
+/** 批量撤销事务标记：begin/end 之间的修改共用 begin 时捕获的那条快照。 */
+const undoBatch = { active: false };
+
+const snapshotTable = (table: ConfigTable): TableSnapshot =>
+  structuredClone({
+    name: table.name,
+    remark: table.remark,
+    columns: table.columns,
+    rows: table.rows,
+    identity: table.identity,
+  });
+
+/** 修改前对目标表做快照，返回需要合并进本次 set 的撤销栈增量；无表或批量事务中时返回空。 */
+const captureUndo = (
+  state: Pick<EditorStore, 'project' | 'undoStacks' | 'redoStacks'>,
+  tableId: string,
+): Partial<Pick<EditorStore, 'undoStacks' | 'redoStacks'>> => {
+  if (undoBatch.active) return {};
+
+  const table = state.project.tables.find((item) => item.id === tableId);
+  if (!table) return {};
+
+  const undoStack = [...(state.undoStacks[tableId] ?? []), { snapshot: snapshotTable(table) }].slice(
+    -UNDO_STACK_LIMIT,
+  );
+
+  return {
+    undoStacks: { ...state.undoStacks, [tableId]: undoStack },
+    redoStacks: { ...state.redoStacks, [tableId]: [] },
+  };
+};
+
+const dropTableStacks = (
+  stacks: Record<string, UndoEntry[]>,
+  tableId: string,
+): Record<string, UndoEntry[]> => {
+  if (!(tableId in stacks)) return stacks;
+  const { [tableId]: _removed, ...rest } = stacks;
+  return rest;
+};
+
 export const useEditorStore = create<EditorStore>((set) => ({
   project: initialProject,
   selectedTableId: initialProject.tables[0]?.id,
   isDirty: false,
   dirtyScope: 'none',
   dirtyTableIds: [],
+  undoStacks: {},
+  redoStacks: {},
 
   selectTable: (tableId) => set({ selectedTableId: tableId }),
 
@@ -120,11 +183,14 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
       if (!updated) return state;
 
+      const touchesContent = Object.keys(patch).some((key) => key !== 'position');
+
       return {
         project: {
           ...state.project,
           tables,
         },
+        ...(touchesContent ? captureUndo(state, tableId) : {}),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateTable', state.dirtyScope),
       };
@@ -160,12 +226,15 @@ export const useEditorStore = create<EditorStore>((set) => ({
       return {
         project: { ...state.project, tables },
         selectedTableId,
+        undoStacks: dropTableStacks(state.undoStacks, tableId),
+        redoStacks: dropTableStacks(state.redoStacks, tableId),
         ...markDirty('deleteTable', state.dirtyScope),
       };
     }),
 
   addColumn: (tableId) =>
     set((state) => ({
+      ...captureUndo(state, tableId),
       project: {
         ...state.project,
         tables: state.project.tables.map((table) => {
@@ -225,6 +294,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        ...captureUndo(state, tableId),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateColumn', state.dirtyScope),
       };
@@ -260,6 +330,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        ...captureUndo(state, tableId),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('moveColumn', state.dirtyScope),
       };
@@ -267,6 +338,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
   deleteColumn: (tableId, columnId) =>
     set((state) => ({
+      ...captureUndo(state, tableId),
       project: {
         ...state.project,
         tables: state.project.tables.map((table) => {
@@ -292,6 +364,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
     let added = false;
 
     set((state) => ({
+      ...captureUndo(state, tableId),
       project: {
         ...state.project,
         tables: state.project.tables.map((table) => {
@@ -317,6 +390,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
     let inserted = false;
 
     set((state) => ({
+      ...captureUndo(state, tableId),
       project: {
         ...state.project,
         tables: state.project.tables.map((table) => {
@@ -368,6 +442,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        ...captureUndo(state, tableId),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('moveRow', state.dirtyScope),
       };
@@ -400,6 +475,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        ...captureUndo(state, tableId),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateCell', state.dirtyScope),
       };
@@ -407,6 +483,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
   deleteRow: (tableId, rowId) =>
     set((state) => ({
+      ...captureUndo(state, tableId),
       project: {
         ...state.project,
         tables: state.project.tables.map((table) =>
@@ -424,6 +501,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       const rowIdSet = new Set(rowIds);
 
       return {
+        ...captureUndo(state, tableId),
         project: {
           ...state.project,
           tables: state.project.tables.map((table) =>
@@ -468,8 +546,79 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.project,
           tables,
         },
+        ...captureUndo(state, tableId),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('appendRows', state.dirtyScope),
+      };
+    }),
+
+  beginUndoBatch: (tableId) => {
+    undoBatch.active = true;
+    set((state) => {
+      const table = state.project.tables.find((item) => item.id === tableId);
+      if (!table) return state;
+
+      const undoStack = [
+        ...(state.undoStacks[tableId] ?? []),
+        { snapshot: snapshotTable(table) },
+      ].slice(-UNDO_STACK_LIMIT);
+
+      return {
+        undoStacks: { ...state.undoStacks, [tableId]: undoStack },
+        redoStacks: { ...state.redoStacks, [tableId]: [] },
+      };
+    });
+  },
+
+  endUndoBatch: () => {
+    undoBatch.active = false;
+  },
+
+  undo: (tableId) =>
+    set((state) => {
+      const undoStack = state.undoStacks[tableId] ?? [];
+      const entry = undoStack[undoStack.length - 1];
+      const table = state.project.tables.find((item) => item.id === tableId);
+      if (!entry || !table) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables: state.project.tables.map((item) =>
+            item.id === tableId ? { ...item, ...entry.snapshot } : item,
+          ),
+        },
+        undoStacks: { ...state.undoStacks, [tableId]: undoStack.slice(0, -1) },
+        redoStacks: {
+          ...state.redoStacks,
+          [tableId]: [...(state.redoStacks[tableId] ?? []), { snapshot: snapshotTable(table) }],
+        },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
+        ...markDirty('undo', state.dirtyScope),
+      };
+    }),
+
+  redo: (tableId) =>
+    set((state) => {
+      const redoStack = state.redoStacks[tableId] ?? [];
+      const entry = redoStack[redoStack.length - 1];
+      const table = state.project.tables.find((item) => item.id === tableId);
+      if (!entry || !table) return state;
+
+      return {
+        project: {
+          ...state.project,
+          tables: state.project.tables.map((item) =>
+            item.id === tableId ? { ...item, ...entry.snapshot } : item,
+          ),
+        },
+        undoStacks: {
+          ...state.undoStacks,
+          [tableId]: [...(state.undoStacks[tableId] ?? []), { snapshot: snapshotTable(table) }],
+        },
+        redoStacks: { ...state.redoStacks, [tableId]: redoStack.slice(0, -1) },
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
+        ...markDirty('redo', state.dirtyScope),
       };
     }),
 
@@ -480,6 +629,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
       isDirty: false,
       dirtyScope: 'none',
       dirtyTableIds: [],
+      undoStacks: {},
+      redoStacks: {},
     }),
 
   reloadProject: (project, preserveLayout = false) =>
@@ -508,6 +659,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
         isDirty: hasUnsavedLayout,
         dirtyScope: hasUnsavedLayout ? 'layout' : 'none',
         dirtyTableIds: [],
+        undoStacks: {},
+        redoStacks: {},
       };
     }),
 
@@ -520,5 +673,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       isDirty: false,
       dirtyScope: 'none',
       dirtyTableIds: [],
+      undoStacks: {},
+      redoStacks: {},
     }),
 }));

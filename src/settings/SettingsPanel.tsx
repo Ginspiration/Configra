@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { McpStatus } from '../file/desktopProjectFile';
+import type { PublishSettings } from './publishSettings';
 import WindowFrame from '../window/WindowFrame';
 import {
   languageLabels,
@@ -8,12 +9,15 @@ import {
 } from '../i18n';
 import type { ThemePreference } from '../theme';
 
+type SettingsCategory = 'interface' | 'publish' | 'mcp';
+
 type SettingsPanelProps = {
   open: boolean;
   language: Language;
   themePreference: ThemePreference;
   showMiniMap: boolean;
   desktopAvailable: boolean;
+  publishSettings: PublishSettings;
   mcpBusy: boolean;
   mcpStatus?: McpStatus;
   showMcpLog: boolean;
@@ -21,6 +25,10 @@ type SettingsPanelProps = {
   onLanguageChange(language: Language): void;
   onThemePreferenceChange(themePreference: ThemePreference): void;
   onMiniMapChange(show: boolean): void;
+  onPublishEnabledChange(enabled: boolean): void | Promise<void>;
+  onPublishDirectoryPick(): void | Promise<void>;
+  onPublishDirectoryClear(): void;
+  onPublishNow(): void | Promise<void>;
   onMcpEnabledChange(enabled: boolean): void;
   onMcpRestart(): void;
   onMcpPortChange(port: number): Promise<boolean>;
@@ -37,6 +45,7 @@ export default function SettingsPanel({
   themePreference,
   showMiniMap,
   desktopAvailable,
+  publishSettings,
   mcpBusy,
   mcpStatus,
   showMcpLog,
@@ -44,6 +53,10 @@ export default function SettingsPanel({
   onLanguageChange,
   onThemePreferenceChange,
   onMiniMapChange,
+  onPublishEnabledChange,
+  onPublishDirectoryPick,
+  onPublishDirectoryClear,
+  onPublishNow,
   onMcpEnabledChange,
   onMcpRestart,
   onMcpPortChange,
@@ -53,7 +66,7 @@ export default function SettingsPanel({
   onCopyMcpAddress,
   t,
 }: SettingsPanelProps) {
-  const [activeCategory, setActiveCategory] = useState<'interface' | 'mcp'>('interface');
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('interface');
   const [mcpPortInput, setMcpPortInput] = useState('');
   const [mcpPortDirty, setMcpPortDirty] = useState(false);
 
@@ -118,6 +131,14 @@ export default function SettingsPanel({
             >
               <strong>{t('settingsInterface')}</strong>
               <span>{t('settingsInterfaceNavDescription')}</span>
+            </button>
+            <button
+              type="button"
+              className={activeCategory === 'publish' ? 'is-active' : ''}
+              onClick={() => setActiveCategory('publish')}
+            >
+              <strong>{t('settingsPublish')}</strong>
+              <span>{t('settingsPublishNavDescription')}</span>
             </button>
             <button
               type="button"
@@ -186,6 +207,80 @@ export default function SettingsPanel({
                       </option>
                     ))}
                   </select>
+                </div>
+              </section>
+            ) : activeCategory === 'publish' ? (
+              <section className="settings-section">
+                <div className="settings-section__heading">
+                  <h3>{t('settingsPublish')}</h3>
+                  <p>{t('settingsPublishDescription')}</p>
+                </div>
+
+                {!desktopAvailable ? (
+                  <div className="settings-notice">{t('publishDesktopOnly')}</div>
+                ) : null}
+
+                <div className="settings-row">
+                  <div className="settings-row__copy">
+                    <strong>{t('autoPublish')}</strong>
+                    <span>{t('autoPublishDescription')}</span>
+                  </div>
+                  <label className="settings-switch">
+                    <input
+                      type="checkbox"
+                      checked={publishSettings.enabled}
+                      disabled={!desktopAvailable}
+                      onChange={(event) => {
+                        void onPublishEnabledChange(event.target.checked);
+                      }}
+                    />
+                    <span aria-hidden="true" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row__copy">
+                    <strong>{t('publishDirectory')}</strong>
+                    <span
+                      className={`settings-publish-path ${publishSettings.directory ? '' : 'is-empty'}`}
+                      title={publishSettings.directory ?? undefined}
+                    >
+                      {publishSettings.directory || t('publishDirectoryNotSet')}
+                    </span>
+                  </div>
+                  <div className="settings-publish-actions">
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={!desktopAvailable}
+                      onClick={() => void onPublishDirectoryPick()}
+                    >
+                      {t('publishDirectoryPick')}
+                    </button>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={!desktopAvailable || !publishSettings.directory}
+                      onClick={onPublishDirectoryClear}
+                    >
+                      {t('publishDirectoryClear')}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-row">
+                  <div className="settings-row__copy">
+                    <strong>{t('publishNow')}</strong>
+                    <span>{t('publishNowDescription')}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="button"
+                    disabled={!desktopAvailable || !publishSettings.directory}
+                    onClick={() => void onPublishNow()}
+                  >
+                    {t('publishNow')}
+                  </button>
                 </div>
               </section>
             ) : (

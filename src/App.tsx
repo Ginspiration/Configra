@@ -18,6 +18,7 @@ import ImportReportDialog from './import/ImportReportDialog';
 import TableImportDialog from './import/TableImportDialog';
 import McpLogWindow from './mcp/McpLogWindow';
 import SettingsPanel from './settings/SettingsPanel';
+import ShortcutCheatSheet from './help/ShortcutCheatSheet';
 import StartupScreen from './startup/StartupScreen';
 import { useEditorStore } from './store/editorStore';
 import { validateProject } from './validation/validateProject';
@@ -35,6 +36,7 @@ import {
   DesktopExportFileError,
   exportDesktopFiles,
 } from './export/desktopExport';
+import { publishProjectFiles, type PublishResult } from './export/publishProject';
 import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition, ProjectFile } from './model/types';
 import {
@@ -69,7 +71,12 @@ import {
   writeProjectFileText,
   writeTextFile,
 } from './file/desktopProjectFile';
-import { translate, type Language } from './i18n';
+import { translate, type Language, type Translator } from './i18n';
+import {
+  loadPublishSettings,
+  savePublishSettings,
+  type PublishSettings,
+} from './settings/publishSettings';
 import { useWindowManager } from './window/WindowManager';
 import {
   applyTheme,
@@ -176,6 +183,19 @@ const browserDirectoryFileExists = async (directory: BrowserDirectoryHandle, fil
   }
 };
 
+const publishResultStatus = (t: Translator, result: PublishResult, directory: string) => {
+  switch (result.status) {
+    case 'published':
+      return t('publishedFiles', { count: result.count, directory });
+    case 'write-failed':
+      return t('exportFileFailed', { name: result.fileName, error: result.error });
+    case 'verify-failed':
+      return t('exportVerificationFailed', { name: result.fileName });
+    default:
+      return t('publishFailed', { error: result.error });
+  }
+};
+
 export default function App() {
   const project = useEditorStore((state) => state.project);
   const selectedTableId = useEditorStore((state) => state.selectedTableId);
@@ -192,12 +212,17 @@ export default function App() {
   const markClean = useEditorStore((state) => state.markClean);
   const newProject = useEditorStore((state) => state.newProject);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 隐藏文件输入框复用于导入与打开项目；click 前设置本次用途。
+  const fileInputModeRef = useRef<'import' | 'open'>('import');
   const [language, setLanguage] = useState<Language>('zh');
   const [themePreference, setThemePreference] = useState<ThemePreference>(getThemePreference);
-  const { restore: restoreWindow } = useWindowManager();
+  const { restore: restoreWindow, windows: managedWindows } = useWindowManager();
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(getThemePreference()));
   const [showMiniMap, setShowMiniMap] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [publishSettings, setPublishSettings] = useState<PublishSettings>(loadPublishSettings);
+  const [publishToastVisible, setPublishToastVisible] = useState(false);
   const [showAppMenu, setShowAppMenu] = useState(false);
   const [importPending, setImportPending] = useState<ImportPending>();
   const [tableImportTableId, setTableImportTableId] = useState<string>();
@@ -231,6 +256,8 @@ export default function App() {
   const t = useMemo(() => translate.bind(null, language), [language]);
   const isDirtyRef = useRef(false);
   const dirtyScopeRef = useRef(dirtyScope);
+  const publishSettingsRef = useRef(publishSettings);
+  const publishToastTimerRef = useRef<number>();
   const mcpFullAccessRef = useRef(false);
   const allowCloseRef = useRef(false);
   const closePromptOpenRef = useRef(false);
@@ -254,6 +281,8 @@ export default function App() {
       // Keep resizing available even if localStorage is unavailable.
     }
   }, [tableListWidth]);
+
+  useEffect(() => () => window.clearTimeout(publishToastTimerRef.current), []);
 
   const handleTableListResizeStart = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -342,6 +371,29 @@ export default function App() {
     [loadProject, t],
   );
 
+  const showPublishToast = useCallback(() => {
+    setPublishToastVisible(true);
+    window.clearTimeout(publishToastTimerRef.current);
+    publishToastTimerRef.current = window.setTimeout(() => setPublishToastVisible(false), 2600);
+  }, []);
+
+  // 保存成功后按设置静默发布到固定目录；返回要展示的状态文案，未启用时返回 undefined。
+  const publishAfterSave = useCallback(
+    async (savedProject: ProjectFile) => {
+      const { enabled, directory } = publishSettingsRef.current;
+      if (!enabled || !directory) return undefined;
+
+      const result = await publishProjectFiles(directory, savedProject, {
+        fileExists,
+        writeTextFile,
+        readTextFile,
+      });
+      if (result.status === 'published') showPublishToast();
+      return publishResultStatus(t, result, directory);
+    },
+    [showPublishToast, t],
+  );
+
   const saveProject = useCallback(async () => {
     if (!isDesktopRuntime()) {
       downloadProjectFile(project);
@@ -363,7 +415,9 @@ export default function App() {
       await writeProjectFileText(nextPath, JSON.stringify(project, null, 2));
       setProjectPath(nextPath);
       markClean();
-      setStatus(`Saved ${nextPath.split(/[\\/]/).pop() ?? nextPath}`);
+      const savedLabel = `Saved ${nextPath.split(/[\\/]/).pop() ?? nextPath}`;
+      const publishLabel = await publishAfterSave(project);
+      setStatus(publishLabel ? `${savedLabel} · ${publishLabel}` : savedLabel);
       return true;
     } catch (error) {
       if (claimedFirstSavePath) {
@@ -372,7 +426,7 @@ export default function App() {
       setStatus(error instanceof Error ? error.message : String(error));
       return false;
     }
-  }, [markClean, project, projectPath, projectSessionId, t]);
+  }, [markClean, project, projectPath, projectSessionId, publishAfterSave, t]);
 
   useEffect(() => {
     saveProjectRef.current = saveProject;
@@ -447,6 +501,33 @@ export default function App() {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }, [confirmReplaceProject, t]);
+
+  // 打开项目：选中的工程文件直接作为当前工程在本窗口打开，不经过导入报告。
+  const openDesktopProjectFile = useCallback(async () => {
+    try {
+      if (!(await confirmReplaceProject(t('unsavedChangesOpenMessage')))) return;
+
+      const selected = await pickProjectFileText(t('openProject'));
+      if (!selected) return;
+      const parsed = parseProjectFileText(selected.text, t);
+      if (!parsed.ok) {
+        setStatus(parsed.error);
+        return;
+      }
+      if (!(await claimProjectWindow(windowLabelRef.current, selected.path))) {
+        setStatus(t('projectAlreadyOpen'));
+        return;
+      }
+      loadProject(parsed.project);
+      setProjectPath(selected.path);
+      setOpenGridWindows([]);
+      setShowAppMenu(false);
+      setStatus(t('openedProject', { name: selected.name }));
+      void rememberRecentProjectPath(selected.path);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }, [confirmReplaceProject, loadProject, t]);
 
   const confirmImport = useCallback(
     (candidate: ProjectFile) => {
@@ -533,10 +614,25 @@ export default function App() {
 
     void (async () => {
       if (await confirmReplaceProject(t('unsavedChangesImportMessage'))) {
+        fileInputModeRef.current = 'import';
         fileInputRef.current?.click();
       }
     })();
   }, [confirmReplaceProject, importDesktopProjectFile, t]);
+
+  const triggerOpenProject = useCallback(() => {
+    if (isDesktopRuntime()) {
+      void openDesktopProjectFile();
+      return;
+    }
+
+    void (async () => {
+      if (await confirmReplaceProject(t('unsavedChangesOpenMessage'))) {
+        fileInputModeRef.current = 'open';
+        fileInputRef.current?.click();
+      }
+    })();
+  }, [confirmReplaceProject, openDesktopProjectFile, t]);
 
   const copyTableJsonToClipboard = useCallback(async (tableId = selectedTable?.id) => {
     if (!tableId) return;
@@ -688,6 +784,61 @@ export default function App() {
     }
   }, [confirmOverwriteExport, t]);
 
+  const updatePublishSettings = useCallback((next: PublishSettings) => {
+    publishSettingsRef.current = next;
+    savePublishSettings(next);
+    setPublishSettings(next);
+  }, []);
+
+  const changePublishEnabled = useCallback(
+    async (enabled: boolean) => {
+      const current = publishSettingsRef.current;
+      if (!enabled) {
+        updatePublishSettings({ enabled: false, directory: current.directory });
+        return;
+      }
+      if (current.directory) {
+        updatePublishSettings({ enabled: true, directory: current.directory });
+        return;
+      }
+      // 开启自动发布但还没有目录时先选择目录；取消选择则保持关闭。
+      const directory = await pickExportDirectoryPath();
+      if (!directory) return;
+      updatePublishSettings({ enabled: true, directory });
+    },
+    [updatePublishSettings],
+  );
+
+  const choosePublishDirectory = useCallback(async () => {
+    const directory = await pickExportDirectoryPath();
+    if (!directory) return;
+    updatePublishSettings({ ...publishSettingsRef.current, directory });
+    setStatus(t('publishDirectoryUpdated', { directory }));
+  }, [t, updatePublishSettings]);
+
+  const clearPublishDirectory = useCallback(() => {
+    updatePublishSettings({ enabled: false });
+    setStatus(t('publishDirectoryCleared'));
+  }, [t, updatePublishSettings]);
+
+  const publishCurrentProject = useCallback(async () => {
+    const { directory } = publishSettingsRef.current;
+    if (!directory || exportingRef.current) return;
+    exportingRef.current = true;
+    setIsExporting(true);
+    try {
+      const result = await publishProjectFiles(
+        directory,
+        useEditorStore.getState().project,
+        { fileExists, writeTextFile, readTextFile },
+      );
+      setStatus(publishResultStatus(t, result, directory));
+    } finally {
+      exportingRef.current = false;
+      setIsExporting(false);
+    }
+  }, [t]);
+
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
   }, [addColumn, selectedTable]);
@@ -783,6 +934,13 @@ export default function App() {
     const parsed = parseProjectFileText(text, t);
     if (!parsed.ok) {
       setStatus(parsed.error);
+      return;
+    }
+    if (fileInputModeRef.current === 'open') {
+      loadProject(parsed.project);
+      setProjectPath(undefined);
+      setOpenGridWindows([]);
+      setStatus(t('openedProject', { name: file.name }));
       return;
     }
     setImportPending({ project: parsed.project, name: file.name });
@@ -900,6 +1058,12 @@ export default function App() {
         shortcut: 'Ctrl+Shift+N',
         onSelect: createNewProject,
       },
+      {
+        id: 'open-project',
+        label: t('openProject'),
+        shortcut: 'Ctrl+Shift+O',
+        onSelect: triggerOpenProject,
+      },
       { id: 'app-menu-separator-file', type: 'separator' },
       {
         id: 'save-project',
@@ -943,6 +1107,12 @@ export default function App() {
       },
       { id: 'app-menu-separator-settings', type: 'separator' },
       {
+        id: 'shortcut-help',
+        label: t('shortcutHelp'),
+        shortcut: '?',
+        onSelect: () => setShowShortcuts(true),
+      },
+      {
         id: 'open-settings',
         label: t('settings'),
         onSelect: () => setShowSettings(true),
@@ -958,6 +1128,7 @@ export default function App() {
       saveProject,
       t,
       triggerImportProject,
+      triggerOpenProject,
     ],
   );
 
@@ -1182,9 +1353,13 @@ export default function App() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return;
       if (showSettings) return;
+      if (showShortcuts) return;
 
       const key = event.key.toLowerCase();
       const commandKey = event.ctrlKey || event.metaKey;
+      // 主界面被未最小化的浮窗（行编辑、设置、对话框等）遮挡时，单键快捷键让位，
+      // 避免焦点不在网格时误触删除表、打开行编辑器等动作；组合键不受影响。
+      const mainWindowBlocked = managedWindows.some((window) => !window.minimized);
 
       if (commandKey && event.altKey && !event.shiftKey && key === 'o' && isDesktopRuntime()) {
         event.preventDefault();
@@ -1198,6 +1373,13 @@ export default function App() {
           event.preventDefault();
           setShowAppMenu(false);
           void createNewProject();
+          return;
+        }
+
+        if (key === 'o' && event.shiftKey) {
+          event.preventDefault();
+          setShowAppMenu(false);
+          triggerOpenProject();
           return;
         }
 
@@ -1218,7 +1400,14 @@ export default function App() {
         return;
       }
 
-      if (commandKey || event.altKey || event.shiftKey || isEditableTarget(event.target)) {
+      if (key === '?' && !commandKey && !event.altKey) {
+        if (isEditableTarget(event.target) || mainWindowBlocked) return;
+        event.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
+
+      if (commandKey || event.altKey || event.shiftKey || isEditableTarget(event.target) || mainWindowBlocked) {
         return;
       }
 
@@ -1252,11 +1441,14 @@ export default function App() {
     createNewProject,
     deleteTableById,
     downloadTableJsonFile,
+    managedWindows,
     openDesktopProjectInNewWindow,
     openRowsModal,
     saveProject,
     showSettings,
+    showShortcuts,
     triggerImportProject,
+    triggerOpenProject,
   ]);
 
   // 桌面模式下拦截浏览器快捷键（F5/Ctrl+R 刷新、Ctrl+P 打印、Ctrl+U 查看源码、
@@ -1551,6 +1743,7 @@ export default function App() {
         themePreference={themePreference}
         showMiniMap={showMiniMap}
         desktopAvailable={isDesktopRuntime()}
+        publishSettings={publishSettings}
         mcpBusy={mcpBusy}
         mcpStatus={mcpStatus}
         showMcpLog={mcpLogVisible}
@@ -1558,6 +1751,10 @@ export default function App() {
         onLanguageChange={setLanguage}
         onThemePreferenceChange={setThemePreference}
         onMiniMapChange={setShowMiniMap}
+        onPublishEnabledChange={changePublishEnabled}
+        onPublishDirectoryPick={choosePublishDirectory}
+        onPublishDirectoryClear={clearPublishDirectory}
+        onPublishNow={publishCurrentProject}
         onMcpEnabledChange={changeMcpEnabled}
         onMcpRestart={restartMcpService}
         onMcpPortChange={changeMcpPort}
@@ -1565,6 +1762,12 @@ export default function App() {
         onMcpFullAccessChange={changeMcpFullAccess}
         onMcpLogVisibilityChange={setMcpLogVisible}
         onCopyMcpAddress={copyMcpAddress}
+        t={t}
+      />
+
+      <ShortcutCheatSheet
+        open={showShortcuts}
+        onClose={() => setShowShortcuts(false)}
         t={t}
       />
 
@@ -1615,6 +1818,10 @@ export default function App() {
           onClose={() => setMenu(undefined)}
         />
       ) : null}
+
+      <div className={`publish-toast ${publishToastVisible ? 'is-visible' : ''}`} role="status">
+        {t('autoPublishToast')}
+      </div>
     </div>
   );
 }

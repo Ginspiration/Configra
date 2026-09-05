@@ -26,9 +26,11 @@ import { formatRefOptionLabel } from '../model/schemaUtils';
 import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
 import WindowFrame from '../window/WindowFrame';
+import { useWindowManager } from '../window/WindowManager';
 import TablePreviewModal from './TablePreviewModal';
 import { filterChoiceOptions, type ChoiceOption } from './choiceSearch';
 import { referenceValueKey, resolveReferenceTarget } from './referenceNavigation';
+import { resolveGridShortcut } from './gridShortcuts';
 import {
   coerceGridValue,
   computeFillPatternEdits,
@@ -109,6 +111,11 @@ type PasteHandler = (target: Item, values: readonly (readonly string[])[]) => bo
 /** Glide DataGrid 的行拖拽回调未包含在官方 Props 类型中，但运行时支持。 */
 type RowMoveProps = {
   onRowMoved: (startIndex: number, endIndex: number) => void;
+};
+
+const isEditableTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 };
 
 const columnRemark = (column: ConfigColumn) => column.remark?.trim() ?? '';
@@ -494,14 +501,25 @@ export default function DataGridModal({
   onOpenTable,
 }: DataGridModalProps) {
   const isDarkTheme = theme === 'dark';
+  const { isFront } = useWindowManager();
   const addRow = useEditorStore((state) => state.addRow);
   const insertRow = useEditorStore((state) => state.insertRow);
   const moveRow = useEditorStore((state) => state.moveRow);
   const deleteRows = useEditorStore((state) => state.deleteRows);
   const updateColumn = useEditorStore((state) => state.updateColumn);
   const updateCell = useEditorStore((state) => state.updateCell);
+  const undoTable = useEditorStore((state) => state.undo);
+  const redoTable = useEditorStore((state) => state.redo);
+  const beginUndoBatch = useEditorStore((state) => state.beginUndoBatch);
+  const endUndoBatch = useEditorStore((state) => state.endUndoBatch);
   const isTableDirty = useEditorStore((state) =>
     table ? state.dirtyTableIds.includes(table.id) : false,
+  );
+  const undoDepth = useEditorStore((state) =>
+    table ? state.undoStacks[table.id]?.length ?? 0 : 0,
+  );
+  const redoDepth = useEditorStore((state) =>
+    table ? state.redoStacks[table.id]?.length ?? 0 : 0,
   );
   const gridRef = useRef<DataEditorRef>(null);
   const handledFocusSequenceRef = useRef<number>();
@@ -558,6 +576,48 @@ export default function DataGridModal({
     },
     [],
   );
+
+  // Esc 关闭当前行编辑窗口；单元格编辑（Glide/ChoiceEditor 自行消费）、右键菜单、
+  // 备注编辑和表格预览等叠层优先处理 Esc，且仅在本窗口处于前台时整体关闭。
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.repeat || event.defaultPrevented) return;
+      if (cellMenu || headerMenu || remarkEditor || showTablePreview) return;
+      if (isEditableTarget(event.target)) return;
+      if (windowId && !isFront(windowId)) return;
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [cellMenu, headerMenu, isFront, onClose, open, remarkEditor, showTablePreview, windowId]);
+
+  // 撤销/重做：Glide 不消费 Ctrl+Z，画布聚焦时按键会冒泡到 window，统一在这里处理；
+  // 焦点在输入框时让位给浏览器原生文本撤销，且仅本窗口处于前台时生效。
+  useEffect(() => {
+    if (!open || !table) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.defaultPrevented) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+
+      const key = event.key.toLowerCase();
+      const isUndo = key === 'z' && !event.shiftKey;
+      const isRedo = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey);
+      if (!isUndo && !isRedo) return;
+      if (isEditableTarget(event.target)) return;
+      if (windowId && !isFront(windowId)) return;
+
+      event.preventDefault();
+      if (isUndo) undoTable(table.id);
+      else redoTable(table.id);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFront, open, redoTable, table, undoTable, windowId]);
 
   const columns = useMemo<readonly GridColumn[]>(
     () =>
@@ -688,21 +748,26 @@ export default function DataGridModal({
     (items: readonly GridEdit[]) => {
       if (!table) return;
 
-      const rowIds = ensureRowIdsForEdits(
-        table.rows.map((row) => row._rowId),
-        items,
-        () => addRow(table.id),
-      );
+      beginUndoBatch(table.id);
+      try {
+        const rowIds = ensureRowIdsForEdits(
+          table.rows.map((row) => row._rowId),
+          items,
+          () => addRow(table.id),
+        );
 
-      for (const item of items) {
-        const [col, rowIndex] = item.location;
-        const column = table.columns[col];
-        const rowId = rowIds[rowIndex];
-        if (!column || !rowId) continue;
-        updateCell(table.id, rowId, column.id, editedCellValue(column, item.value, project));
+        for (const item of items) {
+          const [col, rowIndex] = item.location;
+          const column = table.columns[col];
+          const rowId = rowIds[rowIndex];
+          if (!column || !rowId) continue;
+          updateCell(table.id, rowId, column.id, editedCellValue(column, item.value, project));
+        }
+      } finally {
+        endUndoBatch();
       }
     },
-    [addRow, project, table, updateCell],
+    [addRow, beginUndoBatch, endUndoBatch, project, table, updateCell],
   );
 
   const onCellEdited = useCallback<NonNullable<DataEditorProps['onCellEdited']>>(
@@ -759,6 +824,32 @@ export default function DataGridModal({
     [insertRow, table],
   );
 
+  // Ctrl/Cmd+Enter 在当前行下方插入行，Ctrl/Cmd+Shift+Enter 在上方插入行，
+  // Ctrl/Cmd+F 打开搜索；cancel() 阻止 Glide 的默认键绑定。
+  const onGridKeyDown = useCallback<NonNullable<DataEditorProps['onKeyDown']>>(
+    (event) => {
+      const action = resolveGridShortcut(event);
+      if (!action) return;
+
+      event.cancel();
+      if (action === 'open-search') {
+        setShowSearch(true);
+        return;
+      }
+
+      if (!table) return;
+      const currentRow = selection.current?.cell[1];
+      if (currentRow === undefined) {
+        addRowAtEnd();
+      } else if (action === 'insert-row-above') {
+        insertRowAt(currentRow);
+      } else {
+        insertRowAt(currentRow + 1);
+      }
+    },
+    [addRowAtEnd, insertRowAt, selection, table],
+  );
+
   const onRowMoved = useCallback<RowMoveProps['onRowMoved']>(
     (startIndex, endIndex) => {
       if (!table) return;
@@ -794,37 +885,42 @@ export default function DataGridModal({
     ([targetCol, targetRow], values) => {
       if (!table) return false;
 
-      const rowIds = [...table.rows.map((row) => row._rowId)];
-      const pasteValues = normalizePasteValues(values);
+      beginUndoBatch(table.id);
+      try {
+        const rowIds = [...table.rows.map((row) => row._rowId)];
+        const pasteValues = normalizePasteValues(values);
 
-      for (let rowOffset = 0; rowOffset < pasteValues.length; rowOffset += 1) {
-        const rowIndex = targetRow + rowOffset;
-        if (rowIndex < 0) continue;
+        for (let rowOffset = 0; rowOffset < pasteValues.length; rowOffset += 1) {
+          const rowIndex = targetRow + rowOffset;
+          if (rowIndex < 0) continue;
 
-        while (rowIds.length <= rowIndex) {
-          const rowId = addRow(table.id);
-          if (!rowId) return false;
-          rowIds.push(rowId);
+          while (rowIds.length <= rowIndex) {
+            const rowId = addRow(table.id);
+            if (!rowId) return false;
+            rowIds.push(rowId);
+          }
+
+          const rowId = rowIds[rowIndex];
+          const rowValues = pasteValues[rowOffset];
+
+          for (let colOffset = 0; colOffset < rowValues.length; colOffset += 1) {
+            const column = table.columns[targetCol + colOffset];
+            if (!column) continue;
+            updateCell(
+              table.id,
+              rowId,
+              column.id,
+              coerceGridValue(column, rowValues[colOffset], project),
+            );
+          }
         }
-
-        const rowId = rowIds[rowIndex];
-        const rowValues = pasteValues[rowOffset];
-
-        for (let colOffset = 0; colOffset < rowValues.length; colOffset += 1) {
-          const column = table.columns[targetCol + colOffset];
-          if (!column) continue;
-          updateCell(
-            table.id,
-            rowId,
-            column.id,
-            coerceGridValue(column, rowValues[colOffset], project),
-          );
-        }
+      } finally {
+        endUndoBatch();
       }
 
       return false;
     },
-    [addRow, project, table, updateCell],
+    [addRow, beginUndoBatch, endUndoBatch, project, table, updateCell],
   );
 
   const onFillPattern = useCallback<NonNullable<DataEditorProps['onFillPattern']>>(
@@ -833,41 +929,46 @@ export default function DataGridModal({
       event.preventDefault();
       if (!table) return;
 
-      const edits = computeFillPatternEdits(event.patternSource, event.fillDestination, {
-        getCellValue: (col, row) => table.rows[row]?.values[table.columns[col]?.id ?? ''],
-        getColumnMode: (col) => {
-          const column = table.columns[col];
-          return column ? fillValueModeForColumn(column) : 'copy';
-        },
-      });
+      beginUndoBatch(table.id);
+      try {
+        const edits = computeFillPatternEdits(event.patternSource, event.fillDestination, {
+          getCellValue: (col, row) => table.rows[row]?.values[table.columns[col]?.id ?? ''],
+          getColumnMode: (col) => {
+            const column = table.columns[col];
+            return column ? fillValueModeForColumn(column) : 'copy';
+          },
+        });
 
-      const existingRowCount = table.rows.length;
-      const applicableEdits = edits.filter((edit) => {
-        const column = table.columns[edit.col];
-        if (!column) return false;
-        // 拖过表尾的空白行时跳过空值，避免无意义地创建真实行。
-        if (edit.row >= existingRowCount) {
-          return edit.value !== '' && edit.value !== undefined && edit.value !== null;
+        const existingRowCount = table.rows.length;
+        const applicableEdits = edits.filter((edit) => {
+          const column = table.columns[edit.col];
+          if (!column) return false;
+          // 拖过表尾的空白行时跳过空值，避免无意义地创建真实行。
+          if (edit.row >= existingRowCount) {
+            return edit.value !== '' && edit.value !== undefined && edit.value !== null;
+          }
+          const current = table.rows[edit.row]?.values[column.id] ?? '';
+          return edit.value !== current;
+        });
+        if (applicableEdits.length === 0) return;
+
+        const rowIds = ensureRowIdsForEdits(
+          table.rows.map((row) => row._rowId),
+          applicableEdits.map((edit) => ({ location: [edit.col, edit.row] as Item })),
+          () => addRow(table.id),
+        );
+
+        for (const edit of applicableEdits) {
+          const column = table.columns[edit.col];
+          const rowId = rowIds[edit.row];
+          if (!column || !rowId) continue;
+          updateCell(table.id, rowId, column.id, edit.value);
         }
-        const current = table.rows[edit.row]?.values[column.id] ?? '';
-        return edit.value !== current;
-      });
-      if (applicableEdits.length === 0) return;
-
-      const rowIds = ensureRowIdsForEdits(
-        table.rows.map((row) => row._rowId),
-        applicableEdits.map((edit) => ({ location: [edit.col, edit.row] as Item })),
-        () => addRow(table.id),
-      );
-
-      for (const edit of applicableEdits) {
-        const column = table.columns[edit.col];
-        const rowId = rowIds[edit.row];
-        if (!column || !rowId) continue;
-        updateCell(table.id, rowId, column.id, edit.value);
+      } finally {
+        endUndoBatch();
       }
     },
-    [addRow, table, updateCell],
+    [addRow, beginUndoBatch, endUndoBatch, table, updateCell],
   );
 
   const onDelete = useCallback<NonNullable<DataEditorProps['onDelete']>>(
@@ -975,21 +1076,29 @@ export default function DataGridModal({
     setHeaderTooltip(undefined);
   }, [remarkEditor, table, updateColumn]);
 
-  const uppercaseCells = useCallback((cells: Item[]) => {
-    if (!table) return;
+  const uppercaseCells = useCallback(
+    (cells: Item[]) => {
+      if (!table) return;
 
-    for (const [colIndex, rowIndex] of cells) {
-      const column = table.columns[colIndex];
-      const row = table.rows[rowIndex];
-      if (!column || !row || column.type !== 'string') continue;
+      beginUndoBatch(table.id);
+      try {
+        for (const [colIndex, rowIndex] of cells) {
+          const column = table.columns[colIndex];
+          const row = table.rows[rowIndex];
+          if (!column || !row || column.type !== 'string') continue;
 
-      const value = row.values[column.id];
-      if (typeof value !== 'string') continue;
+          const value = row.values[column.id];
+          if (typeof value !== 'string') continue;
 
-      const nextValue = value.toUpperCase();
-      if (nextValue !== value) updateCell(table.id, row._rowId, column.id, nextValue);
-    }
-  }, [table, updateCell]);
+          const nextValue = value.toUpperCase();
+          if (nextValue !== value) updateCell(table.id, row._rowId, column.id, nextValue);
+        }
+      } finally {
+        endUndoBatch();
+      }
+    },
+    [beginUndoBatch, endUndoBatch, table, updateCell],
+  );
 
   const cellMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!table || !cellMenu) return [];
@@ -1087,11 +1196,13 @@ export default function DataGridModal({
       {
         id: 'insert-above',
         label: t('insertRowAbove'),
+        shortcut: 'Ctrl+Shift+Enter',
         onSelect: () => insertRowAt(cellMenu.rowIndex),
       },
       {
         id: 'insert-below',
         label: t('insertRowBelow'),
+        shortcut: 'Ctrl+Enter',
         onSelect: () => insertRowAt(cellMenu.rowIndex + 1),
       },
       {
@@ -1400,6 +1511,24 @@ export default function DataGridModal({
       }
       actions={
         <>
+          <button
+            type="button"
+            className="button"
+            disabled={undoDepth === 0}
+            onClick={() => undoTable(table.id)}
+            title={`${t('undo')} (Ctrl+Z)`}
+          >
+            {t('undo')}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={redoDepth === 0}
+            onClick={() => redoTable(table.id)}
+            title={`${t('redo')} (Ctrl+Y)`}
+          >
+            {t('redo')}
+          </button>
           <button type="button" className="button" onClick={() => setShowTablePreview(true)}>
             {t('tablePreview')}
           </button>
@@ -1445,6 +1574,7 @@ export default function DataGridModal({
               getCellContent={getCellContent}
               onCellEdited={onCellEdited}
               onCellsEdited={onCellsEdited}
+              onKeyDown={onGridKeyDown}
               onPaste={onPaste}
               onFillPattern={onFillPattern}
               onDelete={onDelete}
