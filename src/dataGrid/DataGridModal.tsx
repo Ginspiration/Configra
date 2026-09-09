@@ -522,6 +522,7 @@ export default function DataGridModal({
     table ? state.redoStacks[table.id]?.length ?? 0 : 0,
   );
   const gridRef = useRef<DataEditorRef>(null);
+  const gridWrapRef = useRef<HTMLDivElement | null>(null);
   const handledFocusSequenceRef = useRef<number>();
   const hoverTimeoutRef = useRef<number>();
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
@@ -536,6 +537,34 @@ export default function DataGridModal({
   const [cellFlash, setCellFlash] = useState<{ col: number; row: number; startedAt: number }>();
   const [cellFlashRatio, setCellFlashRatio] = useState(0);
   const gridRowCount = table ? table.rows.length + GHOST_ROW_COUNT : 0;
+
+  useEffect(() => {
+    // 触摸板横扫由浏览器原生滚动处理；鼠标横向滚轮走 WM_MOUSEHWHEEL，
+    // WebView2 下默认动作可能不生效，这里手动应用到 Glide 的滚动容器。
+    const wrap = gridWrapRef.current;
+    if (!wrap) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaX === 0 || event.deltaY !== 0 || event.defaultPrevented) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest('input, textarea, [contenteditable="true"]')) return;
+      const scroller = wrap.querySelector<HTMLDivElement>('.dvn-scroller');
+      if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
+      const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+      const delta =
+        event.deltaMode === 1
+          ? event.deltaX * 40
+          : event.deltaMode === 2
+            ? event.deltaX * scroller.clientHeight
+            : event.deltaX;
+      const before = scroller.scrollLeft;
+      scroller.scrollLeft = Math.min(maxScroll, Math.max(0, before + delta));
+      if (scroller.scrollLeft !== before) event.preventDefault();
+    };
+    wrap.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      wrap.removeEventListener('wheel', onWheel);
+    };
+  }, []);
 
   useEffect(() => {
     // StrictMode 会在开发模式重复执行挂载 effect；重置后需要允许 focusRequest 重新应用高亮。
@@ -1566,7 +1595,7 @@ export default function DataGridModal({
               </div>
             </section>
           </aside>
-          <div className="data-modal__grid">
+          <div className="data-modal__grid" ref={gridWrapRef}>
             <GlideDataEditor
               ref={gridRef}
               columns={columns}
