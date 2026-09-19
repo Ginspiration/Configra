@@ -522,7 +522,7 @@ export default function DataGridModal({
     table ? state.redoStacks[table.id]?.length ?? 0 : 0,
   );
   const gridRef = useRef<DataEditorRef>(null);
-  const gridWrapRef = useRef<HTMLDivElement | null>(null);
+  const [gridWrap, setGridWrap] = useState<HTMLDivElement | null>(null);
   const handledFocusSequenceRef = useRef<number>();
   const hoverTimeoutRef = useRef<number>();
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
@@ -541,8 +541,10 @@ export default function DataGridModal({
   useEffect(() => {
     // 触摸板横扫由浏览器原生滚动处理；鼠标横向滚轮走 WM_MOUSEHWHEEL，
     // WebView2 下默认动作可能不生效，这里手动应用到 Glide 的滚动容器。
-    const wrap = gridWrapRef.current;
-    if (!wrap) return;
+    // WindowFrame 最小化会卸载整个面板，恢复时重建网格 DOM，
+    // 因此监听器依赖当前网格元素，元素重建后重新绑定。
+    if (!gridWrap) return;
+    const wrap = gridWrap;
     const onWheel = (event: WheelEvent) => {
       if (event.deltaX === 0 || event.deltaY !== 0 || event.defaultPrevented) return;
       const target = event.target;
@@ -564,7 +566,7 @@ export default function DataGridModal({
     return () => {
       wrap.removeEventListener('wheel', onWheel);
     };
-  }, []);
+  }, [gridWrap]);
 
   useEffect(() => {
     // StrictMode 会在开发模式重复执行挂载 effect；重置后需要允许 focusRequest 重新应用高亮。
@@ -1595,7 +1597,7 @@ export default function DataGridModal({
               </div>
             </section>
           </aside>
-          <div className="data-modal__grid" ref={gridWrapRef}>
+          <div className="data-modal__grid" ref={setGridWrap}>
             <GlideDataEditor
               ref={gridRef}
               columns={columns}
