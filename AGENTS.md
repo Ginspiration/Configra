@@ -154,6 +154,12 @@ React Flow 画布行为：
 - 复制当前行或选中行 JSON。
 - 删除当前行或选中行。
 
+表头右键菜单：
+
+- 复制字段名。
+- 复制字段备注（无备注时禁用）。
+- 插入备注。
+
 除输入框、文本框、下拉框和可编辑控件外，原生浏览器右键菜单会被禁止。
 
 ## 5. 行数据编辑器细节
@@ -168,6 +174,9 @@ React Flow 画布行为：
 - 点击模态窗口遮罩（面板外）时：点到其他窗口的面板会把该窗口置顶（切换到它）；点到主界面区域时，设置/预览等可遮罩关闭的对话框关闭，其余窗口最小化回到主界面（任务栏可恢复）。
 - 底部任务栏横向排列所有打开/最小化的窗口，按钮过多时横向滑动；点击按钮按系统任务栏语义切换：最小化时恢复并置顶，被其他窗口遮挡时提升到前台，已在前台时最小化（窗口层叠顺序由 `WindowManager` 统一管理）。
 - 关闭按钮是 `X`。
+- 表头第一行显示字段名（过长时省略），第二行完整显示字段备注；备注按列宽自动换行，表头高度随最长备注动态增加，不再使用悬停 tooltip 或 `...` 截断。备注换行与表头高度计算是纯函数，位于 `src/dataGrid/gridHeader.ts`。
+- 表头由 canvas 绘制，不支持框选或直接编辑；字段名和备注通过表头右键菜单复制。
+- 复制动作统一走 `src/clipboard.ts`：优先使用隐藏 textarea + `execCommand`，以兼容 WebView2 的剪贴板权限限制，失败时回退到异步 Clipboard API。
 - 搜索使用 Glide 内置搜索，并会定位到匹配单元格；`Ctrl/Cmd+F` 会打开搜索浮层（通过 Glide 的 `onKeyDown` 回调拦截并 `cancel()` 接管）。
 - 行编辑窗口内的快捷键：`Ctrl/Cmd+Enter` 在当前行下方插入行、`Ctrl/Cmd+Shift+Enter` 在上方插入行（无选区时追加到末尾；复用右键菜单的插入/追加逻辑，插入选中并滚动定位）；`Esc` 关闭当前行编辑窗口（单元格编辑、右键菜单、备注编辑、表格预览等叠层优先消费 Esc，且仅本窗口处于前台时生效）。键位解析是纯函数，位于 `src/dataGrid/gridShortcuts.ts` 的 `resolveGridShortcut`。
 - 支持撤销/重做：标题栏提供撤销/重做按钮（随栈深禁用），快捷键为 `Ctrl/Cmd+Z` 与 `Ctrl/Cmd+Shift+Z` / `Ctrl/Cmd+Y`（焦点在输入框时让位给浏览器原生文本撤销）。实现是 store 内的按表快照栈，见第 11 节；粘贴、填充、多格编辑、全部大写等复合操作通过 `beginUndoBatch`/`endUndoBatch` 合并为一条记录。
@@ -532,13 +541,16 @@ Configra/
 |   `-- data-patch.schema.json
 |-- src/
 |   |-- App.tsx
+|   |-- clipboard.ts
 |   |-- cli/
 |   |   |-- cfg.test.ts
 |   |   `-- cfg.ts
 |   |-- contextMenu/
 |   |   `-- ContextMenu.tsx
 |   |-- dataGrid/
-|   |   `-- DataGridModal.tsx
+|   |   |-- DataGridModal.tsx
+|   |   |-- gridHeader.test.ts
+|   |   `-- gridHeader.ts
 |   |-- export/
 |   |   `-- exportTables.ts
 |   |-- file/

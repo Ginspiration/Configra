@@ -2039,23 +2039,6 @@ h3 {
   text-align: center;
 }
 
-.field-remark-tooltip {
-  position: fixed;
-  z-index: 55;
-  max-width: 320px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border: 1px solid var(--tooltip-line);
-  border-radius: 4px;
-  background: var(--tooltip-bg);
-  color: var(--tooltip-text);
-  padding: 7px 9px;
-  font-size: 12px;
-  line-height: 1.45;
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.24);
-  pointer-events: none;
-}
-
 .remark-editor-backdrop {
   position: fixed;
   inset: 0;

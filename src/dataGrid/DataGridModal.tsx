@@ -10,7 +10,6 @@ import {
   type DataEditorRef,
   type GridCell,
   type GridColumn,
-  type GridMouseEventArgs,
   type GridSelection,
   type HeaderClickedEventArgs,
   type Item,
@@ -22,6 +21,7 @@ import type { ConfigColumn, ConfigTable, ProjectFile, ValidationIssue } from '..
 import type { Translator } from '../i18n';
 import type { ResolvedTheme } from '../theme';
 import { useEditorStore } from '../store/editorStore';
+import { copyText } from '../clipboard';
 import { formatRefOptionLabel } from '../model/schemaUtils';
 import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
@@ -31,6 +31,7 @@ import TablePreviewModal from './TablePreviewModal';
 import { filterChoiceOptions, type ChoiceOption } from './choiceSearch';
 import { referenceValueKey, resolveReferenceTarget } from './referenceNavigation';
 import { resolveGridShortcut } from './gridShortcuts';
+import { HEADER_LAYOUT, headerHeightForRemarkLines, wrapText } from './gridHeader';
 import {
   coerceGridValue,
   computeFillPatternEdits,
@@ -81,6 +82,11 @@ type ChoiceCell = CustomCell<ChoiceCellData>;
 
 const GHOST_ROW_COUNT = 16;
 const DEFAULT_COLUMN_WIDTH = 120;
+const GRID_FONT_FAMILY =
+  'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const HEADER_REMARK_FONT = `italic 11px ${GRID_FONT_FAMILY}`;
+const HEADER_BADGE_WIDTH = 22;
+const HEADER_BADGE_GAP = 7;
 
 type CellMenuState = {
   x: number;
@@ -100,12 +106,6 @@ type RemarkEditorState = {
   draft: string;
 };
 
-type HeaderTooltipState = {
-  x: number;
-  y: number;
-  text: string;
-};
-
 type PasteHandler = (target: Item, values: readonly (readonly string[])[]) => boolean;
 
 /** Glide DataGrid 的行拖拽回调未包含在官方 Props 类型中，但运行时支持。 */
@@ -120,10 +120,22 @@ const isEditableTarget = (target: EventTarget | null) => {
 
 const columnRemark = (column: ConfigColumn) => column.remark?.trim() ?? '';
 
-const shortRemark = (remark: string) => {
-  const singleLine = remark.replace(/\s+/g, ' ').trim();
-  return singleLine.length > 18 ? `${singleLine.slice(0, 18)}...` : singleLine;
+/** 表头备注测量用的离屏 canvas；不参与渲染，仅用于预先计算表头高度。 */
+let headerMeasureContext: CanvasRenderingContext2D | null | undefined;
+
+const getHeaderMeasureContext = () => {
+  if (headerMeasureContext !== undefined) return headerMeasureContext;
+  headerMeasureContext =
+    typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  return headerMeasureContext;
 };
+
+/**
+ * 表头中留给备注的宽度。备注在标题下方单独占行，因此可以横跨主键徽标所在的右边缘；
+ * 徽标只占标题行，不会和下方备注重叠。各列宽按备注可用宽度计算，表头高度取最大值。
+ */
+const headerRemarkWidth = (columnWidth: number) =>
+  Math.max(0, columnWidth - HEADER_LAYOUT.paddingX * 2);
 
 const ellipsizeCanvasText = (
   ctx: CanvasRenderingContext2D,
@@ -524,7 +536,6 @@ export default function DataGridModal({
   const gridRef = useRef<DataEditorRef>(null);
   const [gridWrap, setGridWrap] = useState<HTMLDivElement | null>(null);
   const handledFocusSequenceRef = useRef<number>();
-  const hoverTimeoutRef = useRef<number>();
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [selection, setSelection] = useState<GridSelection>(emptySelection);
   const [showSearch, setShowSearch] = useState(false);
@@ -533,7 +544,6 @@ export default function DataGridModal({
   const [cellMenu, setCellMenu] = useState<CellMenuState>();
   const [headerMenu, setHeaderMenu] = useState<HeaderMenuState>();
   const [remarkEditor, setRemarkEditor] = useState<RemarkEditorState>();
-  const [headerTooltip, setHeaderTooltip] = useState<HeaderTooltipState>();
   const [cellFlash, setCellFlash] = useState<{ col: number; row: number; startedAt: number }>();
   const [cellFlashRatio, setCellFlashRatio] = useState(0);
   const gridRowCount = table ? table.rows.length + GHOST_ROW_COUNT : 0;
@@ -575,7 +585,6 @@ export default function DataGridModal({
     setCellMenu(undefined);
     setHeaderMenu(undefined);
     setRemarkEditor(undefined);
-    setHeaderTooltip(undefined);
     setShowSearch(false);
     setShowTablePreview(false);
     setSearchStatus('');
@@ -600,13 +609,6 @@ export default function DataGridModal({
 
     return () => window.clearTimeout(timer);
   }, [cellFlash]);
-
-  useEffect(
-    () => () => {
-      if (hoverTimeoutRef.current !== undefined) window.clearTimeout(hoverTimeoutRef.current);
-    },
-    [],
-  );
 
   // Esc 关闭当前行编辑窗口；单元格编辑（Glide/ChoiceEditor 自行消费）、右键菜单、
   // 备注编辑和表格预览等叠层优先处理 Esc，且仅在本窗口处于前台时整体关闭。
@@ -661,6 +663,34 @@ export default function DataGridModal({
       }) ?? [],
     [columnWidths, table],
   );
+
+  const headerHeight = useMemo(() => {
+    if (!table) return HEADER_LAYOUT.minHeight;
+
+    const ctx = getHeaderMeasureContext();
+    let maxRemarkLines = 0;
+
+    if (ctx) {
+      ctx.save();
+      ctx.font = HEADER_REMARK_FONT;
+    }
+
+    for (let index = 0; index < table.columns.length; index += 1) {
+      const column = table.columns[index];
+      const remark = columnRemark(column);
+      if (!remark) continue;
+
+      const columnWidth = columnWidths[column.id] ?? defaultColumnWidth(column);
+      const width = headerRemarkWidth(columnWidth);
+      const lineCount = ctx
+        ? wrapText(remark, width, (text) => ctx.measureText(text).width).length
+        : Math.ceil(remark.length / Math.max(1, Math.floor(width / 11)));
+      maxRemarkLines = Math.max(maxRemarkLines, lineCount);
+    }
+
+    if (ctx) ctx.restore();
+    return headerHeightForRemarkLines(maxRemarkLines);
+  }, [columnWidths, table]);
 
   const errorCells = useMemo(
     () =>
@@ -909,8 +939,20 @@ export default function DataGridModal({
       );
 
     if (rows.length === 0) return;
-    await navigator.clipboard.writeText(JSON.stringify(rows, null, 2));
+    await copyText(JSON.stringify(rows, null, 2));
   }, [table]);
+
+  // 表头文本由 canvas 绘制，无法像普通 HTML 文本一样框选；
+  // 通过表头右键菜单复制字段名/备注，同时保持表头只读，不提供单元格内编辑。
+  const copyFieldName = useCallback(async (column: ConfigColumn) => {
+    await copyText(column.name || column.id);
+  }, []);
+
+  const copyFieldRemark = useCallback(async (column: ConfigColumn) => {
+    const remark = columnRemark(column);
+    if (!remark) return;
+    await copyText(remark);
+  }, []);
 
   const onPaste = useCallback<PasteHandler>(
     ([targetCol, targetRow], values) => {
@@ -1051,7 +1093,6 @@ export default function DataGridModal({
   const openCellMenu = useCallback((cell: Item, event: CellClickedEventArgs) => {
     event.preventDefault();
     setHeaderMenu(undefined);
-    setHeaderTooltip(undefined);
     setCellMenu({
       colIndex: cell[0],
       rowIndex: cell[1],
@@ -1063,7 +1104,6 @@ export default function DataGridModal({
   const openHeaderMenu = useCallback((colIndex: number, event: HeaderClickedEventArgs) => {
     event.preventDefault();
     setCellMenu(undefined);
-    setHeaderTooltip(undefined);
     setHeaderMenu({
       colIndex,
       x: event.bounds.x + event.localEventX,
@@ -1071,40 +1111,12 @@ export default function DataGridModal({
     });
   }, []);
 
-  const onItemHovered = useCallback((args: GridMouseEventArgs) => {
-    if (hoverTimeoutRef.current !== undefined) {
-      window.clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = undefined;
-    }
-
-    if (args.kind !== 'header') {
-      setHeaderTooltip(undefined);
-      return;
-    }
-
-    const column = table?.columns[args.location[0]];
-    const remark = column ? columnRemark(column) : '';
-    if (!remark) {
-      setHeaderTooltip(undefined);
-      return;
-    }
-
-    hoverTimeoutRef.current = window.setTimeout(() => {
-      setHeaderTooltip({
-        x: args.bounds.x + 8,
-        y: args.bounds.y + args.bounds.height + 6,
-        text: remark,
-      });
-    }, 350);
-  }, [table]);
-
   const saveRemark = useCallback(() => {
     if (!table || !remarkEditor) return;
 
     const remark = remarkEditor.draft.trim();
     updateColumn(table.id, remarkEditor.columnId, { remark: remark || undefined });
     setRemarkEditor(undefined);
-    setHeaderTooltip(undefined);
   }, [remarkEditor, table, updateColumn]);
 
   const uppercaseCells = useCallback(
@@ -1300,6 +1312,18 @@ export default function DataGridModal({
         label: column.name || column.id,
       },
       {
+        id: 'copy-field-name',
+        label: t('copyFieldName'),
+        onSelect: () => copyFieldName(column),
+      },
+      {
+        id: 'copy-field-remark',
+        label: t('copyFieldRemark'),
+        disabled: !columnRemark(column),
+        onSelect: () => copyFieldRemark(column),
+      },
+      { id: 'header-separator', type: 'separator' },
+      {
         id: 'insert-remark',
         label: t('insertRemark'),
         onSelect: () => {
@@ -1307,7 +1331,7 @@ export default function DataGridModal({
         },
       },
     ];
-  }, [headerMenu, t, table]);
+  }, [copyFieldName, copyFieldRemark, headerMenu, t, table]);
 
   const primaryColumnIndex = useMemo(
     () => table?.columns.findIndex((column) => column.primary) ?? -1,
@@ -1396,67 +1420,74 @@ export default function DataGridModal({
       const remark = columnRemark(column);
       drawContent();
 
-      const paddingLeft = 8;
-      const paddingRight = 8;
-      const centerY = args.rect.y + args.rect.height / 2;
-      const title = column.name || column.id;
-      const remarkText = remark ? shortRemark(remark) : '';
-      const badgeWidth = column.primary ? 22 : 0;
-      const badgeGap = column.primary ? 7 : 0;
+      const paddingLeft = HEADER_LAYOUT.paddingX;
+      const paddingRight = HEADER_LAYOUT.paddingX;
+      const badgeWidth = column.primary ? HEADER_BADGE_WIDTH : 0;
+      const badgeGap = column.primary ? HEADER_BADGE_GAP : 0;
       const contentWidth = args.rect.width - paddingLeft - paddingRight;
-      const textRight = args.rect.x + args.rect.width - paddingRight - badgeWidth - badgeGap;
+      const contentRight = args.rect.x + args.rect.width - paddingRight;
+      const titleRight = contentRight - badgeWidth - badgeGap;
       const textLeft = args.rect.x + paddingLeft;
+      const availableTextWidth = Math.max(0, contentRight - textLeft);
+      const availableTitleWidth = Math.max(0, titleRight - textLeft);
+      const title = column.name || column.id;
+      const titleCenterY =
+        args.rect.y + HEADER_LAYOUT.paddingTop + HEADER_LAYOUT.titleLineHeight / 2;
 
-      args.ctx.save();
-      args.ctx.beginPath();
-      args.ctx.rect(textLeft, args.rect.y, Math.max(0, contentWidth), args.rect.height);
-      args.ctx.clip();
+      const ctx = args.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(textLeft, args.rect.y, Math.max(0, contentWidth), args.rect.height);
+      ctx.clip();
 
-      args.ctx.fillStyle = args.isSelected ? args.theme.accentColor : args.hasSelectedCell ? args.theme.bgHeaderHasFocus : args.theme.bgHeader;
-      args.ctx.fillRect(textLeft, args.rect.y, Math.max(0, contentWidth), args.rect.height);
+      ctx.fillStyle = args.isSelected
+        ? args.theme.accentColor
+        : args.hasSelectedCell
+          ? args.theme.bgHeaderHasFocus
+          : args.theme.bgHeader;
+      ctx.fillRect(textLeft, args.rect.y, Math.max(0, contentWidth), args.rect.height);
 
-      args.ctx.textBaseline = 'middle';
-      args.ctx.textAlign = 'left';
-      args.ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
-      args.ctx.fillStyle = args.isSelected ? args.theme.textHeaderSelected : args.theme.textHeader;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
 
-      const titleWidth = Math.ceil(args.ctx.measureText(title).width);
-      const remarkGap = remarkText ? 8 : 0;
-      const remarkFont = `italic 11px ${args.theme.fontFamily}`;
-      args.ctx.font = remarkFont;
-      const remarkWidth = remarkText ? Math.ceil(args.ctx.measureText(remarkText).width) : 0;
-      args.ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
+      ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
+      ctx.fillStyle = args.isSelected ? args.theme.textHeaderSelected : args.theme.textHeader;
+      ctx.fillText(ellipsizeCanvasText(ctx, title, availableTitleWidth), textLeft, titleCenterY);
 
-      const availableTextWidth = Math.max(0, textRight - textLeft);
-      const idealTextWidth = titleWidth + remarkGap + remarkWidth;
-      let displayTitle = title;
-      let displayRemark = remarkText;
+      if (remark && availableTextWidth > 0) {
+        ctx.font = HEADER_REMARK_FONT;
+        ctx.fillStyle = args.isSelected
+          ? args.theme.textHeaderSelected
+          : args.theme.textMedium;
 
-      if (idealTextWidth > availableTextWidth) {
-        const minTitleWidth = Math.min(titleWidth, Math.max(28, availableTextWidth * 0.55));
-        displayTitle = ellipsizeCanvasText(args.ctx, title, remarkText ? minTitleWidth : availableTextWidth);
-        const usedTitleWidth = Math.ceil(args.ctx.measureText(displayTitle).width);
-        const remainingWidth = availableTextWidth - usedTitleWidth - remarkGap;
-        args.ctx.font = remarkFont;
-        displayRemark = remarkText ? ellipsizeCanvasText(args.ctx, remarkText, remainingWidth) : '';
-        args.ctx.font = `${args.theme.headerFontStyle} ${args.theme.fontFamily}`;
+        const remarkLines = wrapText(remark, availableTextWidth, (text) =>
+          ctx.measureText(text).width,
+        );
+        let remarkCenterY =
+          args.rect.y +
+          HEADER_LAYOUT.paddingTop +
+          HEADER_LAYOUT.titleLineHeight +
+          HEADER_LAYOUT.remarkGap +
+          HEADER_LAYOUT.remarkLineHeight / 2;
+
+        for (const line of remarkLines) {
+          if (
+            remarkCenterY + HEADER_LAYOUT.remarkLineHeight / 2 >
+            args.rect.y + args.rect.height
+          ) {
+            break;
+          }
+          ctx.fillText(line, textLeft, remarkCenterY);
+          remarkCenterY += HEADER_LAYOUT.remarkLineHeight;
+        }
       }
 
-      args.ctx.fillText(displayTitle, textLeft, centerY);
-      const titleDrawWidth = Math.ceil(args.ctx.measureText(displayTitle).width);
-
-      if (displayRemark) {
-        args.ctx.font = `italic 11px ${args.theme.fontFamily}`;
-        args.ctx.fillStyle = '#64748b';
-        args.ctx.fillText(displayRemark, textLeft + titleDrawWidth + remarkGap, centerY);
-      }
-
-      args.ctx.restore();
+      ctx.restore();
 
       if (column.primary) {
         const badgeHeight = 14;
         const badgeX = args.rect.x + args.rect.width - badgeWidth - paddingRight;
-        const badgeY = args.rect.y + Math.floor((args.rect.height - badgeHeight) / 2);
+        const badgeY = Math.floor(titleCenterY - badgeHeight / 2);
         args.ctx.save();
         drawRoundRect(args.ctx, badgeX, badgeY, badgeWidth, badgeHeight, 3);
         args.ctx.fillStyle = '#dcfce7';
@@ -1497,8 +1528,7 @@ export default function DataGridModal({
       textHeaderSelected: '#ffffff',
       bgIconHeader: theme === 'dark' ? '#a8b6c8' : '#657282',
       fgIconHeader: theme === 'dark' ? '#111827' : '#ffffff',
-      fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      fontFamily: GRID_FONT_FAMILY,
       baseFontStyle: '12px',
       headerFontStyle: '600 12px',
       editorFontSize: '12px',
@@ -1612,7 +1642,6 @@ export default function DataGridModal({
               onColumnResize={onColumnResize}
               onCellContextMenu={openCellMenu}
               onHeaderContextMenu={openHeaderMenu}
-              onItemHovered={onItemHovered}
               gridSelection={selection}
               onGridSelectionChange={(nextSelection) => setSelection(nextSelection)}
               {...rowMoveProps}
@@ -1644,7 +1673,7 @@ export default function DataGridModal({
               freezeColumns={freezeColumns}
               fillHandle
               rowHeight={30}
-              headerHeight={32}
+              headerHeight={headerHeight}
               smoothScrollX
               smoothScrollY
               width="100%"
@@ -1669,11 +1698,6 @@ export default function DataGridModal({
           items={headerMenuItems}
           onClose={() => setHeaderMenu(undefined)}
         />
-      ) : null}
-      {headerTooltip ? (
-        <div className="field-remark-tooltip" style={{ left: headerTooltip.x, top: headerTooltip.y }}>
-          {headerTooltip.text}
-        </div>
       ) : null}
       {remarkEditor ? (
         <div className="remark-editor-backdrop" role="presentation" onMouseDown={() => setRemarkEditor(undefined)}>
