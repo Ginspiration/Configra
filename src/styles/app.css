@@ -321,6 +321,37 @@ button:focus-visible {
   gap: 5px;
 }
 
+.toolbar__profile {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.toolbar__profile-label {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.toolbar__profile select {
+  max-width: 190px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  font-size: 11px;
+}
+
+.toolbar__profile-manage {
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+
 .toolbar__validation-item {
   border-radius: 999px;
   background: var(--panel-muted);
@@ -756,6 +787,200 @@ button:focus-visible {
 
 .settings-publish-path.is-empty {
   font-style: italic;
+}
+
+.settings-release-profiles {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 13px;
+}
+
+.settings-release-profiles__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-release-profiles__heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-release-profiles__heading strong {
+  font-size: 12px;
+}
+
+.settings-release-profiles__heading span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-release-profile {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-muted);
+  padding: 9px 10px;
+}
+
+.settings-release-profile.is-active {
+  border-color: var(--accent);
+}
+
+.settings-release-profile__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-release-profile__select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-release-profile__select strong {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-release-profile__dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+
+.settings-release-profile__dot.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.settings-release-profile__mode,
+.settings-release-profile__active {
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+
+.settings-release-profile__mode.is-all {
+  color: var(--accent-dark);
+}
+
+.settings-release-profile__active {
+  color: var(--accent-dark);
+}
+
+.settings-release-profile__header-actions,
+.settings-release-profile__directory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.settings-release-profile__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.settings-release-profile__label {
+  flex: 0 0 auto;
+  min-width: 52px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-release-profile__mode-select {
+  min-height: 22px;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: inherit;
+  font-size: 11px;
+}
+
+.settings-release-profile__summary {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-release-profile__directory {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.settings-release-profile__directory.is-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.settings-release-profile__rename-input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--panel);
+  color: inherit;
+  font-size: 12px;
+}
+
+.settings-release-profile__publish-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+  flex-wrap: wrap;
+}
+
+.settings-release-profile__publish-hint {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-release-profile__header-actions .button,
+.settings-release-profile__directory-actions .button {
+  padding: 3px 7px;
+  font-size: 11px;
 }
 
 /* ---- 保存自动发布的顶部浮动提示：浮于所有窗口之上，不拦截鼠标 ---- */
@@ -1278,6 +1503,37 @@ h3 {
 
 .publish-scope.is-published {
   border-color: color-mix(in srgb, var(--success) 45%, var(--line));
+}
+
+.publish-scope__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.publish-scope__mode {
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+
+.publish-scope__mode.is-all {
+  color: var(--accent-dark);
+}
+
+.publish-scope__profile {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.publish-scope__profile strong {
+  color: inherit;
 }
 
 .publish-scope__toggle {

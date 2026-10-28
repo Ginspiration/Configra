@@ -1,4 +1,8 @@
 import { COLUMN_TYPES, type ColumnType, type ProjectFile } from '../model/types';
+import {
+  isReleaseProfiles,
+  normalizeProjectFile,
+} from '../release/releaseProfiles';
 import type { Translator } from '../i18n';
 
 type ParseResult =
@@ -21,12 +25,28 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
   }
 
   if (!isRecord(raw)) return { ok: false, error: t('parseRootObject') };
-  if (raw.version !== 1 && raw.version !== 2) {
+  if (raw.version !== 1 && raw.version !== 2 && raw.version !== 3) {
     return { ok: false, error: t('parseUnsupportedVersion') };
   }
   if (!Array.isArray(raw.tables)) return { ok: false, error: t('parseTablesArray') };
   if (raw.exportPolicy !== undefined && raw.exportPolicy !== 'explicit') {
     return { ok: false, error: t('parseExportPolicy') };
+  }
+
+  if (raw.releaseProfiles !== undefined) {
+    if (!isReleaseProfiles(raw.releaseProfiles)) {
+      return { ok: false, error: t('parseReleaseProfiles') };
+    }
+    const activeProfileId = raw.releaseProfiles.activeProfileId;
+    if (
+      activeProfileId !== undefined &&
+      !raw.releaseProfiles.profiles.some((profile) => profile.id === activeProfileId)
+    ) {
+      return { ok: false, error: t('parseReleaseProfileActive') };
+    }
+  } else if (raw.version === 3) {
+    // v3 的唯一发布范围来源就是 releaseProfiles；缺失时不能退回旧 publish 标记。
+    return { ok: false, error: t('parseReleaseProfilesRequired') };
   }
 
   for (const [tableIndex, table] of raw.tables.entries()) {
@@ -157,5 +177,6 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
     }
   }
 
-  return { ok: true, project: raw as ProjectFile };
+  // v1/v2 在这里迁移成 v3 + default 方案；v3 校验并规范化后再交给上层。
+  return { ok: true, project: normalizeProjectFile(raw as ProjectFile) };
 }

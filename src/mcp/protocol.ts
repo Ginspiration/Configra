@@ -156,15 +156,31 @@ export const dataPatchOperationSchema = z.discriminatedUnion('op', [
   z.strictObject({
     op: z.literal('setTablePublish'),
     tableId: nonEmptyString.describe('Stable ID of the table.'),
+    profileId: nonEmptyString
+      .optional()
+      .describe(
+        'Stable release profile id or unique profile name. Omit to use the active release profile. all-mode profiles cannot change table scope.',
+      ),
     publish: z
       .boolean()
-      .describe('true includes the table in exports; new rows still need their own publish flag.'),
+      .describe('true includes the table in this profile; rows still need their own selection.'),
   }),
   z.strictObject({
     op: z.literal('setRowsPublish'),
     tableId: nonEmptyString.describe('Stable ID of the table containing the rows.'),
+    profileId: nonEmptyString
+      .optional()
+      .describe(
+        'Stable release profile id or unique profile name. Omit to use the active release profile. all-mode profiles cannot change row scope.',
+      ),
     rowIds: z.array(nonEmptyString).min(1).describe('Stable _rowId values.'),
-    publish: z.boolean().describe('true includes these rows in exports.'),
+    publish: z.boolean().describe('true includes these rows in this profile.'),
+  }),
+  z.strictObject({
+    op: z.literal('setActiveReleaseProfile'),
+    profileId: nonEmptyString.describe(
+      'Stable release profile id or unique profile name to make active. Exports and publishes without an explicit profile use it.',
+    ),
   }),
 ]);
 

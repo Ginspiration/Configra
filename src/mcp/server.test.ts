@@ -138,10 +138,17 @@ describe('Configra MCP server', () => {
         'configra_publish_all',
         'configra_preview_set_table_publish',
         'configra_preview_set_rows_publish',
+        'configra_preview_set_active_release_profile',
       ]),
     );
     const exportAllTool = tools.tools.find((tool) => tool.name === 'configra_export_all');
     expect(JSON.stringify(exportAllTool?.inputSchema)).toContain('includeUnpublished');
+    expect(JSON.stringify(exportAllTool?.inputSchema)).toContain('profileId');
+    expect(
+      JSON.stringify(
+        tools.tools.find((tool) => tool.name === 'configra_preview_publish')?.inputSchema,
+      ),
+    ).toContain('profileId');
 
     const previewTool = tools.tools.find((tool) => tool.name === 'configra_preview_patch');
     const publicPatchSchema = JSON.stringify(previewTool?.inputSchema);
@@ -159,6 +166,7 @@ describe('Configra MCP server', () => {
       'deleteRows',
       'setTablePublish',
       'setRowsPublish',
+      'setActiveReleaseProfile',
     ]) {
       expect(publicPatchSchema).toContain(`"const":"${operation}"`);
     }
@@ -626,8 +634,21 @@ describe('Configra MCP server', () => {
       name: 'configra_inspect_project',
       arguments: {},
     }));
+    expect(before.releaseProfiles).toMatchObject({
+      activeProfileId: 'profile_default',
+      profiles: [
+        {
+          id: 'profile_default',
+          name: 'Default',
+          mode: 'selected',
+          tableCount: 0,
+          rowCount: 0,
+        },
+      ],
+    });
     expect(before.publishScope).toMatchObject({
-      configured: false,
+      profileId: 'profile_default',
+      configured: true,
       publishableTableCount: 0,
     });
 
@@ -661,11 +682,19 @@ describe('Configra MCP server', () => {
     expect(appliedRow.written).toBe(true);
 
     const projectAfter = JSON.parse(readFileSync(projectPath, 'utf8'));
-    expect(projectAfter.version).toBe(2);
-    expect(projectAfter.exportPolicy).toBe('explicit');
-    expect(projectAfter.tables[0].publish).toBe(true);
-    expect(projectAfter.tables[0].rows[0].publish).toBe(true);
-    expect(projectAfter.tables[0].rows[1].publish).toBeUndefined();
+    expect(projectAfter.version).toBe(3);
+    expect(projectAfter.releaseProfiles).toMatchObject({
+      activeProfileId: 'profile_default',
+      profiles: [
+        {
+          id: 'profile_default',
+          mode: 'selected',
+          tables: [{ tableId: 'items', rows: ['row_1'] }],
+        },
+      ],
+    });
+    expect(projectAfter.tables[0].publish).toBeUndefined();
+    expect(projectAfter.tables[0].rows[0].publish).toBeUndefined();
 
     const publishPreview = parseToolText(await client.callTool({
       name: 'configra_preview_publish',
@@ -684,6 +713,297 @@ describe('Configra MCP server', () => {
     expect(published).toMatchObject({ status: 'published', count: 2 });
     expect(existsSync(join(publishedDir, '.configra-publish.json'))).toBe(true);
     expect(JSON.parse(readFileSync(join(publishedDir, 'Items.json'), 'utf8'))).toHaveLength(1);
+
+    await client.close();
+  }, 60000);
+
+  it('reads, switches and publishes separate release profiles over MCP', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'configra-mcp-profiles-'));
+    const configDir = join(root, 'config');
+    const projectPath = join(root, 'project.configra.json');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      projectPath,
+      `${JSON.stringify({
+        version: 3,
+        releaseProfiles: {
+          version: 1,
+          activeProfileId: 'profile_a',
+          profiles: [
+            { id: 'profile_a', name: 'A all', mode: 'all' },
+            {
+              id: 'profile_b',
+              name: 'B selected',
+              mode: 'selected',
+              tables: [{ tableId: 'items', rows: ['row_1'] }],
+            },
+          ],
+        },
+        tables: [
+          {
+            id: 'items',
+            name: 'Items',
+            position: { x: 0, y: 0 },
+            columns: [
+              { id: 'id', name: 'id', type: 'int', primary: true, required: true },
+              { id: 'name', name: 'name', type: 'string' },
+            ],
+            rows: [
+              { _rowId: 'row_1', values: { id: 1, name: 'Sword' } },
+              { _rowId: 'row_2', values: { id: 2, name: 'Shield' } },
+            ],
+          },
+          {
+            id: 'extra',
+            name: 'Extra',
+            position: { x: 320, y: 0 },
+            columns: [{ id: 'value', name: 'value', type: 'string' }],
+            rows: [{ _rowId: 'extra_1', values: { value: 'full only' } }],
+          },
+        ],
+      }, null, 2)}\n`,
+      'utf8',
+    );
+    writeFileSync(
+      join(configDir, 'mcp-context.json'),
+      `${JSON.stringify({
+        version: 1,
+        projectPath,
+        uiDirty: false,
+        dirtyScope: 'none',
+        fullAccess: false,
+        revision: 1,
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+      'utf8',
+    );
+
+    const started = await startMcpHttpServer({ configDir, port: 0, repoDir: repoRoot });
+    runningServers.push(started.httpServer);
+    const client = new Client({ name: 'configra-test-profiles', version: '1.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${started.port}/mcp`),
+      ),
+    );
+
+    const inspected = parseToolText(
+      await client.callTool({ name: 'configra_inspect_project', arguments: {} }),
+    );
+    expect(inspected.releaseProfiles).toMatchObject({
+      activeProfileId: 'profile_a',
+      profiles: [
+        { id: 'profile_a', mode: 'all', tableCount: 2, rowCount: 3 },
+        { id: 'profile_b', mode: 'selected', tableCount: 1, rowCount: 1 },
+      ],
+    });
+    expect(inspected.publishScope).toMatchObject({
+      profileId: 'profile_a',
+      publishableTableCount: 2,
+      publishableRowCount: 3,
+    });
+
+    const allExportDir = join(root, 'export-all');
+    const selectedExportDir = join(root, 'export-selected');
+    const allExport = parseToolText(
+      await client.callTool({
+        name: 'configra_export_all',
+        arguments: { profileId: 'profile_a', outPath: allExportDir },
+      }),
+    );
+    const selectedExport = parseToolText(
+      await client.callTool({
+        name: 'configra_export_all',
+        arguments: { profileId: 'B selected', outPath: selectedExportDir },
+      }),
+    );
+    expect(allExport).toMatchObject({ profileId: 'profile_a', tableCount: 2, rowCount: 3 });
+    expect(selectedExport).toMatchObject({ profileId: 'profile_b', tableCount: 1, rowCount: 1 });
+    expect(existsSync(join(allExportDir, 'Extra.json'))).toBe(true);
+    expect(existsSync(join(selectedExportDir, 'Extra.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(allExportDir, 'Items.json'), 'utf8'))).toHaveLength(2);
+    expect(JSON.parse(readFileSync(join(selectedExportDir, 'Items.json'), 'utf8'))).toHaveLength(1);
+
+    // 按名称切换 active profile；patch 里必须落稳定 id。
+    const switchPreview = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_set_active_release_profile',
+        arguments: { profileId: 'B selected' },
+      }),
+    );
+    expect(switchPreview.patch).toMatchObject({
+      operations: [{ op: 'setActiveReleaseProfile', profileId: 'profile_b' }],
+    });
+    const switched = parseToolText(
+      await client.callTool({
+        name: 'configra_apply_patch',
+        arguments: {
+          patch: switchPreview.patch,
+          confirmationHash: switchPreview.confirmationHash,
+        },
+      }),
+    );
+    expect(switched.written).toBe(true);
+    expect(JSON.parse(readFileSync(projectPath, 'utf8')).releaseProfiles.activeProfileId).toBe(
+      'profile_b',
+    );
+
+    // 指定方案改行范围，不影响另一个方案。
+    const rowsPreview = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_set_rows_publish',
+        arguments: {
+          profileId: 'B selected',
+          tableId: 'items',
+          rowIds: ['row_2'],
+          publish: true,
+        },
+      }),
+    );
+    expect(rowsPreview.patch).toMatchObject({
+      operations: [
+        {
+          op: 'setRowsPublish',
+          tableId: 'items',
+          profileId: 'profile_b',
+          rowIds: ['row_2'],
+          publish: true,
+        },
+      ],
+    });
+    const rowsApplied = parseToolText(
+      await client.callTool({
+        name: 'configra_apply_patch',
+        arguments: {
+          patch: rowsPreview.patch,
+          confirmationHash: rowsPreview.confirmationHash,
+        },
+      }),
+    );
+    expect(rowsApplied.written).toBe(true);
+    const scopeAfter = JSON.parse(readFileSync(projectPath, 'utf8'));
+    expect(
+      scopeAfter.releaseProfiles.profiles.find(
+        (profile: { id: string }) => profile.id === 'profile_b',
+      ).tables,
+    ).toEqual([{ tableId: 'items', rows: ['row_1', 'row_2'] }]);
+    expect(
+      scopeAfter.releaseProfiles.profiles.find(
+        (profile: { id: string }) => profile.id === 'profile_a',
+      ).mode,
+    ).toBe('all');
+
+    // 两个方案发布到各自目录，互不清理。
+    const dirA = join(root, 'pub-a');
+    const dirB = join(root, 'pub-b');
+    const previewA = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_publish',
+        arguments: { profileId: 'profile_a', outPath: dirA },
+      }),
+    );
+    const previewB = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_publish',
+        arguments: { profileId: 'profile_b', outPath: dirB },
+      }),
+    );
+    expect(previewA).toMatchObject({ profileId: 'profile_a', profileMode: 'all' });
+    expect(previewB).toMatchObject({ profileId: 'profile_b', profileMode: 'selected' });
+    expect(previewA.confirmationHash).not.toBe(previewB.confirmationHash);
+
+    const publishedA = parseToolText(
+      await client.callTool({
+        name: 'configra_publish_all',
+        arguments: {
+          profileId: 'profile_a',
+          outPath: dirA,
+          confirmationHash: previewA.confirmationHash,
+        },
+      }),
+    );
+    const publishedB = parseToolText(
+      await client.callTool({
+        name: 'configra_publish_all',
+        arguments: {
+          profileId: 'profile_b',
+          outPath: dirB,
+          confirmationHash: previewB.confirmationHash,
+        },
+      }),
+    );
+    expect(publishedA).toMatchObject({ status: 'published', profileId: 'profile_a' });
+    expect(publishedB).toMatchObject({ status: 'published', profileId: 'profile_b' });
+    expect(existsSync(join(dirA, 'Extra.json'))).toBe(true);
+    expect(existsSync(join(dirB, 'Extra.json'))).toBe(false);
+
+    const republishB = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_publish',
+        arguments: { profileId: 'profile_b', outPath: dirB },
+      }),
+    );
+    await client.callTool({
+      name: 'configra_publish_all',
+      arguments: {
+        profileId: 'profile_b',
+        outPath: dirB,
+        confirmationHash: republishB.confirmationHash,
+      },
+    });
+    expect(existsSync(join(dirA, 'Extra.json'))).toBe(true);
+    expect(existsSync(join(dirA, 'Items.json'))).toBe(true);
+
+    const crossProfile = await client.callTool({
+      name: 'configra_preview_publish',
+      arguments: { profileId: 'profile_b', outPath: dirA },
+    });
+    expect(crossProfile.isError).toBe(true);
+    const crossBody = parseToolText(crossProfile);
+    expect(crossBody.error).toMatchObject({
+      code: 'INVALID_ARGUMENT',
+      details: { kind: 'FOREIGN_RELEASE_PROFILE' },
+    });
+    expect(existsSync(join(dirA, 'Extra.json'))).toBe(true);
+
+    // confirmationHash 绑定 profile 和目录。
+    const sharedDir = join(root, 'shared');
+    const sharedA = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_publish',
+        arguments: { profileId: 'profile_a', outPath: sharedDir },
+      }),
+    );
+    const sharedB = parseToolText(
+      await client.callTool({
+        name: 'configra_preview_publish',
+        arguments: { profileId: 'profile_b', outPath: sharedDir },
+      }),
+    );
+    expect(sharedA.confirmationHash).not.toBe(sharedB.confirmationHash);
+
+    const wrongProfile = await client.callTool({
+      name: 'configra_publish_all',
+      arguments: {
+        profileId: 'profile_b',
+        outPath: sharedDir,
+        confirmationHash: sharedA.confirmationHash,
+      },
+    });
+    expect(wrongProfile.isError).toBe(true);
+    expect(parseToolText(wrongProfile).error).toMatchObject({ code: 'STALE_BASE_HASH' });
+
+    const correctProfile = parseToolText(
+      await client.callTool({
+        name: 'configra_publish_all',
+        arguments: {
+          profileId: 'profile_b',
+          outPath: sharedDir,
+          confirmationHash: sharedB.confirmationHash,
+        },
+      }),
+    );
+    expect(correctProfile).toMatchObject({ status: 'published', profileId: 'profile_b' });
 
     await client.close();
   }, 60000);

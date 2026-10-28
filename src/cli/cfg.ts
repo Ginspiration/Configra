@@ -12,7 +12,14 @@ import {
   publishManifestPath,
 } from '../export/publishManifest';
 import { parseProjectFileText } from '../file/projectFile';
-import type { ConfigTable, ProjectFile, ValidationIssue } from '../model/types';
+import type { ConfigTable, ProjectFile, ReleaseProfile, ValidationIssue } from '../model/types';
+import {
+  findReleaseProfile,
+  profileTableScope,
+  ReleaseProfileError,
+  summarizeReleaseProfile,
+  summarizeReleaseProfiles,
+} from '../release/releaseProfiles';
 import {
   REFERENCE_SEMANTICS,
   summarizeProjectReferences,
@@ -66,24 +73,25 @@ const VALUE_OPTIONS = new Set([
   'query',
   'backup-dir',
   'transaction-id',
+  'profile',
 ]);
 
 const FLAG_OPTIONS = new Set(['json', 'overwrite', 'all', 'dry-run', 'help']);
 
 const usage = `Usage:
-  npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]
-  npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]
+  npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--profile <id|name>] [--offset 0] [--limit 100] [--json]
+  npm run --silent cfg -- query rows --project <file> --query <file|-> [--profile <id|name>] [--json]
   npm run --silent cfg -- validate --project <file> [--json]
   npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]
   npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]
   npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]
-  npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]
-  npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]
-  npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]
-  npm run --silent cfg -- publish --project <file> --out <directory> [--dry-run] [--confirm <hash>] [--json]
+  npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--profile <id|name>] [--all] [--overwrite] [--json]
+  npm run --silent cfg -- export all --project <file> --out <directory> [--profile <id|name>] [--all] [--overwrite] [--json]
+  npm run --silent cfg -- export ids --project <file> --out <file> [--profile <id|name>] [--all] [--overwrite] [--json]
+  npm run --silent cfg -- publish --project <file> --out <directory> [--profile <id|name>] [--dry-run] [--confirm <hash>] [--json]
 
-By default export only includes tables/rows marked publish=true. Pass --all to explicitly export unpublished content.
-publish uses the publish manifest and stale-file cleanup; run it with --dry-run first, then pass the returned confirmationHash to --confirm.`;
+Export and publish use the project's release profiles. --profile selects a profile by stable id or unique name; without it the active profile is used. --all is the explicit development override that bypasses release profiles and must not be used for releases.
+publish uses the publish manifest and stale-file cleanup; run it with --dry-run first, then pass the returned confirmationHash to --confirm. Each directory belongs to one project and one release profile.`;
 
 const fail = (
   exitCode: ExitCode,
@@ -588,20 +596,40 @@ const withProjectWriteLock = async <T>(projectPath: string, action: () => Promis
   }
 };
 
+const resolveCliProfile = (project: ProjectFile, selector?: string): ReleaseProfile => {
+  try {
+    return findReleaseProfile(project, selector);
+  } catch (error) {
+    if (error instanceof ReleaseProfileError) {
+      return fail(2, error.code, error.message, '--profile');
+    }
+    throw error;
+  }
+};
+
+const profileFlags = (project: ProjectFile, profile: ReleaseProfile) => {
+  let publishableRowCount = 0;
+  const includedTables: ConfigTable[] = [];
+  for (const table of project.tables) {
+    const tableScope = profileTableScope(project, profile, table.id);
+    if (!tableScope.included) continue;
+    includedTables.push(table);
+    publishableRowCount +=
+      tableScope.rows === 'all' ? table.rows.length : tableScope.rows.size;
+  }
+
+  return { includedTables, publishableRowCount };
+};
+
 const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const loaded = await loadProject(requiredOption(args, 'project'));
   const tableSelector = args.options.table;
   const relationships = summarizeProjectReferences(loaded.project);
+  const profile = resolveCliProfile(loaded.project, args.options.profile);
+  const releaseProfiles = summarizeReleaseProfiles(loaded.project);
 
   if (!tableSelector) {
-    const publishableTables = loaded.project.tables.filter(
-      (table) => table.publish === true,
-    );
-    const publishableRowCount = publishableTables.reduce(
-      (count, table) =>
-        count + table.rows.filter((row) => row.publish === true).length,
-      0,
-    );
+    const { includedTables, publishableRowCount } = profileFlags(loaded.project, profile);
     const rowCount = loaded.project.tables.reduce(
       (count, table) => count + table.rows.length,
       0,
@@ -611,29 +639,40 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       ok: true,
       projectHash: loaded.projectHash,
       version: loaded.project.version,
-      exportPolicy: loaded.project.exportPolicy ?? null,
       tableCount: loaded.project.tables.length,
+      releaseProfiles,
+      profile: summarizeReleaseProfile(loaded.project, profile),
+      profileSource: args.options.profile ? 'explicit' : 'active',
       referenceSemantics: REFERENCE_SEMANTICS,
       relationships,
       publishScope: {
-        configured: loaded.project.exportPolicy === 'explicit',
+        profileId: profile.id,
+        profileName: profile.name,
+        mode: profile.mode,
+        configured: true,
         tableCount: loaded.project.tables.length,
-        publishableTableCount: publishableTables.length,
+        publishableTableCount: includedTables.length,
         rowCount,
         publishableRowCount,
-        skippedTableCount: loaded.project.tables.length - publishableTables.length,
+        skippedTableCount: loaded.project.tables.length - includedTables.length,
         skippedRowCount: rowCount - publishableRowCount,
       },
-      tables: loaded.project.tables.map((table) => ({
-        tableId: table.id,
-        name: table.name,
-        remark: table.remark,
-        publish: table.publish === true,
-        columnCount: table.columns.length,
-        rowCount: table.rows.length,
-        publishableRowCount: table.rows.filter((row) => row.publish === true).length,
-        identity: table.identity,
-      })),
+      tables: loaded.project.tables.map((table) => {
+        const tableScope = profileTableScope(loaded.project, profile, table.id);
+        return {
+          tableId: table.id,
+          name: table.name,
+          remark: table.remark,
+          publish: tableScope.included,
+          columnCount: table.columns.length,
+          rowCount: table.rows.length,
+          publishableRowCount:
+            tableScope.rows === 'all'
+              ? table.rows.length
+              : tableScope.rows.size,
+          identity: table.identity,
+        };
+      }),
     };
 
     return {
@@ -641,6 +680,8 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       body,
       text: [
         `Project hash: ${loaded.projectHash}`,
+        `Release profiles: ${releaseProfiles.profiles.length} (active: ${releaseProfiles.activeProfileId ?? 'none'})`,
+        `Profile: ${profile.id} (${profile.name}, ${profile.mode})`,
         `Tables: ${loaded.project.tables.length}`,
         ...loaded.project.tables.map(
           (table) => `- ${table.id} (${table.name}): ${table.columns.length} columns, ${table.rows.length} rows`,
@@ -650,18 +691,22 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   }
 
   const table = resolveTable(loaded.project, tableSelector);
+  const tableScope = profileTableScope(loaded.project, profile, table.id);
   const offset = readNonNegativeInteger(args, 'offset', 0);
   const limit = readNonNegativeInteger(args, 'limit', 100);
   const rows = table.rows.slice(offset, offset + limit);
   const body = {
     ok: true,
     projectHash: loaded.projectHash,
+    releaseProfiles,
+    profile: summarizeReleaseProfile(loaded.project, profile),
     table: {
       tableId: table.id,
       name: table.name,
       remark: table.remark,
-      publish: table.publish === true,
-      publishableRowCount: table.rows.filter((row) => row.publish === true).length,
+      publish: tableScope.included,
+      publishableRowCount:
+        tableScope.rows === 'all' ? table.rows.length : tableScope.rows.size,
       identity: table.identity,
       referenceSemantics: REFERENCE_SEMANTICS,
       relationships: relationships.filter(
@@ -682,7 +727,9 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       })),
       rows: rows.map((row) => ({
         rowId: row._rowId,
-        publish: row.publish === true,
+        publish:
+          tableScope.included &&
+          (tableScope.rows === 'all' || tableScope.rows.has(row._rowId)),
         values: row.values,
       })),
       offset,
@@ -697,6 +744,7 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     body,
     text: [
       `Project hash: ${loaded.projectHash}`,
+      `Profile: ${profile.id} (${profile.name}, ${profile.mode})`,
       `Table: ${table.id} (${table.name})`,
       `Rows: ${offset}-${offset + rows.length} of ${table.rows.length}`,
       JSON.stringify(body.table, null, 2),
@@ -723,14 +771,19 @@ const queryRowsCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     const results = query.filters.map((filter) => matchesFilter(row, filter));
     return query.match === 'all' ? results.every(Boolean) : results.some(Boolean);
   });
+  const profile = resolveCliProfile(loaded.project, args.options.profile);
+  const tableScope = profileTableScope(loaded.project, profile, table.id);
   const rows = matched.slice(query.offset, query.offset + query.limit).map((row) => ({
     rowId: row._rowId,
-    publish: row.publish === true,
+    publish:
+      tableScope.included &&
+      (tableScope.rows === 'all' || tableScope.rows.has(row._rowId)),
     values: row.values,
   }));
   const body = {
     ok: true,
     projectHash: loaded.projectHash,
+    profileId: profile.id,
     tableId: table.id,
     query,
     rows,
@@ -1024,6 +1077,7 @@ const exportOptionsFor = (
     includeUnpublished: args.flags.has('all'),
     issues,
     onlyTableId,
+    ...(args.options.profile ? { profileId: args.options.profile } : {}),
   };
 };
 
@@ -1071,9 +1125,13 @@ const exportTableCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const body = {
     ok: true,
     projectHash: loaded.projectHash,
+    ...(args.flags.has('all')
+      ? {}
+      : { profileId: resolveCliProfile(loaded.project, args.options.profile).id }),
     tableId: table.id,
     outPath,
     overwritten: overwrite,
+    mode: args.flags.has('all') ? 'all' : 'profile',
   };
 
   return {
@@ -1102,8 +1160,12 @@ const exportIdsCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const body = {
     ok: true,
     projectHash: loaded.projectHash,
+    ...(args.flags.has('all')
+      ? {}
+      : { profileId: resolveCliProfile(loaded.project, args.options.profile).id }),
     outPath,
     overwritten: overwrite,
+    mode: args.flags.has('all') ? 'all' : 'profile',
   };
 
   return {
@@ -1218,7 +1280,10 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     projectHash: loaded.projectHash,
     outDir,
     overwritten: overwrite,
-    mode: plan.mode,
+    mode: plan.mode === 'all' ? 'all' : 'profile',
+    profileId: plan.profileId,
+    profileName: plan.profileName,
+    profileMode: plan.profileMode,
     tableCount: plan.tables.length,
     rowCount: plan.totalRows,
     skippedTables: plan.skippedTables,
@@ -1238,10 +1303,14 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const outDir = toAbsolutePath(requiredOption(args, 'out'));
   const dryRun = args.flags.has('dry-run');
   const issues = validate(loaded.project);
+  const requestedProfile = args.options.profile;
+  const profile = resolveCliProfile(loaded.project, requestedProfile);
+  const profileCount = loaded.project.releaseProfiles?.profiles.length ?? 0;
+  const profileImplicit = !requestedProfile && profileCount > 1;
 
   let plan;
   try {
-    plan = buildExportPlan(loaded.project, { issues });
+    plan = buildExportPlan(loaded.project, { issues, profileId: profile.id });
   } catch (error) {
     if (error instanceof ExportScopeError) return failExportScope(error);
     throw error;
@@ -1252,6 +1321,8 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const projectKey = projectKeyForPath(loaded.projectPath);
   const manifestPath = publishManifestPath(outDir);
   let manifestText = '';
+  let manifestProfileId: string | undefined;
+  let legacyManifest = false;
   if (await pathExists(manifestPath)) {
     manifestText = await readFileText(manifestPath, 'publish manifest');
     const manifest = parsePublishManifest(manifestText);
@@ -1266,6 +1337,17 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
         outDir,
       );
     }
+    manifestProfileId = manifest.profileId;
+    if (manifest.profileId !== undefined && manifest.profileId !== profile.id) {
+      fail(
+        2,
+        'FOREIGN_RELEASE_PROFILE',
+        `Publish directory belongs to release profile "${manifest.profileId}", not "${profile.id}": ${outDir}`,
+        outDir,
+      );
+    }
+    // 没有 profileId 的旧清单按 legacy 处理：确认值里必须体现，首次接管不清理旧文件。
+    legacyManifest = manifest.profileId === undefined;
   }
 
   const fileHashes = plan.files
@@ -1276,6 +1358,9 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       projectHash: loaded.projectHash,
       outDir,
       projectKey,
+      profileId: profile.id,
+      profileName: profile.name,
+      legacyManifest,
       files: fileHashes,
       manifestHash: manifestText ? sha256Text(manifestText) : null,
     }),
@@ -1287,8 +1372,15 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     projectHash: loaded.projectHash,
     outDir,
     projectKey,
-    confirmationHash,
+    profileId: profile.id,
+    profileName: profile.name,
+    profileMode: profile.mode,
+    profileSource: requestedProfile ? 'explicit' : 'active',
+    profileImplicit,
     hasManifest: manifestText !== '',
+    manifestProfileId: manifestProfileId ?? null,
+    legacyManifest,
+    confirmationHash,
     tableCount: plan.tables.length,
     rowCount: plan.totalRows,
     skippedTables: plan.skippedTables,
@@ -1302,10 +1394,14 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       body: preview,
       text: [
         `Publish preview for ${outDir}`,
+        `Profile: ${profile.id} (${profile.name}, ${profile.mode})${profileImplicit ? ' — active profile; pass --profile to choose explicitly' : ''}`,
         `Tables: ${plan.tables.length}, rows: ${plan.totalRows}`,
         `Skipped: ${plan.skippedTables} table(s), ${plan.skippedRows} row(s)`,
+        legacyManifest
+          ? 'Legacy publish manifest without profileId: confirm will adopt it without deleting existing files.'
+          : '',
         `Confirmation: ${confirmationHash}`,
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
     };
   }
 
@@ -1318,11 +1414,12 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
         dryRun: false,
         outDir,
         projectHash: loaded.projectHash,
+        profileId: profile.id,
         providedConfirmationHash: confirm,
         confirmationHash,
         problem: {
           kind: 'hash',
-          message: 'Publish confirmation hash does not match the current project or target.',
+          message: 'Publish confirmation hash does not match the current project, profile, or target.',
         },
       },
       text: `Hash conflict: expected ${confirmationHash}, got ${confirm}`,
@@ -1346,7 +1443,10 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     {
       projectPath: loaded.projectPath,
       projectKey,
+      profileId: profile.id,
       issues,
+      // --confirm 已绑定 profile/目录/manifest 状态，因此这里可以确认接管 legacy 清单。
+      confirmLegacyManifest: async () => true,
     },
   );
 
@@ -1364,7 +1464,7 @@ const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
         warning: result.warning,
       },
       text: [
-        `Published ${result.count} file(s) to ${outDir}`,
+        `Published ${result.count} file(s) to ${outDir} for profile ${profile.id} (${profile.name})`,
         result.removed > 0 ? `Removed ${result.removed} stale file(s).` : '',
         result.warning ?? '',
       ].filter(Boolean).join('\n'),

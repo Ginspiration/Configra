@@ -23,6 +23,11 @@ import type { ResolvedTheme } from '../theme';
 import { useEditorStore } from '../store/editorStore';
 import { copyText } from '../clipboard';
 import { formatRefOptionLabel } from '../model/schemaUtils';
+import {
+  activeReleaseProfile,
+  activeProfileMode,
+  activeProfileRowScope,
+} from '../release/releaseProfiles';
 import TableInspector from '../inspector/TableInspector';
 import ContextMenu, { type ContextMenuItem } from '../contextMenu/ContextMenu';
 import WindowFrame from '../window/WindowFrame';
@@ -526,6 +531,15 @@ export default function DataGridModal({
   onOpenTable,
 }: DataGridModalProps) {
   const isDarkTheme = theme === 'dark';
+  const allModeProfile = activeProfileMode(project) === 'all';
+  const rowScope = useMemo(
+    () => (table ? activeProfileRowScope(project, table.id) : new Set<string>()),
+    [project, table],
+  );
+  const isRowInProfile = useCallback(
+    (rowId: string) => rowScope === 'all' || rowScope.has(rowId),
+    [rowScope],
+  );
   const { isFront } = useWindowManager();
   const addRow = useEditorStore((state) => state.addRow);
   const insertRow = useEditorStore((state) => state.insertRow);
@@ -694,7 +708,7 @@ export default function DataGridModal({
       const { ctx, rect, theme } = args;
       ctx.save();
       ctx.fillStyle =
-        row.publish === true
+        isRowInProfile(row._rowId)
           ? isDarkTheme
             ? '#4ade80'
             : '#16a34a'
@@ -707,7 +721,7 @@ export default function DataGridModal({
       );
       ctx.restore();
     },
-    [isDarkTheme, table],
+    [isDarkTheme, isRowInProfile, table],
   );
 
   const gridDrawExtras = useMemo<GridDrawExtras>(
@@ -1265,7 +1279,10 @@ export default function DataGridModal({
       .filter((rowId): rowId is string => Boolean(rowId));
     const allActionRowsPublished =
       actionRowIndexes.length > 0 &&
-      actionRowIndexes.every((rowIndex) => table.rows[rowIndex]?.publish === true);
+      actionRowIndexes.every((rowIndex) => {
+        const rowId = table.rows[rowIndex]?._rowId;
+        return rowId !== undefined && isRowInProfile(rowId);
+      });
     const referenceTarget = resolveReferenceTarget(
       project,
       menuColumn,
@@ -1318,10 +1335,12 @@ export default function DataGridModal({
       },
       {
         id: 'toggle-publish',
-        label: allActionRowsPublished
-          ? t('markRowsUnpublished')
-          : t('markRowsPublished'),
-        disabled: actionRowIds.length === 0,
+        label: allModeProfile
+          ? t('releaseProfileReadOnly')
+          : allActionRowsPublished
+            ? t('markRowsUnpublished')
+            : t('markRowsPublished'),
+        disabled: actionRowIds.length === 0 || allModeProfile,
         onSelect: () =>
           setRowsPublish(table.id, actionRowIds, !allActionRowsPublished),
       },
@@ -1352,10 +1371,12 @@ export default function DataGridModal({
     ];
   }, [
     addRowAtEnd,
+    allModeProfile,
     copyRowsAsJson,
     deleteRows,
     getSelectedRowIndexes,
     insertRowAt,
+    isRowInProfile,
     cellMenu,
     onOpenTable,
     project,
@@ -1636,6 +1657,9 @@ export default function DataGridModal({
           {selectedRowCount > 0 ? ` / ${t('selectedRowsCount', { count: selectedRowCount })}` : ''}
           {searchStatus ? ` / ${searchStatus}` : ''}
           {` / ${t('publishMarkerLegend')}`}
+          {` / ${t('releaseProfile')}: ${activeReleaseProfile(project)?.name ?? '—'} (${
+            allModeProfile ? t('releaseProfileAll') : t('releaseProfileSelected')
+          })`}
         </>
       }
       actions={

@@ -28,7 +28,8 @@
           { "$ref": "#/$defs/addRows" },
           { "$ref": "#/$defs/deleteRows" },
           { "$ref": "#/$defs/setTablePublish" },
-          { "$ref": "#/$defs/setRowsPublish" }
+          { "$ref": "#/$defs/setRowsPublish" },
+          { "$ref": "#/$defs/setActiveReleaseProfile" }
         ]
       }
     }
@@ -293,6 +294,10 @@
       "properties": {
         "op": { "const": "setTablePublish" },
         "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "profileId": {
+          "description": "Stable release profile id or unique profile name. Omit to use the active release profile. all-mode profiles cannot change table scope.",
+          "$ref": "#/$defs/nonEmptyString"
+        },
         "publish": { "type": "boolean" }
       }
     },
@@ -303,12 +308,28 @@
       "properties": {
         "op": { "const": "setRowsPublish" },
         "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "profileId": {
+          "description": "Stable release profile id or unique profile name. Omit to use the active release profile. all-mode profiles cannot change row scope.",
+          "$ref": "#/$defs/nonEmptyString"
+        },
         "rowIds": {
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/nonEmptyString" }
         },
         "publish": { "type": "boolean" }
+      }
+    },
+    "setActiveReleaseProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "profileId"],
+      "properties": {
+        "op": { "const": "setActiveReleaseProfile" },
+        "profileId": {
+          "description": "Stable release profile id or unique profile name to make active. Every export and publish without an explicit profile uses it.",
+          "$ref": "#/$defs/nonEmptyString"
+        }
       }
     },
     "rowValues": {

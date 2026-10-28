@@ -459,6 +459,38 @@ const createServer = (options: ServerOptions) => {
     return inspected as InspectedTable;
   };
 
+  /**
+   * MCP 工具接受方案 id 或唯一名称；写进 patch 前统一解析成稳定 id，
+   * 避免后续改名让预览/应用语义漂移。
+   */
+  const resolveProfileId = async (
+    context: Awaited<ReturnType<typeof requireProject>>,
+    selector: string,
+  ): Promise<string> => {
+    const inspected = await runCli(options, ['inspect', '--project', context.projectPath!]);
+    const releaseProfiles = inspected.body.releaseProfiles as
+      | { profiles?: Array<{ id: string; name: string }> }
+      | undefined;
+    const profiles = releaseProfiles?.profiles ?? [];
+    const byId = profiles.find((profile) => profile.id === selector);
+    if (byId) return byId.id;
+
+    const byName = profiles.filter((profile) => profile.name === selector);
+    if (byName.length === 1) return byName[0].id;
+    if (byName.length > 1) {
+      return serviceError(
+        'INVALID_ARGUMENT',
+        `Release profile name "${selector}" is ambiguous. Pass the stable profile id.`,
+        { profiles: byName },
+      );
+    }
+
+    return serviceError('TARGET_NOT_FOUND', `Unknown release profile "${selector}".`, {
+      projectId: context.projectId,
+      profiles,
+    });
+  };
+
   const previewDataPatch = async (
     context: Awaited<ReturnType<typeof requireProject>>,
     description: string | undefined,
@@ -587,7 +619,7 @@ const createServer = (options: ServerOptions) => {
     'configra_inspect_project',
     {
       description:
-        'Inspect one open project and list stable table IDs, names, remarks, row/column counts, publish scope, per-table publish flags, ref semantics, and resolved table relationships. Read referenceSemantics before creating or assigning refs.',
+        'Inspect one open project and list stable table IDs, names, remarks, row/column counts, release profiles with per-profile table/row counts, the active profile, per-table/profile scope flags, ref semantics, and resolved table relationships. Read releaseProfiles and referenceSemantics before changing scope, creating refs, exporting, or publishing.',
       inputSchema: projectSelectorSchema,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -602,7 +634,7 @@ const createServer = (options: ServerOptions) => {
     'configra_inspect_table',
     {
       description:
-        'Inspect one table by stable tableId, including schema remarks, table/row publish flags, ref semantics, incoming/outgoing relationships, and paginated rows with stable row IDs.',
+        'Inspect one table by stable tableId, including schema remarks, whether it is inside the active release profile, per-row profile membership, ref semantics, incoming/outgoing relationships, and paginated rows with stable row IDs.',
       inputSchema: {
         ...projectSelectorSchema,
         tableId: z.string().min(1).describe('Stable internal table ID, not its display name.'),
@@ -683,7 +715,7 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_patch',
     {
       description:
-        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} ${IDENTITY_USAGE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. setTablePublish and setRowsPublish change publish scope. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
+        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} ${IDENTITY_USAGE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. setTablePublish and setRowsPublish change one release profile's scope; setActiveReleaseProfile switches which profile exports and publishes use by default. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
       inputSchema: {
         ...projectSelectorSchema,
         description: z.string().optional(),
@@ -705,23 +737,41 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_set_table_publish',
     {
       description:
-        'Preview changing one table publish flag without writing. Publish scope controls what export and publish may include; review the diff and confirmationHash before applying. Turning a table on does not mark its existing rows publishable.',
+        'Preview changing one table scope in a release profile without writing. Publish scope controls what export and publish may include; review the diff and confirmationHash before applying. Turning a table on does not mark its existing rows publishable. all-mode profiles cannot change table scope.',
       inputSchema: {
         ...projectSelectorSchema,
         tableId: z.string().min(1).describe('Stable internal table ID.'),
+        profileId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            'Stable release profile id or unique profile name. Omit to use the active release profile.',
+          ),
         publish: z.boolean(),
         description: z.string().optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ projectId, tableId, publish, description }) => {
+    async ({ projectId, tableId, profileId, publish, description }) => {
       try {
         const context = await requireProject('write', projectId);
+        const stableProfileId = profileId
+          ? await resolveProfileId(context, profileId)
+          : undefined;
         return await previewDataPatch(
           context,
           description ??
-            `${publish ? 'Mark' : 'Unmark'} table ${tableId} as publishable`,
-          [{ op: 'setTablePublish', tableId, publish }],
+            `${publish ? 'Include' : 'Exclude'} table ${tableId} in release profile`,
+          [
+            {
+              op: 'setTablePublish',
+              tableId,
+              ...(stableProfileId ? { profileId: stableProfileId } : {}),
+              publish,
+            },
+          ],
+          stableProfileId ? { profileId: stableProfileId } : {},
         );
       } catch (error) {
         return caughtToolError(error);
@@ -733,24 +783,74 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_set_rows_publish',
     {
       description:
-        'Preview changing publish flags for specific rows without writing. Use stable _rowId values from inspect. Publish scope controls what export and publish may include; review the diff and confirmationHash before applying.',
+        'Preview changing row scope in a release profile without writing. Use stable _rowId values from inspect. Review the diff and confirmationHash before applying. all-mode profiles cannot change row scope.',
       inputSchema: {
         ...projectSelectorSchema,
         tableId: z.string().min(1).describe('Stable internal table ID.'),
+        profileId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            'Stable release profile id or unique profile name. Omit to use the active release profile.',
+          ),
         rowIds: z.array(z.string().min(1)).min(1).describe('Stable _rowId values.'),
         publish: z.boolean(),
         description: z.string().optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ projectId, tableId, rowIds, publish, description }) => {
+    async ({ projectId, tableId, profileId, rowIds, publish, description }) => {
       try {
         const context = await requireProject('write', projectId);
+        const stableProfileId = profileId
+          ? await resolveProfileId(context, profileId)
+          : undefined;
         return await previewDataPatch(
           context,
           description ??
-            `${publish ? 'Mark' : 'Unmark'} ${rowIds.length} row(s) in ${tableId} as publishable`,
-          [{ op: 'setRowsPublish', tableId, rowIds, publish }],
+            `${publish ? 'Include' : 'Exclude'} ${rowIds.length} row(s) in ${tableId} in release profile`,
+          [
+            {
+              op: 'setRowsPublish',
+              tableId,
+              ...(stableProfileId ? { profileId: stableProfileId } : {}),
+              rowIds,
+              publish,
+            },
+          ],
+          stableProfileId ? { profileId: stableProfileId } : {},
+        );
+      } catch (error) {
+        return caughtToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'configra_preview_set_active_release_profile',
+    {
+      description:
+        'Preview switching the active release profile without writing. Exports and publishes that omit profileId use the active profile. Read releaseProfiles from inspect, then apply the returned patch with configra_apply_patch.',
+      inputSchema: {
+        ...projectSelectorSchema,
+        profileId: z
+          .string()
+          .min(1)
+          .describe('Stable release profile id or unique profile name to make active.'),
+        description: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, profileId, description }) => {
+      try {
+        const context = await requireProject('write', projectId);
+        const stableProfileId = await resolveProfileId(context, profileId);
+        return await previewDataPatch(
+          context,
+          description ?? `Make release profile ${stableProfileId} active`,
+          [{ op: 'setActiveReleaseProfile', profileId: stableProfileId }],
+          { profileId: stableProfileId },
         );
       } catch (error) {
         return caughtToolError(error);
@@ -1109,6 +1209,7 @@ const createServer = (options: ServerOptions) => {
     overwrite: boolean,
     includeUnpublished: boolean,
     tableId?: string,
+    profileId?: string,
   ) => {
     try {
       const context = await requireProject('write', projectId);
@@ -1116,6 +1217,7 @@ const createServer = (options: ServerOptions) => {
       const cliArgs = ['export', mode, '--project', context.projectPath!];
       if (tableId) cliArgs.push('--table', tableId);
       cliArgs.push('--out', outPath);
+      if (profileId) cliArgs.push('--profile', profileId);
       if (overwrite) cliArgs.push('--overwrite');
       if (includeUnpublished) cliArgs.push('--all');
       return cliToolResult(await runCli(options, cliArgs), accessState(context));
@@ -1124,21 +1226,29 @@ const createServer = (options: ServerOptions) => {
     }
   };
 
+  const profileSelectorSchema = z
+    .string()
+    .min(1)
+    .describe(
+      'Stable release profile id or unique profile name. Omit to use the active release profile.',
+    );
+
   server.registerTool(
     'configra_export_table',
     {
       description:
-        'Export one published table JSON to an absolute local file path. Only tables and rows marked publishable by a human are included; new rows default to unpublished. Set includeUnpublished=true only for an explicit development export.',
+        'Export one table JSON to an absolute local file path using a release profile. Only tables and rows inside the selected (or active) release profile are included. Set includeUnpublished=true only for an explicit development export that bypasses profiles.',
       inputSchema: {
         ...projectSelectorSchema,
         tableId: z.string().min(1),
+        profileId: profileSelectorSchema.optional(),
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
         includeUnpublished: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, tableId, outPath, overwrite, includeUnpublished }) =>
+    ({ projectId, tableId, profileId, outPath, overwrite, includeUnpublished }) =>
       runExport(
         'table',
         projectId,
@@ -1146,34 +1256,38 @@ const createServer = (options: ServerOptions) => {
         overwrite,
         includeUnpublished,
         tableId,
+        profileId,
       ),
   );
   server.registerTool(
     'configra_export_all',
     {
       description:
-        'Export every published table and config_ids.json to an absolute local directory. Only tables and rows marked publishable by a human are included; new rows default to unpublished. Set includeUnpublished=true only for an explicit development export.',
+        'Export every table and config_ids.json in a release profile to an absolute local directory. Only tables and rows inside the selected (or active) release profile are included. Set includeUnpublished=true only for an explicit development export that bypasses profiles.',
       inputSchema: {
         ...projectSelectorSchema,
+        profileId: profileSelectorSchema.optional(),
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
         includeUnpublished: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, outPath, overwrite, includeUnpublished }) =>
-      runExport('all', projectId, outPath, overwrite, includeUnpublished),
+    ({ projectId, profileId, outPath, overwrite, includeUnpublished }) =>
+      runExport('all', projectId, outPath, overwrite, includeUnpublished, undefined, profileId),
   );
   const runPublish = async (
     mode: 'preview' | 'apply',
     projectId: string | undefined,
     outPath: string,
     confirmationHash?: string,
+    profileId?: string,
   ) => {
     try {
       const context = await requireProject('write', projectId);
       ensureAbsolute(outPath);
       const cliArgs = ['publish', '--project', context.projectPath!, '--out', outPath];
+      if (profileId) cliArgs.push('--profile', profileId);
       if (mode === 'preview') {
         cliArgs.push('--dry-run');
       } else {
@@ -1189,50 +1303,56 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_publish',
     {
       description:
-        'Preview publishing every publishable table and config_ids.json to an absolute local directory. Returns the exact file list, plan counts, target ownership, and a confirmationHash. No files are written. Publish also enforces export scope, ref consistency, path safety, and the publish manifest.',
+        'Preview publishing one release profile (default: the active profile) and config_ids.json to an absolute local directory. Returns the exact file list, plan counts, profile, target ownership, legacy-manifest state, and a confirmationHash bound to the project, profile, directory, plan, and manifest state. No files are written.',
       inputSchema: {
         ...projectSelectorSchema,
+        profileId: profileSelectorSchema.optional(),
         outPath: z.string().min(1).describe('Absolute publish directory.'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ projectId, outPath }) => runPublish('preview', projectId, outPath),
+    ({ projectId, profileId, outPath }) =>
+      runPublish('preview', projectId, outPath, undefined, profileId),
   );
 
   server.registerTool(
     'configra_publish_all',
     {
       description:
-        'Publish every publishable table and config_ids.json to an absolute local directory using the confirmationHash from configra_preview_publish. Writes the publish manifest and removes stale files recorded there; this is the full desktop publish workflow, not an ad-hoc export.',
+        'Publish one release profile and config_ids.json to an absolute local directory using the confirmationHash from configra_preview_publish for the same project, profile, and directory. Writes profileId into the publish manifest and removes only stale files recorded by that profile’s manifest. A directory owned by another project or profile is refused.',
       inputSchema: {
         ...projectSelectorSchema,
+        profileId: profileSelectorSchema.optional(),
         outPath: z.string().min(1).describe('Absolute publish directory.'),
         confirmationHash: z
           .string()
           .min(1)
-          .describe('Value returned by configra_preview_publish for the same project and directory.'),
+          .describe(
+            'Value returned by configra_preview_publish for the same project, profile, and directory.',
+          ),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, outPath, confirmationHash }) =>
-      runPublish('apply', projectId, outPath, confirmationHash),
+    ({ projectId, profileId, outPath, confirmationHash }) =>
+      runPublish('apply', projectId, outPath, confirmationHash, profileId),
   );
 
   server.registerTool(
     'configra_export_ids',
     {
       description:
-        'Export the published config_ids.json to an absolute local file path. Only IDs from publishable rows are included. Set includeUnpublished=true only for an explicit development export.',
+        'Export the config_ids.json of a release profile to an absolute local file path. Only IDs from rows inside the selected (or active) release profile are included. Set includeUnpublished=true only for an explicit development export that bypasses profiles.',
       inputSchema: {
         ...projectSelectorSchema,
+        profileId: profileSelectorSchema.optional(),
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
         includeUnpublished: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, outPath, overwrite, includeUnpublished }) =>
-      runExport('ids', projectId, outPath, overwrite, includeUnpublished),
+    ({ projectId, profileId, outPath, overwrite, includeUnpublished }) =>
+      runExport('ids', projectId, outPath, overwrite, includeUnpublished, undefined, profileId),
   );
 
   return server;

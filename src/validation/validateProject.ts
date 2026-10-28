@@ -529,5 +529,107 @@ export function validateProject(project: ProjectFile, t: Translator): Validation
     }
   }
 
+  // 发布方案引用完整性：方案里出现已删除的表/行时必须显式报错，
+  // 不能让导出悄悄少写内容。v1/v2 未迁移工程没有 releaseProfiles，不在此处报错。
+  const releaseProfiles = project.releaseProfiles;
+  if (releaseProfiles) {
+    const profileIds = new Set<string>();
+    const profileNames = new Map<string, string>();
+    const tableById = new Map(project.tables.map((table) => [table.id, table]));
+
+    for (const profile of releaseProfiles.profiles) {
+      const profileTableId = profile.tables?.[0]?.tableId ?? '';
+      if (!profile.name.trim()) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: profileTableId,
+            message: t('validationReleaseProfileNameEmpty', { profile: profile.id }),
+          },
+          'release-profile-name-empty',
+        );
+      }
+      if (profileIds.has(profile.id)) {
+        pushIssue(
+          {
+            severity: 'error',
+            tableId: profileTableId,
+            message: t('validationReleaseProfileIdDuplicate', { profile: profile.id }),
+          },
+          'release-profile-id-duplicate',
+        );
+      }
+      profileIds.add(profile.id);
+
+      const duplicateNameId = profileNames.get(profile.name);
+      if (duplicateNameId) {
+        pushIssue(
+          {
+            severity: 'warning',
+            tableId: profileTableId,
+            message: t('validationReleaseProfileNameDuplicate', {
+              profile: profile.name,
+              firstProfile: duplicateNameId,
+            }),
+          },
+          'release-profile-name-duplicate',
+        );
+      } else {
+        profileNames.set(profile.name, profile.id);
+      }
+
+      if (profile.mode !== 'selected') continue;
+
+      for (const entry of profile.tables ?? []) {
+        const table = tableById.get(entry.tableId);
+        if (!table) {
+          pushIssue(
+            {
+              severity: 'error',
+              tableId: entry.tableId,
+              message: t('validationReleaseProfileTableMissing', {
+                profile: profile.name,
+                table: entry.tableId,
+              }),
+            },
+            'release-profile-table-missing',
+          );
+          continue;
+        }
+
+        if (entry.rows === 'all') continue;
+        const knownRowIds = new Set(table.rows.map((row) => row._rowId));
+        for (const rowId of entry.rows) {
+          if (knownRowIds.has(rowId)) continue;
+          pushIssue(
+            {
+              severity: 'error',
+              tableId: table.id,
+              rowId,
+              message: t('validationReleaseProfileRowMissing', {
+                profile: profile.name,
+                table: table.name,
+                rowId,
+              }),
+            },
+            'release-profile-row-missing',
+          );
+        }
+      }
+    }
+
+    const activeProfileId = releaseProfiles.activeProfileId;
+    if (activeProfileId && !profileIds.has(activeProfileId)) {
+      pushIssue(
+        {
+          severity: 'error',
+          tableId: project.tables[0]?.id ?? '',
+          message: t('validationReleaseProfileActiveMissing', { profile: activeProfileId }),
+        },
+        'release-profile-active-missing',
+      );
+    }
+  }
+
   return issues;
 }

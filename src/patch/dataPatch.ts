@@ -7,12 +7,22 @@ import {
   type RowIdFactory,
 } from '../model/rowFactory';
 import {
+  findReleaseProfile,
+  normalizeProjectFile,
+  pruneReleaseProfiles,
+  ReleaseProfileError,
+  setActiveReleaseProfile as setActiveReleaseProfileInProject,
+  setReleaseProfileRows,
+  setReleaseProfileTable,
+} from '../release/releaseProfiles';
+import {
   COLUMN_TYPES,
   type ConfigColumn,
   type ConfigRow,
   type ConfigTable,
   type GraphPosition,
   type ProjectFile,
+  type ReleaseProfile,
   type TableIdentity,
   type ValidationIssue,
 } from '../model/types';
@@ -58,14 +68,24 @@ export type DeleteRowsOperation = {
 export type SetTablePublishOperation = {
   op: 'setTablePublish';
   tableId: string;
+  /** 稳定发布方案 id 或唯一名称；不传时使用 activeProfileId。 */
+  profileId?: string;
   publish: boolean;
 };
 
 export type SetRowsPublishOperation = {
   op: 'setRowsPublish';
   tableId: string;
+  /** 稳定发布方案 id 或唯一名称；不传时使用 activeProfileId。 */
+  profileId?: string;
   rowIds: string[];
   publish: boolean;
+};
+
+export type SetActiveReleaseProfileOperation = {
+  op: 'setActiveReleaseProfile';
+  /** 稳定发布方案 id 或唯一名称。 */
+  profileId: string;
 };
 
 export type AddTableOperation = {
@@ -143,7 +163,8 @@ export type DataPatchOperation =
   | AddRowsOperation
   | DeleteRowsOperation
   | SetTablePublishOperation
-  | SetRowsPublishOperation;
+  | SetRowsPublishOperation
+  | SetActiveReleaseProfileOperation;
 
 export type DataPatch = {
   version: 1;
@@ -256,6 +277,20 @@ export type PatchDiff =
       rowId: string;
       before: boolean;
       after: boolean;
+    }
+  | {
+      type: 'releaseProfileScopeUpdated';
+      profileId: string;
+      profileName: string;
+      tableId: string;
+      tableName: string;
+      before: { rows: 'all' | string[] } | null;
+      after: { rows: 'all' | string[] } | null;
+    }
+  | {
+      type: 'activeReleaseProfileChanged';
+      before?: string;
+      after: string;
     };
 
 export type ValidationDelta = {
@@ -375,6 +410,19 @@ const readString = (
   path: string,
 ): { ok: true; value: string } | { ok: false; problem: PatchProblem } => {
   const raw = value[key];
+  if (typeof raw !== 'string' || !raw) {
+    return { ok: false, problem: invalidPatch(`${key} must be a non-empty string.`, `${path}.${key}`) };
+  }
+  return { ok: true, value: raw };
+};
+
+const readOptionalString = (
+  value: Record<string, unknown>,
+  key: string,
+  path: string,
+): { ok: true; value?: string } | { ok: false; problem: PatchProblem } => {
+  const raw = value[key];
+  if (raw === undefined) return { ok: true };
   if (typeof raw !== 'string' || !raw) {
     return { ok: false, problem: invalidPatch(`${key} must be a non-empty string.`, `${path}.${key}`) };
   }
@@ -874,18 +922,25 @@ const parseSetTablePublishOperation = (
   raw: Record<string, unknown>,
   path: string,
 ): { ok: true; value: SetTablePublishOperation } | { ok: false; problem: PatchProblem } => {
-  const unknownKeys = unknownKeysProblem(raw, ['op', 'tableId', 'publish'], path);
+  const unknownKeys = unknownKeysProblem(raw, ['op', 'tableId', 'profileId', 'publish'], path);
   if (unknownKeys) return { ok: false, problem: unknownKeys };
 
   const tableId = readString(raw, 'tableId', path);
   if (!tableId.ok) return tableId;
+  const profileId = readOptionalString(raw, 'profileId', path);
+  if (!profileId.ok) return profileId;
   if (typeof raw.publish !== 'boolean') {
     return { ok: false, problem: invalidPatch('publish must be a boolean.', `${path}.publish`) };
   }
 
   return {
     ok: true,
-    value: { op: 'setTablePublish', tableId: tableId.value, publish: raw.publish },
+    value: {
+      op: 'setTablePublish',
+      tableId: tableId.value,
+      ...(profileId.value !== undefined ? { profileId: profileId.value } : {}),
+      publish: raw.publish,
+    },
   };
 };
 
@@ -893,11 +948,13 @@ const parseSetRowsPublishOperation = (
   raw: Record<string, unknown>,
   path: string,
 ): { ok: true; value: SetRowsPublishOperation } | { ok: false; problem: PatchProblem } => {
-  const unknownKeys = unknownKeysProblem(raw, ['op', 'tableId', 'rowIds', 'publish'], path);
+  const unknownKeys = unknownKeysProblem(raw, ['op', 'tableId', 'profileId', 'rowIds', 'publish'], path);
   if (unknownKeys) return { ok: false, problem: unknownKeys };
 
   const tableId = readString(raw, 'tableId', path);
   if (!tableId.ok) return tableId;
+  const profileId = readOptionalString(raw, 'profileId', path);
+  if (!profileId.ok) return profileId;
   if (
     !Array.isArray(raw.rowIds) ||
     raw.rowIds.length === 0 ||
@@ -920,9 +977,26 @@ const parseSetRowsPublishOperation = (
     value: {
       op: 'setRowsPublish',
       tableId: tableId.value,
+      ...(profileId.value !== undefined ? { profileId: profileId.value } : {}),
       rowIds: raw.rowIds,
       publish: raw.publish,
     },
+  };
+};
+
+const parseSetActiveReleaseProfileOperation = (
+  raw: Record<string, unknown>,
+  path: string,
+): { ok: true; value: SetActiveReleaseProfileOperation } | { ok: false; problem: PatchProblem } => {
+  const unknownKeys = unknownKeysProblem(raw, ['op', 'profileId'], path);
+  if (unknownKeys) return { ok: false, problem: unknownKeys };
+
+  const profileId = readString(raw, 'profileId', path);
+  if (!profileId.ok) return profileId;
+
+  return {
+    ok: true,
+    value: { op: 'setActiveReleaseProfile', profileId: profileId.value },
   };
 };
 
@@ -949,6 +1023,7 @@ const parseOperation = (
   if (raw.op === 'deleteRows') return parseDeleteRowsOperation(raw, path);
   if (raw.op === 'setTablePublish') return parseSetTablePublishOperation(raw, path);
   if (raw.op === 'setRowsPublish') return parseSetRowsPublishOperation(raw, path);
+  if (raw.op === 'setActiveReleaseProfile') return parseSetActiveReleaseProfileOperation(raw, path);
 
   return { ok: false, problem: invalidPatch(`Unsupported operation "${raw.op}".`, `${path}.op`) };
 };
@@ -1000,10 +1075,9 @@ export function parseDataPatch(raw: unknown):
 
 const cloneProject = (project: ProjectFile): ProjectFile => JSON.parse(JSON.stringify(project));
 
-const ensureExplicitPublishPolicy = (project: ProjectFile) => {
-  project.version = 2;
-  project.exportPolicy = 'explicit';
-};
+/** 补丁输出必须是 v3 + 发布方案，避免旧 publish 标记和方案并存。 */
+const normalizedProject = (project: ProjectFile): ProjectFile =>
+  normalizeProjectFile(cloneProject(project));
 
 const sortForCanonicalJson = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(sortForCanonicalJson);
@@ -1477,16 +1551,59 @@ const applyDeleteRows = (
   return undefined;
 };
 
+const patchProfileProblem = (error: ReleaseProfileError, path: string): PatchProblem =>
+  error.code === 'PROFILE_READ_ONLY'
+    ? conflictProblem(error.message, path)
+    : targetProblem(error.message, path);
+
+const resolvePatchProfile = (
+  project: ProjectFile,
+  selector: string | undefined,
+  path: string,
+): { ok: true; profile: ReleaseProfile } | { ok: false; problem: PatchProblem } => {
+  try {
+    return { ok: true, profile: findReleaseProfile(project, selector) };
+  } catch (error) {
+    if (error instanceof ReleaseProfileError) {
+      return { ok: false, problem: patchProfileProblem(error, path) };
+    }
+    throw error;
+  }
+};
+
 const applySetTablePublish = (
   project: ProjectFile,
   operation: SetTablePublishOperation,
   operationPath: string,
 ): PatchProblem | undefined => {
-  const target = findTable(project, operation.tableId, `${operationPath}.tableId`);
-  if (!target.ok) return target.problem;
+  const resolved = resolvePatchProfile(
+    project,
+    operation.profileId,
+    `${operationPath}.profileId`,
+  );
+  if (!resolved.ok) return resolved.problem;
 
-  target.table.publish = operation.publish ? true : undefined;
-  if (operation.publish) ensureExplicitPublishPolicy(project);
+  if (resolved.profile.mode === 'all') {
+    return conflictProblem(
+      `Release profile "${resolved.profile.name}" is in all mode; its table scope cannot be edited.`,
+      `${operationPath}.profileId`,
+    );
+  }
+
+  try {
+    const next = setReleaseProfileTable(
+      project,
+      resolved.profile.id,
+      operation.tableId,
+      operation.publish,
+    );
+    project.releaseProfiles = next.releaseProfiles;
+  } catch (error) {
+    if (error instanceof ReleaseProfileError) {
+      return patchProfileProblem(error, operationPath);
+    }
+    throw error;
+  }
   return undefined;
 };
 
@@ -1495,6 +1612,20 @@ const applySetRowsPublish = (
   operation: SetRowsPublishOperation,
   operationPath: string,
 ): PatchProblem | undefined => {
+  const resolved = resolvePatchProfile(
+    project,
+    operation.profileId,
+    `${operationPath}.profileId`,
+  );
+  if (!resolved.ok) return resolved.problem;
+
+  if (resolved.profile.mode === 'all') {
+    return conflictProblem(
+      `Release profile "${resolved.profile.name}" is in all mode; its row scope cannot be edited.`,
+      `${operationPath}.profileId`,
+    );
+  }
+
   const target = findTable(project, operation.tableId, `${operationPath}.tableId`);
   if (!target.ok) return target.problem;
 
@@ -1509,16 +1640,36 @@ const applySetRowsPublish = (
   for (const [index, rowId] of operation.rowIds.entries()) {
     const row = findRowIndex(target.table, rowId, `${operationPath}.rowIds[${index}]`);
     if (!row.ok) return row.problem;
-    target.table.rows[row.index] = {
-      ...row.row,
-      publish: operation.publish ? true : undefined,
-    };
   }
 
-  if (operation.publish) {
-    target.table.publish = true;
-    ensureExplicitPublishPolicy(project);
+  try {
+    const next = setReleaseProfileRows(
+      project,
+      resolved.profile.id,
+      operation.tableId,
+      operation.rowIds,
+      operation.publish,
+    );
+    project.releaseProfiles = next.releaseProfiles;
+  } catch (error) {
+    if (error instanceof ReleaseProfileError) {
+      return patchProfileProblem(error, operationPath);
+    }
+    throw error;
   }
+  return undefined;
+};
+
+const applySetActiveReleaseProfile = (
+  project: ProjectFile,
+  operation: SetActiveReleaseProfileOperation,
+  operationPath: string,
+): PatchProblem | undefined => {
+  const resolved = resolvePatchProfile(project, operation.profileId, `${operationPath}.profileId`);
+  if (!resolved.ok) return resolved.problem;
+
+  const next = setActiveReleaseProfileInProject(project, resolved.profile.id);
+  project.releaseProfiles = next.releaseProfiles;
   return undefined;
 };
 
@@ -1716,6 +1867,56 @@ const makeDiff = (before: ProjectFile, after: ProjectFile): PatchDiff[] => {
     }
   }
 
+  const profileScopeOf = (
+    profile: ReleaseProfile | undefined,
+    tableId: string,
+  ): { rows: 'all' | string[] } | null => {
+    const entry = profile?.tables?.find((candidate) => candidate.tableId === tableId);
+    if (!entry) return null;
+    return { rows: entry.rows === 'all' ? 'all' : [...entry.rows] };
+  };
+
+  const beforeProfiles = before.releaseProfiles?.profiles ?? [];
+  const afterProfiles = after.releaseProfiles?.profiles ?? [];
+  for (const profile of afterProfiles) {
+    const beforeProfile = beforeProfiles.find((candidate) => candidate.id === profile.id);
+    if (profile.mode !== 'selected') continue;
+
+    const tableIds = new Set([
+      ...(beforeProfile?.tables ?? []).map((entry) => entry.tableId),
+      ...(profile.tables ?? []).map((entry) => entry.tableId),
+    ]);
+    for (const tableId of tableIds) {
+      const beforeScope = profileScopeOf(beforeProfile, tableId);
+      const afterScope = profileScopeOf(profile, tableId);
+      if (JSON.stringify(beforeScope) === JSON.stringify(afterScope)) continue;
+
+      const tableName =
+        after.tables.find((table) => table.id === tableId)?.name ??
+        before.tables.find((table) => table.id === tableId)?.name ??
+        tableId;
+      diff.push({
+        type: 'releaseProfileScopeUpdated',
+        profileId: profile.id,
+        profileName: profile.name,
+        tableId,
+        tableName,
+        before: beforeScope,
+        after: afterScope,
+      });
+    }
+  }
+
+  const beforeActiveProfileId = before.releaseProfiles?.activeProfileId;
+  const afterActiveProfileId = after.releaseProfiles?.activeProfileId;
+  if (beforeActiveProfileId !== afterActiveProfileId && afterActiveProfileId) {
+    diff.push({
+      type: 'activeReleaseProfileChanged',
+      before: beforeActiveProfileId,
+      after: afterActiveProfileId,
+    });
+  }
+
   return diff;
 };
 
@@ -1724,7 +1925,9 @@ export function applyDataPatch(
   patch: DataPatch,
   options: ApplyDataPatchOptions = {},
 ): ApplyDataPatchResult {
-  const nextProject = cloneProject(project);
+  // 补丁也走 v1/v2 -> v3 迁移，避免旧 publish 标记继续参与发布范围。
+  const beforeProject = normalizedProject(project);
+  const nextProject = cloneProject(beforeProject);
   const usedRowIds = new Set(nextProject.tables.flatMap((table) => table.rows.map((row) => row._rowId)));
   const createRowId = options.createRowId ?? makeId;
   const createdTableIds = new Set<string>();
@@ -1760,12 +1963,17 @@ export function applyDataPatch(
       problem = applySetTablePublish(nextProject, operation, operationPath);
     } else if (operation.op === 'setRowsPublish') {
       problem = applySetRowsPublish(nextProject, operation, operationPath);
+    } else if (operation.op === 'setActiveReleaseProfile') {
+      problem = applySetActiveReleaseProfile(nextProject, operation, operationPath);
     } else {
       problem = applyDeleteRows(nextProject, operation, operationPath);
     }
 
     if (problem) return { ok: false, problem };
   }
+
+  // 删除表/行后同步清理方案里的悬空引用，避免补丁自身制造 profile 校验错误。
+  nextProject.releaseProfiles = pruneReleaseProfiles(nextProject).releaseProfiles;
 
   for (const tableId of createdTableIds) {
     const table = nextProject.tables.find((candidate) => candidate.id === tableId);
@@ -1798,7 +2006,7 @@ export function applyDataPatch(
   return {
     ok: true,
     project: nextProject,
-    diff: makeDiff(project, nextProject),
+    diff: makeDiff(beforeProject, nextProject),
   };
 }
 

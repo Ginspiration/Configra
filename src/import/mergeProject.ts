@@ -1,5 +1,6 @@
 import type { Translator } from '../i18n';
 import type { ConfigTable, GraphPosition, ProjectFile, ValidationIssue } from '../model/types';
+import { normalizeProjectFile } from '../release/releaseProfiles';
 import { validateProject } from '../validation/validateProject';
 
 export type MergeConflictKind = 'id' | 'name';
@@ -207,11 +208,12 @@ export function applyMerge(
     });
   }
 
-  return {
-    version: current.version === 2 || incoming.version === 2 ? 2 : 1,
-    ...(current.exportPolicy ? { exportPolicy: current.exportPolicy } : {}),
+  // 导入保留当前工程的发布方案；导入表按“新表默认不在 selected 方案内”处理。
+  return normalizeProjectFile({
+    version: 3,
+    ...(current.releaseProfiles ? { releaseProfiles: current.releaseProfiles } : {}),
     tables,
-  };
+  });
 }
 
 export function computeMergeReport(

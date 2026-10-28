@@ -21,14 +21,16 @@
 - 字段类型支持 `int`、`float`、`string`、`bool`、`enum`、`ref`、`json`。
 - 字段支持主键、必填、自增。
 - 字段可用 `export: false` 从导出中排除。
-- 表和行有独立的“可发布”标记；导出/发布默认只包含已标记内容，新表和新行默认不发布。
+- 同一工程可维护多套发布方案（release profile）：方案可以发布全部表和行，也可以只发布指定表、指定行；导出、发布、CLI 和 MCP 都按当前方案执行。
+- 工程文件升级到版本 3；v1/v2 旧工程打开后自动迁移成 default 方案，没有任何 publish 标记时迁移为空 selected，不会静默全量发布。
+- 每个方案在设置里绑定自己的发布目录，发布清单记录方案 id；不同方案发布到不同目录时互不清理，同一目录属于其他方案时拒绝发布。
 - `enum` 和 `ref` 单元格使用下拉编辑，下拉支持输入过滤搜索。
 - `ref` 单元格可跳转到被引用的目标行（单元格内导航按钮或右键“跳转到引用行”）。
 - 行数据编辑弹窗提供“表格预览”字段总览，展示字段结构、备注、类型、属性徽章和导出标记，点击字段可定位到对应列。
 - 表格右键菜单支持上方插入行、下方插入行、追加行、全部大写、复制行 JSON、删除行；列头右键可填写字段备注。
 - 粘贴多行文本到单列时，会按非空行自动分配到多行；粘贴超过已有行数时自动创建行。
 - 左上角应用菜单集中提供新建工程、保存、导入、导出全部和设置。
-- 导出全部会把可发布表的 JSON 和 `config_ids.json` 导出到目录；覆盖已有文件前确认，桌面模式写后逐个读回校验。
+- 导出全部会把当前发布方案范围内的表 JSON 和 `config_ids.json` 导出到目录；覆盖已有文件前确认，桌面模式写后逐个读回校验。
 - 导入工程文件时显示合并报告：识别同 ID 或同名的表冲突，可逐表选择覆盖、跳过或重命名，并对比新增/既有校验问题。
 - 表右键菜单支持从 JSON 数组导入行数据（粘贴或文件），支持严格模式和自增模式，导入前显示逐行校验报告。
 - 画布和表节点右键菜单支持新建表、编辑、单表导出、删除、ID 注册表操作和小地图切换。
@@ -104,11 +106,11 @@ Dialogue.speaker_id -> Speaker.id
 
 ## 界面行为
 
-- 顶部工具栏：左侧是应用菜单（新建工程、保存、导入、导出全部、设置），中间显示当前工程文件名，右侧实时显示错误和警告数量。
+- 顶部工具栏：左侧是应用菜单（新建工程、保存、导入、导出全部、设置），中间显示当前工程文件名和发布方案切换器，右侧实时显示错误和警告数量。
 - 左侧表列表：点击选中并聚焦画布节点，双击打开行数据编辑弹窗，右键打开表操作菜单；表项显示备注和字段/行数统计，列表宽度可拖动调整（160–420px）并记忆。
 - 画布：表节点展示表名、字段列表以及 `PK`、`AI`、必填和 `ref` 目标标记；拖动保存位置，双击打开编辑弹窗，右键打开表操作菜单。
 - 右键画布空白处可新建表、复制/下载 ID 注册表或切换小地图。
-- 设置面板按“界面”（语言、主题、小地图）和“AI / MCP”分类。
+- 设置面板按“界面”（语言、主题、小地图）、“发布”（发布方案、方案目录、保存时自动发布）和“AI / MCP”分类。
 - 除输入框、文本框、下拉框和可编辑控件外，原生浏览器右键菜单会被禁用。
 
 ## 主要工作流
@@ -119,7 +121,8 @@ Dialogue.speaker_id -> Speaker.id
 4. 将字段类型设置为 `ref`，并选择目标表和目标字段。
 5. 根据问题列表修复校验错误。
 6. 右键表节点，复制或导出该表 JSON，或使用“导入 JSON”批量导入行数据。
-7. 使用左上角应用菜单新建、保存、导入或导出工程；右键画布空白处可新建表、切换小地图或导出 `config_ids.json`。
+7. 在工具栏切换发布方案，或在“设置 → 发布”里创建、复制、重命名、删除方案，并为每个方案选择发布目录。
+8. 使用左上角应用菜单新建、保存、导入或导出工程；右键画布空白处可新建表、切换小地图或导出 `config_ids.json`。
 
 ## `ref` 引用语义
 
@@ -174,7 +177,7 @@ Dialogue.speaker_id -> Speaker.id
 - 内置搜索会定位并高亮匹配单元格，同时显示当前序号和匹配总数。
 - 支持填充柄，可快速向下/向右填充。
 - 支持平滑滚动；行号可点击（点击即选中整行）。
-- 第一列数据单元格最左缘显示发布状态竖条（紧贴行号右侧）：绿色表示该行可发布，灰色表示未发布；弹窗副标题有对应图例。
+- 第一列数据单元格最左缘显示发布状态竖条（紧贴行号右侧）：绿色表示该行在当前发布方案内，灰色表示不在；弹窗副标题有对应图例和当前方案名。
 - `ref` 单元格可以点击单元格内导航按钮或使用右键“跳转到引用行”，直接打开目标表并定位到对应的目标行和字段。
 - 行数据编辑弹窗顶部提供“表格预览”按钮，打开字段总览后点击字段名可定位到网格中的对应列。
 - 列头悬停会显示字段备注；右键列头可填写或修改字段备注。
@@ -203,8 +206,19 @@ Dialogue.speaker_id -> Speaker.id
 
 ```ts
 export type ProjectFile = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
+  /** @deprecated 仅用于读取 v1/v2 旧工程。 */
   exportPolicy?: 'explicit';
+  releaseProfiles?: {
+    version: 1;
+    activeProfileId?: string;
+    profiles: Array<{
+      id: string;
+      name: string;
+      mode: 'all' | 'selected';
+      tables?: Array<{ tableId: string; rows: 'all' | string[] }>;
+    }>;
+  };
   tables: ConfigTable[];
 };
 
@@ -216,6 +230,7 @@ export type ConfigTable = {
   columns: ConfigColumn[];
   rows: ConfigRow[];
   identity?: TableIdentity;
+  /** @deprecated 仅用于 v1/v2 迁移。 */
   publish?: boolean;
 };
 
@@ -243,12 +258,15 @@ export type ConfigColumn = {
 
 export type ConfigRow = {
   _rowId: string;
+  /** @deprecated 仅用于 v1/v2 迁移。 */
   publish?: boolean;
   values: Record<string, unknown>;
 };
 ```
 
-`publish` 是导出/发布范围标记：只有表 `publish: true` 且行 `publish: true` 才会进入运行时 JSON；新表、新行默认不发布。旧工程第一次勾选可发布表时，工程版本会升级为 2，避免旧版 Configra 忽略发布范围后又全量导出。
+发布范围只由 `releaseProfiles` 决定：`mode: 'all'` 包含全部表和行，`mode: 'selected'` 只包含列出的表，`rows` 为 `'all'` 或稳定 `_rowId` 数组。每个方案使用稳定 `id` 作为引用，`name` 只用于展示和 CLI 选择。`table.publish` / `row.publish` / `exportPolicy` 只保留用于读取 v1/v2 旧工程并迁移成 default 方案；v3 保存后旧版 Configra 会拒绝打开，避免忽略方案后又全量导出。
+
+方案只保存“范围”，不保存另一套行值。如果同一个 `_rowId` 在 A/B 需要不同的值，应拆成两个工程文件或分支，而不是用方案表达。
 
 重要 ID 规则：
 
@@ -297,7 +315,7 @@ SOUND_CLICK (1)
 
 ## 导出规则
 
-导出默认只包含“可发布”的内容：表必须 `publish: true`，行也必须 `publish: true`；工程文件版本 2 且 `exportPolicy: "explicit"` 表示已经配置发布范围。旧工程第一次导出前必须先勾选可发布表，否则导出会被拒绝。需要显式全量导出时，命令行使用 `--all`，MCP 使用 `includeUnpublished: true`。
+导出默认只包含当前发布方案（未指定时是 `activeProfileId`）范围内的内容。`mode: 'all'` 包含全部表和行；`selected` 只包含列出的表，`rows` 为 `'all'` 或指定 `_rowId`。方案引用了不存在的表/行时导出直接报错。需要显式全量导出时，命令行使用 `--all`，MCP 使用 `includeUnpublished: true`；这只是开发出口，发布流程不允许用它绕过方案。
 
 表 JSON：
 
@@ -306,8 +324,8 @@ SOUND_CLICK (1)
 - 对象 key 使用字段展示名。
 - 不输出 `_rowId` 和编辑器内部元数据。
 - `export: false` 的字段会被跳过。
-- 只输出可发布的表/行；未发布行不会进入 JSON。
-- 导出前会校验引用：目标表必须可发布、目标行必须在可发布范围、目标字段必须参与导出且值唯一；任一不满足就拒绝导出。
+- 只输出方案范围内的表/行；方案外的行不会进入 JSON。
+- 导出前会校验引用：源行和目标行都必须在方案范围内，目标表必须包含在方案中，目标字段必须参与导出且值唯一；任一不满足就拒绝导出。
 - `json` 字段如果是合法 JSON 字符串，导出时会解析为 JSON 值。
 
 ID 注册表 JSON：
@@ -316,11 +334,11 @@ ID 注册表 JSON：
 - key 格式为 `${namespace}.${symbolKey}`。
 - value 来自配置的运行时 ID 字段。
 - key 或 value 为空的行会跳过。
-- 和表 JSON 使用同一批可发布行；未发布行的 ID 不会出现在注册表里。
+- 和表 JSON 使用同一方案、同一批行；方案外的 ID 不会出现在注册表里。
 
-一键导出全部表时使用当前编辑器内存中的数据，包括尚未保存到工程文件的修改，但只包含可发布的表和行。文件名会做安全化处理，重名自动加数字后缀；桌面模式先选择目标目录，覆盖已有文件前会确认，写完后逐个读回校验，全部一致才显示成功；桌面“导出全部”和“发布”共用同一套发布清单与旧文件清理逻辑；浏览器模式优先使用目录选择器，否则逐个下载文件。
+一键导出全部表时使用当前编辑器内存中的数据，包括尚未保存到工程文件的修改，但只包含当前方案范围内的表和行。文件名会做安全化处理，重名自动加数字后缀；桌面模式先选择目标目录，覆盖已有文件前会确认，写完后逐个读回校验，全部一致才显示成功；桌面“导出全部”和“发布”共用同一套发布清单与旧文件清理逻辑；浏览器模式优先使用目录选择器，否则逐个下载文件。
 
-桌面发布还会在目标目录写 `.configra-publish.json` 清单，记录本次文件、hash 和工程标识。下次发布时，上一次清单里存在、这次不再生成且内容未被改动的旧文件会被删除，避免“取消发布”后旧 JSON 继续留在运行时目录。清单属于另一个工程时发布会直接拒绝，发布目录按工程分别保存。首次发布到没有清单的旧目录时不会删除未知文件，只提示；从第二次发布起才按清单清理。
+桌面发布还会在目标目录写 `.configra-publish.json` 清单，记录本次文件、hash、工程标识和发布方案 `profileId`。每个方案在“设置 → 发布”里绑定自己的目录；发布目录按“工程 + 方案”保存在本机，不写进工程文件。下次发布时，只删除**本方案清单**中上次存在、这次不再生成且内容未被改动的旧文件。清单属于另一个工程或另一个方案时发布会直接拒绝。首次发布到没有清单的旧目录时不会删除未知文件，只提示；旧清单没有 `profileId` 时按 legacy 处理，第一次用新方案接管必须显式确认，且本次不删除任何旧文件。
 
 ## 保存和导入
 
@@ -503,21 +521,21 @@ Configra/
 Run batch edits without starting Vite or Tauri:
 
 ```bash
-npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]
-npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]
+npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--profile <id|name>] [--offset 0] [--limit 100] [--json]
+npm run --silent cfg -- query rows --project <file> --query <file|-> [--profile <id|name>] [--json]
 npm run --silent cfg -- validate --project <file> [--json]
 npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]
 npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]
 npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]
-npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]
-npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]
-npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]
-npm run --silent cfg -- publish --project <file> --out <directory> [--dry-run] [--confirm <hash>] [--json]
+npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--profile <id|name>] [--all] [--overwrite] [--json]
+npm run --silent cfg -- export all --project <file> --out <directory> [--profile <id|name>] [--all] [--overwrite] [--json]
+npm run --silent cfg -- export ids --project <file> --out <file> [--profile <id|name>] [--all] [--overwrite] [--json]
+npm run --silent cfg -- publish --project <file> --out <directory> [--profile <id|name>] [--dry-run] [--confirm <hash>] [--json]
 ```
 
 Patch files use stable IDs only and follow `schemas/data-patch.schema.json`.
 
-`publish` runs the same publish workflow as the desktop app: write the publish manifest, clean stale files recorded by it, enforce export scope and ref consistency. Run `publish --dry-run` first and pass the returned `confirmationHash` to `publish --confirm`.
+`publish` runs the same publish workflow as the desktop app: write the publish manifest with the release profile id, clean only stale files recorded by that profile’s manifest, enforce profile scope and ref consistency. `--profile` selects a stable id or unique name; without it the active profile is used. Run `publish --dry-run` first and pass the returned `confirmationHash` to `publish --confirm` with the same profile and directory; changing profile or directory invalidates the confirmation.
 
 不指定 `--table` 的 inspect 会返回工程级 `referenceSemantics` 和 `relationships`；表级 inspect 会返回与该表有关的传入、传出关系。关系摘要包含源/目标稳定 ID、展示名、目标是否存在，以及目标字段是否为主键或 identity 运行时值字段。
 
@@ -568,12 +586,12 @@ inspect 结果中的 `referenceSemantics` 会说明 `ref` 单元格保存目标�
 - 读取：`configra_inspect_project`、`configra_inspect_table`、`configra_query_rows`。
 - 校验：`configra_validate`。
 - 通用修改预览：`configra_preview_patch`。
-- 发布范围预览：`configra_preview_set_table_publish`、`configra_preview_set_rows_publish`；返回普通 patch 和 `confirmationHash`，用 `configra_apply_patch` 应用。
+- 发布方案：inspect 返回 `releaseProfiles`、`activeProfileId`、当前方案和每个方案的表/行计数。`configra_preview_set_table_publish`、`configra_preview_set_rows_publish` 接受可选 `profileId` 修改指定方案；`configra_preview_set_active_release_profile` 切换当前方案；均返回普通 patch 和 `confirmationHash`，用 `configra_apply_patch` 应用。
 - 引用预览：`configra_preview_define_ref`、`configra_preview_assign_refs`。
 - 应用与恢复：`configra_apply_patch`、`configra_rollback_transaction`。
-- 导出：`configra_export_table`、`configra_export_ids`、`configra_export_all`；默认只导出可发布内容，`includeUnpublished: true` 是显式全量开关。
-- 发布：`configra_preview_publish` 返回发布清单和 `confirmationHash`；`configra_publish_all` 用该确认值执行完整发布，写发布清单并清理旧文件。
-- 只读：inspect 结果会返回 `publishScope`、表/行的 `publish` 标记和可发布行数。MCP 可以修改发布范围，但必须经过 preview/apply 两阶段确认。MCP 不会修改界面里的“保存时自动发布”开关，也不会使用按工程保存的发布目录；发布目标由 `outPath` 显式传入。
+- 导出：`configra_export_table`、`configra_export_ids`、`configra_export_all`；默认只导出当前方案范围，可传 `profileId` 指定方案；`includeUnpublished: true` 是显式全量开发开关。
+- 发布：`configra_preview_publish` 接受可选 `profileId`，返回方案、文件列表、目标归属、legacy 状态和绑定“工程 + 方案 + 目录 + 清单”的 `confirmationHash`；`configra_publish_all` 用该确认值发布到同一方案、同一目录，写带 `profileId` 的清单并只清理本方案的旧文件。目录属于另一个工程或方案时拒绝发布。
+- 只读：inspect 结果会返回 `releaseProfiles`、`activeProfileId`、当前方案的 `publishScope` 和表/行范围标记。MCP 可以读取、切换/指定方案、修改选中方案的表/行范围、导出和发布，但必须经过 preview/apply 两阶段确认；创建/删除方案仍由桌面 UI 管理。MCP 不会修改界面里的“保存时自动发布”开关，也不会使用按工程/方案保存的发布目录；发布目标由 `outPath` 显式传入。
 
 所有修改仍采用两阶段流程：preview 返回目标 `projectId`、精确 `patch` 和绑定该项目的 `confirmationHash`，apply 必须对同一工程原样提交后二者。即使两个工程文件内容完全相同，A 工程的确认值也不能用于 B 工程。ref 专用工具不会绕过 patch 校验、工程哈希、写锁、事务快照或校验增量。
 

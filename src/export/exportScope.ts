@@ -1,9 +1,16 @@
 import { identityNamespace } from '../model/schemaUtils';
+import {
+  findReleaseProfile,
+  releaseProfileScope,
+  ReleaseProfileError,
+  type ReleaseProfileScope,
+} from '../release/releaseProfiles';
 import type {
   ConfigColumn,
   ConfigRow,
   ConfigTable,
   ProjectFile,
+  ReleaseProfile,
   ValidationIssue,
 } from '../model/types';
 
@@ -24,8 +31,13 @@ export type ExportProblemCode =
   | 'DUPLICATE_ID'
   | 'UNSAFE_EXPORT_TARGET'
   | 'FOREIGN_PUBLISH_MANIFEST'
+  | 'FOREIGN_RELEASE_PROFILE'
+  | 'LEGACY_PUBLISH_MANIFEST'
   | 'INVALID_PUBLISH_MANIFEST'
-  | 'EXPORT_VERIFY_FAILED';
+  | 'EXPORT_VERIFY_FAILED'
+  | 'PROFILE_NOT_FOUND'
+  | 'PROFILE_TABLE_NOT_FOUND'
+  | 'PROFILE_ROW_NOT_FOUND';
 
 export type ExportProblem = {
   code: ExportProblemCode;
@@ -58,6 +70,10 @@ export type ExportPlanTable = {
 
 export type ExportPlan = {
   mode: 'published' | 'all';
+  /** 本次导出所使用的发布方案；includeUnpublished 显式全量导出时为空。 */
+  profileId?: string;
+  profileName?: string;
+  profileMode?: ReleaseProfile['mode'];
   tables: ExportPlanTable[];
   files: ExportJsonFile[];
   idRegistry: Record<string, unknown>;
@@ -67,11 +83,13 @@ export type ExportPlan = {
 };
 
 export type BuildExportPlanOptions = {
-  /** 显式全量导出；只用于用户确认过的开发/备份场景。 */
+  /** 发布方案 id 或唯一名称；不传时使用 activeProfileId。 */
+  profileId?: string;
+  /** 显式全量导出；只用于用户确认过的开发/备份场景，发布流程不允许使用。 */
   includeUnpublished?: boolean;
-  /** 只导出一张表；该表未发布时仍会报错，除非 includeUnpublished。 */
+  /** 只导出一张表；该表不在方案范围内时仍会报错，除非 includeUnpublished。 */
   onlyTableId?: string;
-  /** 当前工程的校验问题；只拦截已发布表/行里的错误。 */
+  /** 当前工程的校验问题；只拦截方案范围内表/行里的错误。 */
   issues?: ValidationIssue[];
 };
 
@@ -128,14 +146,44 @@ const fail = (problem: ExportProblem): never => {
   throw new ExportScopeError(problem);
 };
 
+const profileProblem = (error: ReleaseProfileError): ExportProblem => {
+  if (error.code === 'PROFILE_TABLE_NOT_FOUND') {
+    return {
+      code: 'PROFILE_TABLE_NOT_FOUND',
+      message: error.message,
+      ...(error.tableId ? { tableId: error.tableId } : {}),
+    };
+  }
+  if (error.code === 'PROFILE_ROW_NOT_FOUND') {
+    return {
+      code: 'PROFILE_ROW_NOT_FOUND',
+      message: error.message,
+      ...(error.tableId ? { tableId: error.tableId } : {}),
+      ...(error.rowId ? { rowId: error.rowId } : {}),
+    };
+  }
+  return { code: 'PROFILE_NOT_FOUND', message: error.message };
+};
+
+const rowsInScope = (
+  table: ConfigTable,
+  scope: ReleaseProfileScope,
+): ConfigRow[] => {
+  const rows = scope.rowsByTable.get(table.id);
+  if (rows === undefined) return [];
+  if (rows === 'all') return table.rows;
+  return table.rows.filter((row) => rows.has(row._rowId));
+};
+
 /**
  * 计算一次导出/发布实际会写出的内容。
  *
  * 安全规则：
- * - 工程未声明 exportPolicy 时，普通导出直接拒绝；
- * - 只有 publish=true 的表和行会进入文件；
- * - config_ids.json 与表 JSON 使用同一批行，避免 ID 注册表泄漏未发布行；
- * - 已发布行引用未发布行时拒绝导出；
+ * - 发布范围只来自 releaseProfiles；不接受旧的 table/row publish 标记；
+ * - 方案引用了不存在的 tableId/_rowId 时直接报错，不静默跳过；
+ * - config_ids.json 与表 JSON 使用同一批行，避免 ID 注册表泄漏方案外内容；
+ * - 方案外的源/目标行引用时拒绝导出；
+ * - 显式全量导出（includeUnpublished）仍绕过方案，但发布流程不允许调用；
  * - 写完前自检行数、字段名和 ID 集合。
  */
 export function buildExportPlan(
@@ -145,12 +193,24 @@ export function buildExportPlan(
   const includeUnpublished = options.includeUnpublished === true;
   const onlyTableId = options.onlyTableId;
 
-  if (!includeUnpublished && project.exportPolicy !== 'explicit') {
-    fail({
-      code: 'EXPORT_SCOPE_UNCONFIGURED',
-      message:
-        'This project has no explicit publish scope. Mark at least one table as publishable before exporting.',
-    });
+  let profile: ReleaseProfile | undefined;
+  let scope: ReleaseProfileScope | undefined;
+  if (!includeUnpublished) {
+    if (!project.releaseProfiles || project.releaseProfiles.profiles.length === 0) {
+      fail({
+        code: 'EXPORT_SCOPE_UNCONFIGURED',
+        message:
+          'This project has no release profiles. Open it in Configra to migrate its publish scope before exporting.',
+      });
+    }
+
+    try {
+      profile = findReleaseProfile(project, options.profileId);
+      scope = releaseProfileScope(project, profile);
+    } catch (error) {
+      if (error instanceof ReleaseProfileError) fail(profileProblem(error));
+      throw error;
+    }
   }
 
   const candidateTables = onlyTableId
@@ -166,7 +226,7 @@ export function buildExportPlan(
   }
 
   const includedTables = candidateTables.filter(
-    (table) => includeUnpublished || table.publish === true,
+    (table) => includeUnpublished || scope?.tableIds.has(table.id) === true,
   );
 
   if (includedTables.length === 0 && candidateTables.length > 0) {
@@ -174,14 +234,16 @@ export function buildExportPlan(
       const table = candidateTables[0];
       fail({
         code: 'TABLE_NOT_PUBLISHED',
-        message: `Table "${table.name || table.id}" is not marked as publishable.`,
+        message: `Table "${table.name || table.id}" is not included in release profile "${profile?.name ?? ''}".`,
         tableId: table.id,
       });
     }
 
     fail({
       code: 'NO_PUBLISHED_TABLES',
-      message: 'No tables are marked as publishable.',
+      message: profile
+        ? `Release profile "${profile.name}" does not include any tables.`
+        : 'No tables are marked as publishable.',
     });
   }
 
@@ -189,24 +251,20 @@ export function buildExportPlan(
   for (const table of includedTables) {
     selectedRowsByTable.set(
       table.id,
-      includeUnpublished
-        ? table.rows
-        : table.rows.filter((row) => row.publish === true),
+      includeUnpublished || !scope ? table.rows : rowsInScope(table, scope),
     );
   }
 
-  // 单表导出时，被引用的目标表不一定也在本次输出里；只要它在工程里
-  // 是可发布的，就按它的可发布行做引用一致性校验。
+  // 单表导出时，被引用的目标表不一定也在本次输出里；只要它在方案范围内，
+  // 就按它的方案内行做引用一致性校验。
   const referenceTables = includeUnpublished
     ? project.tables
-    : project.tables.filter((table) => table.publish === true);
+    : project.tables.filter((table) => scope?.tableIds.has(table.id) === true);
   const referenceRowsByTable = new Map<string, ConfigRow[]>();
   for (const table of referenceTables) {
     referenceRowsByTable.set(
       table.id,
-      includeUnpublished
-        ? table.rows
-        : table.rows.filter((row) => row.publish === true),
+      includeUnpublished || !scope ? table.rows : rowsInScope(table, scope),
     );
   }
 
@@ -273,15 +331,16 @@ export function buildExportPlan(
       if (!targetTable || !targetColumn) {
         throw new ExportScopeError({
           code: 'REF_NOT_PUBLISHED',
-          message: `Published column ${table.name}.${column.name || column.id} references a table that is not published.`,
+          message: `Exported column ${table.name}.${column.name || column.id} references a table that is not part of the release scope.`,
           tableId: table.id,
           columnId: column.id,
         });
       }
+      // 单表导出时目标表不必出现在输出文件里，但必须在方案范围内。
       if (!referenceRowsByTable.has(targetTable.id)) {
         throw new ExportScopeError({
           code: 'REF_NOT_PUBLISHED',
-          message: `Published column ${table.name}.${column.name || column.id} references a table that is not published.`,
+          message: `Exported column ${table.name}.${column.name || column.id} references table "${targetTable.name}", which is not in release profile "${profile?.name ?? ''}".`,
           tableId: table.id,
           columnId: column.id,
         });
@@ -292,7 +351,7 @@ export function buildExportPlan(
       if (publishedTargetColumn.export === false) {
         fail({
           code: 'REF_TARGET_NOT_EXPORTED',
-          message: `Published column ${table.name}.${column.name || column.id} references ${publishedTargetTable.name}.${publishedTargetColumn.name || publishedTargetColumn.id}, which is excluded from export.`,
+          message: `Exported column ${table.name}.${column.name || column.id} references ${publishedTargetTable.name}.${publishedTargetColumn.name || publishedTargetColumn.id}, which is excluded from export.`,
           tableId: table.id,
           columnId: column.id,
         });
@@ -308,7 +367,7 @@ export function buildExportPlan(
         if (!targetValues.has(key)) {
           fail({
             code: 'REF_NOT_PUBLISHED',
-            message: `Published row ${table.name} references a value that is not in the published ${publishedTargetTable.name} data.`,
+            message: `Exported row ${table.name} references a value that is not in the exported ${publishedTargetTable.name} rows of release profile "${profile?.name ?? ''}".`,
             tableId: table.id,
             rowId: row._rowId,
             columnId: column.id,
@@ -317,7 +376,7 @@ export function buildExportPlan(
         if ((targetCounts.get(key) ?? 0) > 1) {
           fail({
             code: 'REF_TARGET_DUPLICATE',
-            message: `Published ${publishedTargetTable.name}.${publishedTargetColumn.name || publishedTargetColumn.id} contains duplicate ref target values.`,
+            message: `Exported ${publishedTargetTable.name}.${publishedTargetColumn.name || publishedTargetColumn.id} contains duplicate ref target values.`,
             tableId: table.id,
             rowId: row._rowId,
             columnId: column.id,
@@ -381,6 +440,13 @@ export function buildExportPlan(
 
   const plan: ExportPlan = {
     mode: includeUnpublished ? 'all' : 'published',
+    ...(profile
+      ? {
+          profileId: profile.id,
+          profileName: profile.name,
+          profileMode: profile.mode,
+        }
+      : {}),
     tables,
     files: [configIdsFile, ...tables.map((table) => table.file)],
     idRegistry: Object.fromEntries(idRegistry),

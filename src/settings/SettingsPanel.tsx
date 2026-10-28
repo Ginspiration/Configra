@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { McpStatus } from '../file/desktopProjectFile';
 import type { PublishSettings } from './publishSettings';
+import type { ReleaseProfilesSummary } from '../release/releaseProfiles';
 import WindowFrame from '../window/WindowFrame';
 import {
   languageLabels,
@@ -9,14 +10,16 @@ import {
 } from '../i18n';
 import type { ThemePreference } from '../theme';
 
-type SettingsCategory = 'interface' | 'publish' | 'mcp';
+export type SettingsCategory = 'interface' | 'publish' | 'mcp';
 
 type SettingsPanelProps = {
   open: boolean;
+  initialCategory?: SettingsCategory;
   language: Language;
   themePreference: ThemePreference;
   showMiniMap: boolean;
   desktopAvailable: boolean;
+  releaseProfiles: ReleaseProfilesSummary;
   publishSettings: PublishSettings;
   mcpBusy: boolean;
   mcpStatus?: McpStatus;
@@ -25,10 +28,16 @@ type SettingsPanelProps = {
   onLanguageChange(language: Language): void;
   onThemePreferenceChange(themePreference: ThemePreference): void;
   onMiniMapChange(show: boolean): void;
+  onReleaseProfileSelect(profileId: string): void;
+  onReleaseProfileCreate(): void;
+  onReleaseProfileDuplicate(profileId: string): void;
+  onReleaseProfileRename(profileId: string, name: string): void;
+  onReleaseProfileModeChange(profileId: string, mode: 'all' | 'selected'): void;
+  onReleaseProfileDelete(profileId: string): void;
   onPublishEnabledChange(enabled: boolean): void | Promise<void>;
-  onPublishDirectoryPick(): void | Promise<void>;
-  onPublishDirectoryClear(): void;
-  onPublishNow(): void | Promise<void>;
+  onPublishDirectoryPick(profileId: string): void | Promise<void>;
+  onPublishDirectoryClear(profileId: string): void;
+  onPublishNow(profileId: string): void | Promise<void>;
   onMcpEnabledChange(enabled: boolean): void;
   onMcpRestart(): void;
   onMcpPortChange(port: number): Promise<boolean>;
@@ -41,10 +50,12 @@ type SettingsPanelProps = {
 
 export default function SettingsPanel({
   open,
+  initialCategory,
   language,
   themePreference,
   showMiniMap,
   desktopAvailable,
+  releaseProfiles,
   publishSettings,
   mcpBusy,
   mcpStatus,
@@ -53,6 +64,12 @@ export default function SettingsPanel({
   onLanguageChange,
   onThemePreferenceChange,
   onMiniMapChange,
+  onReleaseProfileSelect,
+  onReleaseProfileCreate,
+  onReleaseProfileDuplicate,
+  onReleaseProfileRename,
+  onReleaseProfileModeChange,
+  onReleaseProfileDelete,
   onPublishEnabledChange,
   onPublishDirectoryPick,
   onPublishDirectoryClear,
@@ -69,6 +86,29 @@ export default function SettingsPanel({
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('interface');
   const [mcpPortInput, setMcpPortInput] = useState('');
   const [mcpPortDirty, setMcpPortDirty] = useState(false);
+  const [renamingProfileId, setRenamingProfileId] = useState<string>();
+  const [renameDraft, setRenameDraft] = useState('');
+  const renameDoneRef = useRef(false);
+
+  useEffect(() => {
+    if (open && initialCategory) setActiveCategory(initialCategory);
+  }, [initialCategory, open]);
+
+  const startRename = (profileId: string, name: string) => {
+    renameDoneRef.current = false;
+    setRenamingProfileId(profileId);
+    setRenameDraft(name);
+  };
+
+  // Enter/blur 提交、Esc 取消；ref 防止 Enter 后卸载触发的 blur 重复提交。
+  const finishRename = (commit: boolean) => {
+    if (renameDoneRef.current) return;
+    renameDoneRef.current = true;
+    const profileId = renamingProfileId;
+    const name = renameDraft.trim();
+    setRenamingProfileId(undefined);
+    if (commit && profileId && name) onReleaseProfileRename(profileId, name);
+  };
 
   useEffect(() => {
     if (!open) {
@@ -213,12 +253,189 @@ export default function SettingsPanel({
               <section className="settings-section">
                 <div className="settings-section__heading">
                   <h3>{t('settingsPublish')}</h3>
-                  <p>{t('settingsPublishDescription')}</p>
+                  <p>{t('settingsReleaseProfilesDescription')}</p>
                 </div>
 
                 {!desktopAvailable ? (
                   <div className="settings-notice">{t('publishDesktopOnly')}</div>
                 ) : null}
+
+                <div className="settings-release-profiles">
+                  <div className="settings-release-profiles__heading">
+                    <div>
+                      <strong>{t('releaseProfiles')}</strong>
+                      <span>{t('releaseProfileSwitchHint')}</span>
+                    </div>
+                    <button type="button" className="button" onClick={onReleaseProfileCreate}>
+                      {t('releaseProfileCreate')}
+                    </button>
+                  </div>
+
+                  {releaseProfiles.profiles.map((profile) => {
+                    const active = profile.id === releaseProfiles.activeProfileId;
+                    const directory = publishSettings.directories[profile.id];
+                    return (
+                      <div
+                        key={profile.id}
+                        className={`settings-release-profile ${active ? 'is-active' : ''}`}
+                      >
+                        <div className="settings-release-profile__header">
+                          <button
+                            type="button"
+                            className="settings-release-profile__select"
+                            title={t('releaseProfileActiveHint')}
+                            onClick={() => onReleaseProfileSelect(profile.id)}
+                          >
+                            <span
+                              className={`settings-release-profile__dot ${active ? 'is-active' : ''}`}
+                              aria-hidden="true"
+                            />
+                            <strong>{profile.name}</strong>
+                            <span
+                              className={`settings-release-profile__mode ${
+                                profile.mode === 'all' ? 'is-all' : ''
+                              }`}
+                            >
+                              {profile.mode === 'all'
+                                ? t('releaseProfileAll')
+                                : t('releaseProfileSelected')}
+                            </span>
+                            {active ? (
+                              <span className="settings-release-profile__active">
+                                {t('releaseProfileActive')}
+                              </span>
+                            ) : null}
+                          </button>
+                          <div className="settings-release-profile__header-actions">
+                            <button
+                              type="button"
+                              className="button"
+                              onClick={() => onReleaseProfileDuplicate(profile.id)}
+                            >
+                              {t('releaseProfileDuplicate')}
+                            </button>
+                            <button
+                              type="button"
+                              className="button"
+                              onClick={() => startRename(profile.id, profile.name)}
+                            >
+                              {t('releaseProfileRename')}
+                            </button>
+                            <button
+                              type="button"
+                              className="button"
+                              disabled={releaseProfiles.profiles.length <= 1}
+                              onClick={() => onReleaseProfileDelete(profile.id)}
+                            >
+                              {t('releaseProfileDelete')}
+                            </button>
+                          </div>
+                        </div>
+
+                        {renamingProfileId === profile.id ? (
+                          <input
+                            className="settings-release-profile__rename-input"
+                            autoFocus
+                            value={renameDraft}
+                            aria-label={t('releaseProfileName')}
+                            onChange={(event) => setRenameDraft(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                finishRename(true);
+                              }
+                              if (event.key === 'Escape') {
+                                event.preventDefault();
+                                finishRename(false);
+                              }
+                            }}
+                            onBlur={() => finishRename(true)}
+                          />
+                        ) : null}
+
+                        <div className="settings-release-profile__row">
+                          <span className="settings-release-profile__label">
+                            {t('releaseProfileMode')}
+                          </span>
+                          <select
+                            className="settings-release-profile__mode-select"
+                            value={profile.mode}
+                            aria-label={t('releaseProfileMode')}
+                            onChange={(event) =>
+                              onReleaseProfileModeChange(
+                                profile.id,
+                                event.target.value as 'all' | 'selected',
+                              )
+                            }
+                          >
+                            <option value="all">{t('releaseProfileAll')}</option>
+                            <option value="selected">{t('releaseProfileSelected')}</option>
+                          </select>
+                          <span className="settings-release-profile__summary">
+                            {t('releaseProfileSummary', {
+                              tables: profile.tableCount,
+                              rows: profile.rowCount,
+                            })}
+                          </span>
+                        </div>
+
+                        <div className="settings-release-profile__row">
+                          <span className="settings-release-profile__label">
+                            {t('publishDirectory')}
+                          </span>
+                          <span
+                            className={`settings-release-profile__directory ${
+                              directory ? '' : 'is-empty'
+                            }`}
+                            title={directory ?? undefined}
+                          >
+                            {directory || t('publishDirectoryNotSet')}
+                          </span>
+                          <div className="settings-release-profile__directory-actions">
+                            <button
+                              type="button"
+                              className="button"
+                              disabled={!desktopAvailable}
+                              title={t('releaseProfilePublishHintNoDirectory')}
+                              onClick={() => void onPublishDirectoryPick(profile.id)}
+                            >
+                              {t('publishDirectoryChoose')}
+                            </button>
+                            <button
+                              type="button"
+                              className="button"
+                              disabled={!desktopAvailable || !directory}
+                              onClick={() => onPublishDirectoryClear(profile.id)}
+                            >
+                              {t('publishDirectoryClear')}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="settings-release-profile__publish-row">
+                          <span className="settings-release-profile__publish-hint">
+                            {directory
+                              ? t('releaseProfilePublishHintSet')
+                              : t('releaseProfilePublishHintNoDirectory')}
+                          </span>
+                          <button
+                            type="button"
+                            className="button button--primary"
+                            disabled={!desktopAvailable || !directory}
+                            title={
+                              directory
+                                ? t('releaseProfilePublishDescription')
+                                : t('releaseProfilePublishHintNoDirectory')
+                            }
+                            onClick={() => void onPublishNow(profile.id)}
+                          >
+                            {t('releaseProfilePublish')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
 
                 <div className="settings-row">
                   <div className="settings-row__copy">
@@ -236,51 +453,6 @@ export default function SettingsPanel({
                     />
                     <span aria-hidden="true" />
                   </label>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-row__copy">
-                    <strong>{t('publishDirectory')}</strong>
-                    <span
-                      className={`settings-publish-path ${publishSettings.directory ? '' : 'is-empty'}`}
-                      title={publishSettings.directory ?? undefined}
-                    >
-                      {publishSettings.directory || t('publishDirectoryNotSet')}
-                    </span>
-                  </div>
-                  <div className="settings-publish-actions">
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={!desktopAvailable}
-                      onClick={() => void onPublishDirectoryPick()}
-                    >
-                      {t('publishDirectoryPick')}
-                    </button>
-                    <button
-                      type="button"
-                      className="button"
-                      disabled={!desktopAvailable || !publishSettings.directory}
-                      onClick={onPublishDirectoryClear}
-                    >
-                      {t('publishDirectoryClear')}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-row">
-                  <div className="settings-row__copy">
-                    <strong>{t('publishNow')}</strong>
-                    <span>{t('publishNowDescription')}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="button"
-                    disabled={!desktopAvailable || !publishSettings.directory}
-                    onClick={() => void onPublishNow()}
-                  >
-                    {t('publishNow')}
-                  </button>
                 </div>
               </section>
             ) : (

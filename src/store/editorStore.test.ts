@@ -61,57 +61,177 @@ describe('editor dirty scopes', () => {
     expect(useEditorStore.getState()).toMatchObject({ isDirty: false, dirtyScope: 'none' });
   });
 
-  it('creates a clean empty project with no selected table', () => {
+  it('creates a clean empty project with one empty selected profile', () => {
     const table = useEditorStore.getState().project.tables[0];
     useEditorStore.getState().updateTable(table.id, { name: 'UnsavedName' });
 
     useEditorStore.getState().newProject();
 
     expect(useEditorStore.getState()).toMatchObject({
-      project: { version: 2, exportPolicy: 'explicit', tables: [] },
+      project: {
+        version: 3,
+        releaseProfiles: {
+          version: 1,
+          activeProfileId: 'profile_default',
+          profiles: [
+            { id: 'profile_default', name: 'Default', mode: 'selected', tables: [] },
+          ],
+        },
+        tables: [],
+      },
       selectedTableId: undefined,
       isDirty: false,
       dirtyScope: 'none',
     });
   });
 
-  it('publishes table and rows separately, and undo restores the flags', () => {
+  it('adds and removes profile table scope without touching legacy publish flags', () => {
     const table = useEditorStore.getState().project.tables[0];
     const rowIds = table.rows.map((row) => row._rowId);
 
-    useEditorStore.getState().setRowsPublish(table.id, rowIds, false);
     useEditorStore.getState().setTablePublish(table.id, false);
+    expect(
+      useEditorStore.getState().project.releaseProfiles?.profiles[0].tables,
+    ).toEqual([
+      { tableId: 'dialogue', rows: ['row_dialogue_1', 'row_dialogue_2'] },
+    ]);
     expect(useEditorStore.getState().project.tables[0].publish).toBeUndefined();
 
     useEditorStore.getState().setTablePublish(table.id, true);
-    const tableOnly = useEditorStore.getState().project.tables[0];
-    expect(tableOnly.publish).toBe(true);
-    expect(tableOnly.rows.every((row) => row.publish === true)).toBe(false);
-    expect(useEditorStore.getState().project.version).toBe(2);
-    expect(useEditorStore.getState().project.exportPolicy).toBe('explicit');
+    expect(
+      useEditorStore.getState().project.releaseProfiles?.profiles[0].tables?.find(
+        (entry) => entry.tableId === table.id,
+      ),
+    ).toEqual({ tableId: table.id, rows: [] });
+    expect(rowIds.length).toBeGreaterThan(0);
 
     useEditorStore.getState().setRowsPublish(table.id, rowIds, true);
     expect(
-      useEditorStore.getState().project.tables[0].rows.every((row) => row.publish === true),
-    ).toBe(true);
-
-    useEditorStore.getState().undo(table.id);
-    expect(useEditorStore.getState().project.tables[0].publish).toBe(true);
-    expect(
-      useEditorStore.getState().project.tables[0].rows.every((row) => row.publish === true),
-    ).toBe(false);
+      useEditorStore.getState().project.releaseProfiles?.profiles[0].tables?.find(
+        (entry) => entry.tableId === table.id,
+      ),
+    ).toEqual({ tableId: table.id, rows: rowIds });
   });
 
-  it('publishing a row also brings an unpublished table into scope', () => {
+  it('publishing a row also brings the table into scope', () => {
     const table = useEditorStore.getState().project.tables[0];
     useEditorStore.getState().setTablePublish(table.id, false);
 
     useEditorStore.getState().setRowsPublish(table.id, [table.rows[0]._rowId], true);
 
-    const next = useEditorStore.getState().project.tables[0];
-    expect(next.publish).toBe(true);
-    expect(next.rows[0].publish).toBe(true);
-    expect(useEditorStore.getState().project.exportPolicy).toBe('explicit');
+    expect(
+      useEditorStore.getState().project.releaseProfiles?.profiles[0].tables?.find(
+        (entry) => entry.tableId === table.id,
+      ),
+    ).toEqual({ tableId: table.id, rows: [table.rows[0]._rowId] });
+  });
+
+  it('keeps table and row scope unchanged for an all-mode profile', () => {
+    const project = createSampleProject();
+    project.releaseProfiles = {
+      version: 1,
+      activeProfileId: 'profile_all',
+      profiles: [{ id: 'profile_all', name: 'All', mode: 'all' }],
+    };
+    useEditorStore.getState().loadProject(project);
+    const table = useEditorStore.getState().project.tables[0];
+
+    useEditorStore.getState().setTablePublish(table.id, false);
+    useEditorStore.getState().setRowsPublish(table.id, [table.rows[0]._rowId], false);
+
+    expect(useEditorStore.getState().project.releaseProfiles?.profiles[0]).toEqual({
+      id: 'profile_all',
+      name: 'All',
+      mode: 'all',
+    });
+  });
+
+  it('switches profiles without losing the other profile scope', () => {
+    useEditorStore.getState().addReleaseProfile('Minimal');
+    const project = useEditorStore.getState().project;
+    const [fullProfile, minimalProfile] = project.releaseProfiles!.profiles;
+    const speaker = project.tables.find((table) => table.id === 'speaker')!;
+
+    useEditorStore.getState().setActiveReleaseProfile(minimalProfile.id);
+    useEditorStore
+      .getState()
+      .setRowsPublish(speaker.id, [speaker.rows[0]._rowId], true);
+
+    useEditorStore.getState().setActiveReleaseProfile(fullProfile.id);
+    const afterSwitch = useEditorStore.getState().project;
+    expect(afterSwitch.releaseProfiles?.activeProfileId).toBe(fullProfile.id);
+    expect(
+      afterSwitch.releaseProfiles?.profiles.find((profile) => profile.id === fullProfile.id)
+        ?.tables,
+    ).toEqual([
+      { tableId: 'speaker', rows: ['row_speaker_1', 'row_speaker_2'] },
+      { tableId: 'dialogue', rows: ['row_dialogue_1', 'row_dialogue_2'] },
+    ]);
+    expect(
+      afterSwitch.releaseProfiles?.profiles.find((profile) => profile.id === minimalProfile.id)
+        ?.tables,
+    ).toEqual([{ tableId: 'speaker', rows: [speaker.rows[0]._rowId] }]);
+  });
+
+  it('prunes profile scope when a table or row is deleted', () => {
+    const table = useEditorStore.getState().project.tables[0];
+    useEditorStore.getState().deleteRow(table.id, table.rows[0]._rowId);
+
+    const afterRowDelete = useEditorStore.getState().project;
+    expect(
+      afterRowDelete.releaseProfiles?.profiles[0].tables?.find(
+        (entry) => entry.tableId === table.id,
+      ),
+    ).toEqual({ tableId: table.id, rows: [table.rows[1]._rowId] });
+    expect(
+      afterRowDelete.tables.find((item) => item.id === table.id)?.rows.map((row) => row._rowId),
+    ).toEqual(table.rows.slice(1).map((row) => row._rowId));
+
+    useEditorStore.getState().deleteTable(table.id);
+    expect(
+      useEditorStore
+        .getState()
+        .project.releaseProfiles?.profiles[0].tables?.some(
+          (entry) => entry.tableId === table.id,
+        ),
+    ).toBe(false);
+  });
+
+  it('migrates legacy publish flags when loading a v2 project', () => {
+    const legacy = createSampleProject() as unknown as Record<string, unknown>;
+    legacy.version = 2;
+    legacy.exportPolicy = 'explicit';
+    delete legacy.releaseProfiles;
+    for (const table of legacy.tables as Array<Record<string, unknown>>) {
+      table.publish = true;
+      for (const row of table.rows as Array<Record<string, unknown>>) {
+        row.publish = table.id === 'speaker' ? row._rowId === 'row_speaker_1' : true;
+      }
+    }
+
+    useEditorStore.getState().loadProject(legacy as never);
+    const migrated = useEditorStore.getState().project;
+
+    expect(migrated.version).toBe(3);
+    expect(migrated.exportPolicy).toBeUndefined();
+    expect(migrated.releaseProfiles).toEqual({
+      version: 1,
+      activeProfileId: 'profile_default',
+      profiles: [
+        {
+          id: 'profile_default',
+          name: 'Default',
+          mode: 'selected',
+          tables: [
+            { tableId: 'speaker', rows: ['row_speaker_1'] },
+            { tableId: 'dialogue', rows: ['row_dialogue_1', 'row_dialogue_2'] },
+          ],
+        },
+      ],
+    });
+    expect(
+      (migrated.tables[0] as unknown as Record<string, unknown>).publish,
+    ).toBeUndefined();
   });
 
   it('appends imported rows with fresh defaults and marks content dirty', () => {

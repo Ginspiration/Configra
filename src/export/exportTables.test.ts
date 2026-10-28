@@ -3,20 +3,23 @@ import { idRegistryJson, projectJsonFiles, tableJson } from './exportTables';
 import type { ProjectFile } from '../model/types';
 
 const project: ProjectFile = {
-  version: 1,
-  exportPolicy: 'explicit',
+  version: 3,
+  releaseProfiles: {
+    version: 1,
+    activeProfileId: 'profile_all',
+    profiles: [{ id: 'profile_all', name: 'All', mode: 'all' }],
+  },
   tables: [
     {
       id: 'table-1',
       name: 'Sound',
-      publish: true,
       position: { x: 0, y: 0 },
       columns: [
         { id: 'col-key', name: 'key', type: 'string' },
         { id: 'col-id', name: 'id', type: 'int', primary: true, required: true },
       ],
       rows: [
-        { _rowId: 'row-1', publish: true, values: { 'col-key': 'SOUND_CLICK', 'col-id': 1 } },
+        { _rowId: 'row-1', values: { 'col-key': 'SOUND_CLICK', 'col-id': 1 } },
       ],
       identity: {
         namespace: 'Sound',
@@ -42,8 +45,12 @@ describe('exported JSON text', () => {
 
   it('keeps empty tables and registries on a single line before the newline', () => {
     const emptyProject: ProjectFile = {
-      version: 1,
-      exportPolicy: 'explicit',
+      version: 3,
+      releaseProfiles: {
+        version: 1,
+        activeProfileId: 'profile_all',
+        profiles: [{ id: 'profile_all', name: 'All', mode: 'all' }],
+      },
       tables: [],
     };
 

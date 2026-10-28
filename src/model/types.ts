@@ -2,14 +2,43 @@ export const COLUMN_TYPES = ['int', 'float', 'string', 'bool', 'enum', 'ref', 'j
 
 export type ColumnType = (typeof COLUMN_TYPES)[number];
 
+export type ReleaseProfileMode = 'all' | 'selected';
+
+/**
+ * 一个发布方案在 selected 模式下的表/行范围。
+ * rows 为 'all' 表示该表所有行；否则是稳定的 _rowId 列表。
+ */
+export type ReleaseProfileTable = {
+  tableId: string;
+  rows: 'all' | string[];
+};
+
+/** 一个发布方案；id 稳定，name 只用于展示和 CLI 选择。 */
+export type ReleaseProfile = {
+  id: string;
+  name: string;
+  mode: ReleaseProfileMode;
+  /** 只在 selected 模式使用；all 模式忽略该字段。 */
+  tables?: ReleaseProfileTable[];
+};
+
+/** 工程内的发布方案集合；activeProfileId 指向当前生效的方案。 */
+export type ReleaseProfiles = {
+  version: 1;
+  activeProfileId?: string;
+  profiles: ReleaseProfile[];
+};
+
 export type ProjectFile = {
-  /** 2 = 带发布范围标记；1 = 旧工程，首次配置发布范围后升级为 2。 */
-  version: 1 | 2;
   /**
-   * 显式发布范围。只有存在该标记时，普通导出才允许进行；
-   * 旧工程没有该字段，必须先勾选可发布表才能导出。
+   * 3 = 带发布方案（releaseProfiles）；2 = 带旧的 publish 标记；
+   * 1 = 更旧的工程。打开 1/2 时迁移为 3 并写回 default 方案。
+   * 旧版 Configra 会拒绝 3，避免忽略方案后按旧标记错误导出。
    */
+  version: 1 | 2 | 3;
+  /** @deprecated 仅用于读取 v1/v2 旧工程；v3 以 releaseProfiles 为唯一发布范围。 */
   exportPolicy?: 'explicit';
+  releaseProfiles?: ReleaseProfiles;
   tables: ConfigTable[];
 };
 
@@ -21,7 +50,10 @@ export type ConfigTable = {
   columns: ConfigColumn[];
   rows: ConfigRow[];
   identity?: TableIdentity;
-  /** 关闭时整张表不参与任何导出/发布；新表默认关闭。 */
+  /**
+   * @deprecated 仅用于读取 v1/v2 旧工程并迁移成 default 方案。
+   * v3 起发布范围只由 releaseProfiles 决定，不能两套范围同时生效。
+   */
   publish?: boolean;
 };
 
@@ -56,7 +88,7 @@ export type ColumnRef = {
 
 export type ConfigRow = {
   _rowId: string;
-  /** 关闭时该行不参与导出/发布；新行默认关闭。 */
+  /** @deprecated 仅用于读取 v1/v2 旧工程并迁移成 default 方案。 */
   publish?: boolean;
   values: Record<string, unknown>;
 };

@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ConfigTable, ProjectFile, TableIdentity } from '../model/types';
 import type { Translator } from '../i18n';
+import {
+  activeReleaseProfile,
+  profileTableScope,
+} from '../release/releaseProfiles';
 import { useEditorStore } from '../store/editorStore';
 import ColumnEditor from './ColumnEditor';
 
@@ -162,8 +166,7 @@ export default function TableInspector({ table, project, t, compact = false }: T
     );
   }
 
-  const updateIdentity = (patch: Partial<TableIdentity>) => {
-    const nextIdentity = { ...table.identity, ...patch };
+  const updateIdentity = (patch: Partial<TableIdentity>) => {    const nextIdentity = { ...table.identity, ...patch };
     const normalizedIdentity: TableIdentity = {};
 
     if (nextIdentity.namespace) normalizedIdentity.namespace = nextIdentity.namespace;
@@ -179,6 +182,16 @@ export default function TableInspector({ table, project, t, compact = false }: T
           : undefined,
     });
   };
+
+  const profile = activeReleaseProfile(project);
+  const tableScope = profile
+    ? profileTableScope(project, profile, table.id)
+    : { included: false, rows: new Set<string>() as 'all' | Set<string> };
+  const isAllMode = profile?.mode === 'all';
+  const included = tableScope.included;
+  const selectedRowCount =
+    tableScope.rows === 'all' ? table.rows.length : tableScope.rows.size;
+  const allRowsSelected = included && selectedRowCount === table.rows.length;
 
   return (
     <section className="inspector-panel">
@@ -221,42 +234,54 @@ export default function TableInspector({ table, project, t, compact = false }: T
         />
       </label>
 
-      <div className={`publish-scope ${table.publish === true ? 'is-published' : ''}`}>
-        <label className="publish-scope__toggle">
-          <input
-            type="checkbox"
-            checked={table.publish === true}
-            onChange={(event) => setTablePublish(table.id, event.target.checked)}
-          />
-          <span>{t('tablePublish')}</span>
-        </label>
-        <p className="publish-scope__hint">{t('tablePublishHint')}</p>
+      <div className={`publish-scope ${included ? 'is-published' : ''}`}>
+        <div className="publish-scope__heading">
+          <label className="publish-scope__toggle">
+            <input
+              type="checkbox"
+              checked={included}
+              disabled={isAllMode}
+              onChange={(event) => setTablePublish(table.id, event.target.checked)}
+            />
+            <span>{t('tablePublish')}</span>
+          </label>
+          <span className={`publish-scope__mode ${isAllMode ? 'is-all' : ''}`}>
+            {isAllMode ? t('releaseProfileAll') : t('releaseProfileSelected')}
+          </span>
+        </div>
+        {profile ? (
+          <p className="publish-scope__profile">
+            {t('releaseProfile')}: <strong>{profile.name}</strong>
+          </p>
+        ) : (
+          <p className="publish-scope__warning">{t('exportProfileNotFound')}</p>
+        )}
+        <p className="publish-scope__hint">
+          {isAllMode ? t('releaseProfileAllHint') : t('releaseProfileSelectedHint')}
+        </p>
         <p className="publish-scope__count">
-          {t('tablePublishedRows', {
-            published: table.rows.filter((row) => row.publish === true).length,
-            total: table.rows.length,
-          })}
+          {isAllMode
+            ? t('releaseProfileAllRowsScope', { total: table.rows.length })
+            : t('releaseProfileRowScope', {
+                published: selectedRowCount,
+                total: table.rows.length,
+              })}
         </p>
         <button
           type="button"
           className="button button--ghost publish-scope__rows"
-          disabled={table.rows.length === 0}
+          disabled={isAllMode || table.rows.length === 0}
           onClick={() => {
-            const allPublished = table.rows.every((row) => row.publish === true);
             setRowsPublish(
               table.id,
               table.rows.map((row) => row._rowId),
-              !allPublished,
+              !allRowsSelected,
             );
           }}
         >
-          {table.rows.every((row) => row.publish === true)
-            ? t('unpublishAllRows')
-            : t('publishAllRows')}
+          {allRowsSelected ? t('unpublishAllRows') : t('publishAllRows')}
         </button>
-        {project.exportPolicy !== 'explicit' ? (
-          <p className="publish-scope__warning">{t('publishScopeNotConfigured')}</p>
-        ) : null}
+        {isAllMode ? <p className="publish-scope__hint">{t('releaseProfileReadOnly')}</p> : null}
       </div>
 
       <div className="panel-heading panel-heading--spaced">

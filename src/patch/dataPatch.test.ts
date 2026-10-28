@@ -18,7 +18,19 @@ const t = (key: Parameters<typeof translate>[1], vars?: Parameters<typeof transl
   translate('en', key, vars);
 
 const createBaseProject = (): ProjectFile => ({
-  version: 1,
+  version: 3,
+  releaseProfiles: {
+    version: 1,
+    activeProfileId: 'profile_a',
+    profiles: [
+      {
+        id: 'profile_a',
+        name: 'A',
+        mode: 'selected',
+        tables: [],
+      },
+    ],
+  },
   tables: [
     {
       id: 'item_table',
@@ -447,7 +459,7 @@ describe('data patch engine', () => {
     expect(issueIds.some((id) => id.includes('ref-target-missing'))).toBe(true);
   });
 
-  it('updates table and row publish scope through patch operations', () => {
+  it('updates release profile table and row scope through patch operations', () => {
     const project = createBaseProject();
     const projectHash = createProjectHash(project);
     const patch: DataPatch = {
@@ -468,14 +480,26 @@ describe('data patch engine', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.project.version).toBe(2);
-    expect(result.project.exportPolicy).toBe('explicit');
+    expect(result.project.version).toBe(3);
+    expect(result.project.releaseProfiles?.profiles[0]).toEqual({
+      id: 'profile_a',
+      name: 'A',
+      mode: 'selected',
+      tables: [{ tableId: 'item_table', rows: ['row_1'] }],
+    });
     const table = result.project.tables[0];
-    expect(table.publish).toBe(true);
-    expect(table.rows[0].publish).toBe(true);
-    expect(table.rows[1].publish).toBeUndefined();
-    expect(result.diff.some((change) => change.type === 'tableUpdated')).toBe(true);
-    expect(result.diff.some((change) => change.type === 'rowPublishChanged')).toBe(true);
+    expect(table.publish).toBeUndefined();
+    expect(table.rows[0].publish).toBeUndefined();
+    const scopeDiff = result.diff.filter(
+      (change) => change.type === 'releaseProfileScopeUpdated',
+    );
+    expect(scopeDiff).toHaveLength(1);
+    expect(scopeDiff[0]).toMatchObject({
+      profileId: 'profile_a',
+      tableId: 'item_table',
+      before: null,
+      after: { rows: ['row_1'] },
+    });
 
     const reversed = applyDataPatch(result.project, {
       version: 1,
@@ -490,33 +514,154 @@ describe('data patch engine', () => {
       ],
     });
     expect(reversed.ok).toBe(true);
-    if (reversed.ok) expect(reversed.project.tables[0].rows[0].publish).toBeUndefined();
+    if (reversed.ok) {
+      expect(reversed.project.releaseProfiles?.profiles[0].tables).toEqual([
+        { tableId: 'item_table', rows: [] },
+      ]);
+    }
+  });
+
+  it('prunes deleted tables and rows from release profiles during patch apply', () => {
+    const project = createBaseProject();
+    project.releaseProfiles!.profiles[0].tables = [
+      { tableId: 'item_table', rows: ['row_1', 'row_2'] },
+    ];
+    const projectHash = createProjectHash(project);
+    const deleteRow = checkDataPatch(
+      project,
+      {
+        version: 1,
+        baseHash: projectHash,
+        operations: [{ op: 'deleteRows', tableId: 'item_table', rowIds: ['row_2'] }],
+      },
+      { projectHash, validate: (next) => validateProject(next, t) },
+    );
+
+    expect(deleteRow.ok).toBe(true);
+    if (!deleteRow.ok) return;
+    expect(deleteRow.project.releaseProfiles?.profiles[0].tables).toEqual([
+      { tableId: 'item_table', rows: ['row_1'] },
+    ]);
+
+    const afterRowHash = sha256Text(`${JSON.stringify(deleteRow.project, null, 2)}\n`);
+    const deleteTable = checkDataPatch(
+      deleteRow.project,
+      {
+        version: 1,
+        baseHash: afterRowHash,
+        operations: [{ op: 'deleteTable', tableId: 'item_table' }],
+      },
+      { projectHash: afterRowHash, validate: (next) => validateProject(next, t) },
+    );
+
+    expect(deleteTable.ok).toBe(true);
+    if (!deleteTable.ok) return;
+    expect(deleteTable.project.releaseProfiles?.profiles[0].tables).toEqual([]);
+  });
+
+  it('switches the active release profile and rejects scope edits on all-mode profiles', () => {
+    const project = createBaseProject();
+    project.releaseProfiles!.profiles.push({
+      id: 'profile_all',
+      name: 'All',
+      mode: 'all',
+    });
+    const projectHash = createProjectHash(project);
+
+    const switched = checkDataPatch(
+      project,
+      {
+        version: 1,
+        baseHash: projectHash,
+        operations: [{ op: 'setActiveReleaseProfile', profileId: 'profile_all' }],
+      },
+      { projectHash, validate: (next) => validateProject(next, t) },
+    );
+    expect(switched.ok).toBe(true);
+    if (switched.ok) {
+      expect(switched.project.releaseProfiles?.activeProfileId).toBe('profile_all');
+      expect(
+        switched.diff.some((change) => change.type === 'activeReleaseProfileChanged'),
+      ).toBe(true);
+    }
+
+    const allHash = createProjectHash(switched.ok ? switched.project : project);
+    const rejected = checkDataPatch(
+      switched.ok ? switched.project : project,
+      {
+        version: 1,
+        baseHash: allHash,
+        operations: [{ op: 'setTablePublish', tableId: 'item_table', publish: false }],
+      },
+      { projectHash: allHash, validate: (next) => validateProject(next, t) },
+    );
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.problem.kind).toBe('conflict');
+  });
+
+  it('targets a specific release profile by stable id', () => {
+    const project = createBaseProject();
+    project.releaseProfiles!.profiles.push({
+      id: 'profile_b',
+      name: 'B',
+      mode: 'selected',
+      tables: [],
+    });
+    const projectHash = createProjectHash(project);
+    const patch: DataPatch = {
+      version: 1,
+      baseHash: projectHash,
+      operations: [
+        {
+          op: 'setRowsPublish',
+          tableId: 'item_table',
+          profileId: 'profile_b',
+          rowIds: ['row_2'],
+          publish: true,
+        },
+      ],
+    };
+
+    const result = applyDataPatch(project, patch);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.project.releaseProfiles?.activeProfileId).toBe('profile_a');
+    expect(
+      result.project.releaseProfiles?.profiles.find((profile) => profile.id === 'profile_b')
+        ?.tables,
+    ).toEqual([{ tableId: 'item_table', rows: ['row_2'] }]);
+    expect(
+      result.project.releaseProfiles?.profiles.find((profile) => profile.id === 'profile_a')
+        ?.tables,
+    ).toEqual([]);
   });
 
   it('produces stable export helpers for config ids and duplicate table names', () => {
     const project: ProjectFile = {
-      version: 1,
-      exportPolicy: 'explicit',
+      version: 3,
+      releaseProfiles: {
+        version: 1,
+        activeProfileId: 'profile_all',
+        profiles: [{ id: 'profile_all', name: 'All', mode: 'all' }],
+      },
       tables: [
         {
           id: 'speaker_a',
           name: 'Speaker',
-          publish: true,
           position: { x: 0, y: 0 },
           identity: { namespace: 'Sound', keyColumnId: 'key', valueColumnId: 'id' },
           columns: [
             { id: 'key', name: 'key', type: 'string', required: true },
             { id: 'id', name: 'id', type: 'int', required: true },
           ],
-          rows: [{ _rowId: 'row_a', publish: true, values: { key: 'CLICK', id: 1 } }],
+          rows: [{ _rowId: 'row_a', values: { key: 'CLICK', id: 1 } }],
         },
         {
           id: 'speaker_b',
           name: 'Speaker',
-          publish: true,
           position: { x: 1, y: 1 },
           columns: [{ id: 'value', name: 'value', type: 'string' }],
-          rows: [{ _rowId: 'row_b', publish: true, values: { value: 'x' } }],
+          rows: [{ _rowId: 'row_b', values: { value: 'x' } }],
         },
       ],
     };

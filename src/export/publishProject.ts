@@ -18,6 +18,7 @@ import {
 export type PublishResult =
   | {
       status: 'published';
+      profileId: string;
       count: number;
       removed: number;
       skippedTables: number;
@@ -37,10 +38,17 @@ export type PublishIo = Pick<DesktopExportIo, 'fileExists' | 'writeTextFile' | '
 export type PublishOptions = {
   projectPath?: string;
   projectKey?: string;
+  /** 发布方案 id 或唯一名称；不传时用 activeProfileId。 */
+  profileId?: string;
   issues?: ValidationIssue[];
   now?: string;
   /** 手动导出时用于确认覆盖；自动发布默认直接覆盖。 */
   confirmOverwrite?: (count: number) => Promise<boolean>;
+  /**
+   * 目标目录存在 legacy 清单（没有 profileId）时的显式确认。
+   * 不提供回调时直接阻断，避免无人值守的自动发布静默接管旧目录。
+   */
+  confirmLegacyManifest?: (manifest: PublishManifest) => Promise<boolean>;
 };
 
 const blocked = (error: ExportScopeError): PublishResult => ({
@@ -49,6 +57,9 @@ const blocked = (error: ExportScopeError): PublishResult => ({
   message: error.problem.message,
   ...(error.problem.count !== undefined ? { count: error.problem.count } : {}),
 });
+
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
 
 // 自动发布面向无人值守的保存流程，直接覆盖目录中的同名文件，不做覆盖确认。
 export async function publishProjectFiles(
@@ -59,15 +70,29 @@ export async function publishProjectFiles(
 ): Promise<PublishResult> {
   let plan;
   try {
-    plan = buildExportPlan(project, { issues: options.issues });
+    plan = buildExportPlan(project, {
+      issues: options.issues,
+      profileId: options.profileId,
+    });
     await assertSafeExportTarget(directory, options.projectPath, io);
   } catch (error) {
     if (error instanceof ExportScopeError) return blocked(error);
     throw error;
   }
 
-  let manifest: PublishManifest | undefined;
+  const profileId = plan.profileId;
+  if (!profileId) {
+    return {
+      status: 'blocked',
+      reason: 'EXPORT_SCOPE_UNCONFIGURED',
+      message:
+        'Publishing requires a release profile; explicit full export bypasses it but is not a release.',
+    };
+  }
+
   const manifestPath = publishManifestPath(directory);
+  let manifest: PublishManifest | undefined;
+  let adoptLegacyManifest = false;
   try {
     if (await io.fileExists(manifestPath)) {
       const manifestText = await io.readTextFile(manifestPath);
@@ -87,12 +112,31 @@ export async function publishProjectFiles(
             'This directory belongs to another project. Choose a different publish directory.',
         };
       }
+      if (manifest.profileId === undefined) {
+        // 旧清单无法证明属于哪个方案：必须显式确认，且本次不清理旧文件。
+        if (!options.confirmLegacyManifest) {
+          return {
+            status: 'blocked',
+            reason: 'LEGACY_PUBLISH_MANIFEST',
+            message:
+              'This directory has a legacy publish manifest without a release profile. Publish manually once to confirm adopting it for the current profile.',
+          };
+        }
+        if (!(await options.confirmLegacyManifest(manifest))) {
+          return { status: 'failed', error: 'cancelled' };
+        }
+        adoptLegacyManifest = true;
+      } else if (manifest.profileId !== profileId) {
+        return {
+          status: 'blocked',
+          reason: 'FOREIGN_RELEASE_PROFILE',
+          message:
+            'This directory is owned by another release profile. Choose a different publish directory for this profile.',
+        };
+      }
     }
   } catch (error) {
-    return {
-      status: 'failed',
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return { status: 'failed', error: errorMessage(error) };
   }
 
   try {
@@ -110,17 +154,11 @@ export async function publishProjectFiles(
         : {
             status: 'write-failed',
             fileName: error.fileName,
-            error:
-              error.originalError instanceof Error
-                ? error.originalError.message
-                : String(error.originalError),
+            error: errorMessage(error.originalError),
           };
     }
 
-    return {
-      status: 'failed',
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return { status: 'failed', error: errorMessage(error) };
   }
 
   const warnings: string[] = [];
@@ -135,7 +173,13 @@ export async function publishProjectFiles(
       'First publish to this directory; stale files from earlier exports were not removed.',
     );
   }
-  if (manifest) {
+  if (adoptLegacyManifest) {
+    warnings.push(
+      'Adopted a legacy publish manifest; existing files were not removed during this publish.',
+    );
+  }
+  if (manifest && !adoptLegacyManifest) {
+    // 只清理本方案清单登记、且内容未被改动过的文件；绝不碰未知文件。
     const currentFileNames = new Set(plan.files.map((file) => file.fileName));
     for (const [fileName, previousHash] of Object.entries(manifest.files)) {
       if (currentFileNames.has(fileName) || fileName === PUBLISH_MANIFEST_FILE) continue;
@@ -173,6 +217,7 @@ export async function publishProjectFiles(
     const nextManifest: PublishManifest = {
       version: 1,
       projectKey: options.projectKey,
+      profileId,
       updatedAt: options.now ?? new Date().toISOString(),
       files: nextFiles,
     };
@@ -183,15 +228,14 @@ export async function publishProjectFiles(
       );
     } catch (error) {
       warnings.push(
-        `Published files but could not write the publish manifest: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Published files but could not write the publish manifest: ${errorMessage(error)}`,
       );
     }
   }
 
   return {
     status: 'published',
+    profileId,
     count: plan.files.length,
     removed,
     skippedTables: plan.skippedTables,

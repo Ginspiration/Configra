@@ -75,10 +75,18 @@ import {
 } from './file/desktopProjectFile';
 import { translate, type Language, type Translator } from './i18n';
 import {
+  clearPublishDirectory as removePublishDirectory,
   loadPublishSettings,
+  publishDirectoryFor,
   savePublishSettings,
+  setPublishDirectory,
   type PublishSettings,
 } from './settings/publishSettings';
+import {
+  activeReleaseProfile,
+  summarizeReleaseProfiles,
+  tableInActiveProfile,
+} from './release/releaseProfiles';
 import { projectKeyForPath } from './export/projectKey';
 import { useWindowManager } from './window/WindowManager';
 import {
@@ -216,6 +224,16 @@ const exportProblemText = (t: Translator, problem: ExportProblem) => {
       return t('publishForeignDirectory');
     case 'INVALID_PUBLISH_MANIFEST':
       return t('publishInvalidManifest');
+    case 'FOREIGN_RELEASE_PROFILE':
+      return t('publishForeignProfile');
+    case 'LEGACY_PUBLISH_MANIFEST':
+      return t('publishLegacyManifestRequired');
+    case 'PROFILE_NOT_FOUND':
+      return t('exportProfileNotFound');
+    case 'PROFILE_TABLE_NOT_FOUND':
+      return t('exportProfileTableNotFound');
+    case 'PROFILE_ROW_NOT_FOUND':
+      return t('exportProfileRowNotFound');
     default:
       return problem.message;
   }
@@ -233,8 +251,18 @@ const publishBlockedText = (t: Translator, result: Extract<PublishResult, { stat
       return t('exportUnsafeTarget');
     case 'FOREIGN_PUBLISH_MANIFEST':
       return t('publishForeignDirectory');
+    case 'FOREIGN_RELEASE_PROFILE':
+      return t('publishForeignProfile');
+    case 'LEGACY_PUBLISH_MANIFEST':
+      return t('publishLegacyManifestRequired');
     case 'INVALID_PUBLISH_MANIFEST':
       return t('publishInvalidManifest');
+    case 'PROFILE_NOT_FOUND':
+      return t('exportProfileNotFound');
+    case 'PROFILE_TABLE_NOT_FOUND':
+      return t('exportProfileTableNotFound');
+    case 'PROFILE_ROW_NOT_FOUND':
+      return t('exportProfileRowNotFound');
     case 'REF_NOT_PUBLISHED':
       return t('exportRefNotPublished');
     case 'REF_TARGET_NOT_EXPORTED':
@@ -299,8 +327,13 @@ export default function App() {
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(getThemePreference()));
   const [showMiniMap, setShowMiniMap] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsCategory, setSettingsCategory] = useState<
+    'interface' | 'publish' | 'mcp'
+  >();
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [publishSettings, setPublishSettings] = useState<PublishSettings>(loadPublishSettings);
+  const [publishSettings, setPublishSettings] = useState<PublishSettings>(() =>
+    loadPublishSettings(),
+  );
   const [publishToastVisible, setPublishToastVisible] = useState(false);
   const [showAppMenu, setShowAppMenu] = useState(false);
   const [importPending, setImportPending] = useState<ImportPending>();
@@ -422,12 +455,16 @@ export default function App() {
     void getCurrentWindow().setTitle(name ? `${name} — Configra` : 'Configra');
   }, [projectPath]);
 
+  const activeProfile = useMemo(() => activeReleaseProfile(project), [project]);
+  const releaseProfiles = useMemo(() => summarizeReleaseProfiles(project), [project]);
+  const activeProfileId = activeProfile?.id;
+
   useEffect(() => {
     projectPathRef.current = projectPath;
-    const next = loadPublishSettings(projectPath);
+    const next = loadPublishSettings(projectPath, activeProfileId);
     publishSettingsRef.current = next;
     setPublishSettings(next);
-  }, [projectPath]);
+  }, [projectPath, activeProfileId]);
 
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
   const issues = useMemo(() => validateProject(project, t), [project, t]);
@@ -464,15 +501,17 @@ export default function App() {
     publishToastTimerRef.current = window.setTimeout(() => setPublishToastVisible(false), 2600);
   }, []);
 
-  // 保存成功后按设置静默发布到固定目录；返回要展示的状态文案，未启用时返回 undefined。
+  // 保存成功后按设置静默发布到当前方案的固定目录；未启用时返回 undefined。
   const publishAfterSave = useCallback(
     async (savedProject: ProjectFile, savedPath?: string) => {
-      const { enabled, directory } = publishSettingsRef.current;
-      if (!enabled || !directory) return undefined;
+      const settings = publishSettingsRef.current;
+      const profile = activeReleaseProfile(savedProject);
+      const directory = publishDirectoryFor(settings, profile?.id);
+      if (!settings.enabled || !directory || !profile) return undefined;
 
       const currentIssues = validateProject(savedProject, t);
       try {
-        buildExportPlan(savedProject, { issues: currentIssues });
+        buildExportPlan(savedProject, { issues: currentIssues, profileId: profile.id });
       } catch (error) {
         if (error instanceof ExportScopeError) {
           return exportProblemText(t, error.problem);
@@ -493,6 +532,7 @@ export default function App() {
         {
           projectPath: path,
           projectKey: projectKeyForPath(path),
+          profileId: profile.id,
           issues: currentIssues,
         },
       );
@@ -522,7 +562,10 @@ export default function App() {
 
       await writeProjectFileText(nextPath, JSON.stringify(project, null, 2));
       setProjectPath(nextPath);
-      const nextPublishSettings = loadPublishSettings(nextPath);
+      const nextPublishSettings = loadPublishSettings(
+        nextPath,
+        activeReleaseProfile(project)?.id,
+      );
       publishSettingsRef.current = nextPublishSettings;
       setPublishSettings(nextPublishSettings);
       markClean();
@@ -747,15 +790,29 @@ export default function App() {
 
   const confirmExportPlan = useCallback(
     (plan: ExportPlan, destination?: string) => {
-      const summary = t('exportPlanSummary', {
-        tables: plan.tables.length,
-        rows: plan.totalRows,
-        skippedTables: plan.skippedTables,
-        skippedRows: plan.skippedRows,
-      });
-      return window.confirm(
-        destination ? `${summary}\n${t('exportPlanTarget', { directory: destination })}` : summary,
-      );
+      const summaryParts = [
+        ...(plan.profileName
+          ? [
+              t('exportPlanProfile', {
+                profile: plan.profileName,
+                mode:
+                  plan.profileMode === 'all'
+                    ? t('releaseProfileAll')
+                    : t('releaseProfileSelected'),
+              }),
+            ]
+          : []),
+        t('exportPlanSummary', {
+          tables: plan.tables.length,
+          rows: plan.totalRows,
+          skippedTables: plan.skippedTables,
+          skippedRows: plan.skippedRows,
+        }),
+      ];
+      if (destination) {
+        summaryParts.push(t('exportPlanTarget', { directory: destination }));
+      }
+      return window.confirm(summaryParts.join('\n'));
     },
     [t],
   );
@@ -772,15 +829,17 @@ export default function App() {
   );
 
   const tableExportOptions = useCallback(
-    async (table: { name: string; publish?: boolean }) => {
+    async (table: { id: string; name: string }) => {
       const currentIssues = validateProject(project, t);
-      if (table.publish === true) return { issues: currentIssues };
+      if (tableInActiveProfile(project, table.id)) {
+        return { issues: currentIssues, profileId: activeProfile?.id };
+      }
       if (!window.confirm(t('exportTableNotPublishedConfirm', { table: table.name }))) {
         return undefined;
       }
       return { issues: currentIssues, includeUnpublished: true as const };
     },
-    [project, t],
+    [activeProfile?.id, project, t],
   );
 
   const copyTableJsonToClipboard = useCallback(async (tableId = selectedTable?.id) => {
@@ -909,6 +968,19 @@ export default function App() {
     [t],
   );
 
+  const confirmLegacyManifest = useCallback(
+    async () =>
+      isDesktopRuntime()
+        ? confirmDialog(t('publishLegacyManifestConfirm'), {
+            title: t('publishLegacyManifestTitle'),
+            kind: 'warning',
+            okLabel: t('publishLegacyManifestAdopt'),
+            cancelLabel: t('cancel'),
+          })
+        : window.confirm(t('publishLegacyManifestConfirm')),
+    [t],
+  );
+
   const exportAllJsonFiles = useCallback(async () => {
     if (exportingRef.current) return;
     exportingRef.current = true;
@@ -916,10 +988,14 @@ export default function App() {
 
     try {
       const currentProject = useEditorStore.getState().project;
+      const profile = activeReleaseProfile(currentProject);
       const currentIssues = validateProject(currentProject, t);
       let plan: ExportPlan;
       try {
-        plan = buildExportPlan(currentProject, { issues: currentIssues });
+        plan = buildExportPlan(currentProject, {
+          issues: currentIssues,
+          profileId: profile?.id,
+        });
       } catch (error) {
         if (reportExportError(error)) return;
         throw error;
@@ -942,8 +1018,10 @@ export default function App() {
           {
             projectPath: projectPathRef.current,
             projectKey: projectKeyForPath(projectPathRef.current),
+            profileId: profile?.id,
             issues: currentIssues,
             confirmOverwrite: confirmOverwriteExport,
+            confirmLegacyManifest,
           },
         );
         if (result.status === 'published') {
@@ -1008,7 +1086,7 @@ export default function App() {
       exportingRef.current = false;
       setIsExporting(false);
     }
-  }, [confirmExportPlan, confirmOverwriteExport, reportExportError, t]);
+  }, [confirmExportPlan, confirmLegacyManifest, confirmOverwriteExport, reportExportError, t]);
 
   const updatePublishSettings = useCallback((next: PublishSettings) => {
     publishSettingsRef.current = next;
@@ -1020,84 +1098,234 @@ export default function App() {
     async (enabled: boolean) => {
       const current = publishSettingsRef.current;
       if (!enabled) {
-        updatePublishSettings({ enabled: false, directory: current.directory });
+        updatePublishSettings({ ...current, enabled: false });
         return;
       }
-      if (current.directory) {
-        updatePublishSettings({ enabled: true, directory: current.directory });
+      if (!activeProfileId) return;
+      if (publishDirectoryFor(current, activeProfileId)) {
+        updatePublishSettings({ ...current, enabled: true });
         return;
       }
-      // 开启自动发布但还没有目录时先选择目录；取消选择则保持关闭。
+      // 开启自动发布但当前方案还没有目录时先选择目录；取消选择则保持关闭。
       const directory = await pickExportDirectoryPath();
       if (!directory) return;
-      updatePublishSettings({ enabled: true, directory });
+      updatePublishSettings({
+        ...setPublishDirectory(current, activeProfileId, directory),
+        enabled: true,
+      });
     },
-    [updatePublishSettings],
+    [activeProfileId, updatePublishSettings],
   );
 
-  const choosePublishDirectory = useCallback(async () => {
-    const directory = await pickExportDirectoryPath();
-    if (!directory) return;
+  const choosePublishDirectory = useCallback(
+    async (profileId?: string) => {
+      const targetProfileId = profileId ?? activeProfileId;
+      if (!targetProfileId) return;
+      const directory = await pickExportDirectoryPath();
+      if (!directory) return;
 
-    try {
-      await assertSafeExportTarget(directory, projectPathRef.current, { fileExists });
-    } catch (error) {
-      if (reportExportError(error)) return;
-      throw error;
-    }
+      try {
+        await assertSafeExportTarget(directory, projectPathRef.current, { fileExists });
+      } catch (error) {
+        if (reportExportError(error)) return;
+        throw error;
+      }
 
-    updatePublishSettings({ ...publishSettingsRef.current, directory });
-    setStatus(t('publishDirectoryUpdated', { directory }));
-  }, [reportExportError, t, updatePublishSettings]);
-
-  const clearPublishDirectory = useCallback(() => {
-    updatePublishSettings({ enabled: false });
-    setStatus(t('publishDirectoryCleared'));
-  }, [t, updatePublishSettings]);
-
-  const publishCurrentProject = useCallback(async () => {
-    const { directory } = publishSettingsRef.current;
-    if (!directory || exportingRef.current) return;
-    if (!projectPathRef.current) {
-      setStatus(t('publishRequiresSavedProject'));
-      return;
-    }
-
-    const currentProject = useEditorStore.getState().project;
-    const currentIssues = validateProject(currentProject, t);
-    let plan: ExportPlan;
-    try {
-      plan = buildExportPlan(currentProject, { issues: currentIssues });
-    } catch (error) {
-      if (reportExportError(error)) return;
-      throw error;
-    }
-    if (!confirmExportPlan(plan, directory)) return;
-
-    exportingRef.current = true;
-    setIsExporting(true);
-    try {
-      const result = await publishProjectFiles(
-        directory,
-        currentProject,
-        {
-          fileExists,
-          writeTextFile,
-          readTextFile,
-          removeFile: deleteExportFile,
-        },
-        {
-          projectPath: projectPathRef.current,
-          projectKey: projectKeyForPath(projectPathRef.current),
-          issues: currentIssues,
-        },
+      updatePublishSettings(
+        setPublishDirectory(publishSettingsRef.current, targetProfileId, directory),
       );
-      setStatus(publishResultStatus(t, result, directory));
-    } finally {
-      exportingRef.current = false;
-      setIsExporting(false);
+      setStatus(t('publishDirectoryUpdated', { directory }));
+    },
+    [activeProfileId, reportExportError, t, updatePublishSettings],
+  );
+
+  const clearProfilePublishDirectory = useCallback(
+    (profileId?: string) => {
+      const targetProfileId = profileId ?? activeProfileId;
+      if (!targetProfileId) return;
+      updatePublishSettings(removePublishDirectory(publishSettingsRef.current, targetProfileId));
+      setStatus(t('publishProfileDirectoryCleared'));
+    },
+    [activeProfileId, t, updatePublishSettings],
+  );
+
+  const publishReleaseProfile = useCallback(
+    async (profileId?: string) => {
+      const targetProfileId = profileId ?? activeProfileId;
+      if (!targetProfileId || exportingRef.current) return;
+      if (!projectPathRef.current) {
+        setStatus(t('publishRequiresSavedProject'));
+        return;
+      }
+
+      const directory = publishDirectoryFor(publishSettingsRef.current, targetProfileId);
+      if (!directory) {
+        setStatus(t('releaseProfilePublishDirectoryMissing'));
+        return;
+      }
+
+      const currentProject = useEditorStore.getState().project;
+      const currentIssues = validateProject(currentProject, t);
+      let plan: ExportPlan;
+      try {
+        plan = buildExportPlan(currentProject, {
+          issues: currentIssues,
+          profileId: targetProfileId,
+        });
+      } catch (error) {
+        if (reportExportError(error)) return;
+        throw error;
+      }
+      if (!confirmExportPlan(plan, directory)) return;
+
+      exportingRef.current = true;
+      setIsExporting(true);
+      try {
+        const result = await publishProjectFiles(
+          directory,
+          currentProject,
+          {
+            fileExists,
+            writeTextFile,
+            readTextFile,
+            removeFile: deleteExportFile,
+          },
+          {
+            projectPath: projectPathRef.current,
+            projectKey: projectKeyForPath(projectPathRef.current),
+            profileId: targetProfileId,
+            issues: currentIssues,
+            confirmLegacyManifest,
+          },
+        );
+        setStatus(publishResultStatus(t, result, directory));
+      } finally {
+        exportingRef.current = false;
+        setIsExporting(false);
+      }
+    },
+    [activeProfileId, confirmExportPlan, confirmLegacyManifest, reportExportError, t],
+  );
+
+  const selectReleaseProfile = useCallback(
+    (profileId: string) => {
+      try {
+        useEditorStore.getState().setActiveReleaseProfile(profileId);
+        const profile = useEditorStore
+          .getState()
+          .project.releaseProfiles?.profiles.find((candidate) => candidate.id === profileId);
+        setStatus(t('releaseProfileActivated', { name: profile?.name ?? profileId }));
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [t],
+  );
+
+  const createReleaseProfile = useCallback(() => {
+    try {
+      const profileId = useEditorStore
+        .getState()
+        .addReleaseProfile(t('releaseProfileDefaultName'));
+      const profile = useEditorStore
+        .getState()
+        .project.releaseProfiles?.profiles.find((candidate) => candidate.id === profileId);
+      setStatus(t('releaseProfileCreated', { name: profile?.name ?? profileId }));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [confirmExportPlan, reportExportError, t]);
+  }, [t]);
+
+  const duplicateReleaseProfile = useCallback(
+    (profileId?: string) => {
+      const sourceId = profileId ?? activeProfileId;
+      if (!sourceId) return;
+      try {
+        const createdId = useEditorStore.getState().duplicateReleaseProfile(sourceId);
+        const profile = useEditorStore
+          .getState()
+          .project.releaseProfiles?.profiles.find((candidate) => candidate.id === createdId);
+        setStatus(t('releaseProfileDuplicated', { name: profile?.name ?? createdId }));
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [activeProfileId, t],
+  );
+
+  const renameReleaseProfile = useCallback(
+    (profileId: string, name: string) => {
+      try {
+        useEditorStore.getState().renameReleaseProfile(profileId, name);
+        setStatus(t('releaseProfileRenamed', { name }));
+      } catch (error) {
+        setStatus(
+          error instanceof Error && /already used|duplicate/i.test(error.message)
+            ? t('releaseProfileNameDuplicate')
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
+      }
+    },
+    [t],
+  );
+
+  const changeReleaseProfileMode = useCallback(
+    (profileId: string, mode: 'all' | 'selected') => {
+      const profile = useEditorStore
+        .getState()
+        .project.releaseProfiles?.profiles.find((candidate) => candidate.id === profileId);
+      if (!profile || profile.mode === mode) return;
+      if (
+        mode === 'all' &&
+        !window.confirm(t('confirmReleaseProfileAllMode', { name: profile.name }))
+      ) {
+        return;
+      }
+
+      try {
+        useEditorStore.getState().setReleaseProfileMode(profileId, mode);
+        setStatus(
+          t('releaseProfileModeChanged', {
+            name: profile.name,
+            mode: mode === 'all' ? t('releaseProfileAll') : t('releaseProfileSelected'),
+          }),
+        );
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [t],
+  );
+
+  const deleteReleaseProfile = useCallback(
+    (profileId: string) => {      const state = useEditorStore.getState();
+      const profile = state.project.releaseProfiles?.profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
+      if (!profile) return;
+      if (!window.confirm(t('confirmDeleteReleaseProfile', { name: profile.name }))) return;
+
+      try {
+        state.deleteReleaseProfile(profileId);
+        // 方案删除后清理它在 localStorage 里的发布目录，避免留下孤儿路径。
+        updatePublishSettings(
+          removePublishDirectory(publishSettingsRef.current, profileId),
+        );
+        setStatus(t('releaseProfileDeleted', { name: profile.name }));
+      } catch (error) {
+        setStatus(
+          error instanceof Error && /at least one/i.test(error.message)
+            ? t('releaseProfileLastCannotDelete')
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
+      }
+    },
+    [t, updatePublishSettings],
+  );
 
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
@@ -1375,7 +1603,10 @@ export default function App() {
       {
         id: 'open-settings',
         label: t('settings'),
-        onSelect: () => setShowSettings(true),
+        onSelect: () => {
+          setSettingsCategory('interface');
+          setShowSettings(true);
+        },
       },
     ],
     [
@@ -1746,7 +1977,10 @@ export default function App() {
     event.preventDefault();
   }, []);
 
-  const closeSettings = useCallback(() => setShowSettings(false), []);
+  const closeSettings = useCallback(() => {
+    setShowSettings(false);
+    setSettingsCategory(undefined);
+  }, []);
 
   const changeMcpEnabled = useCallback((enabled: boolean) => {
     setMcpBusy(true);
@@ -1848,6 +2082,37 @@ export default function App() {
             {projectPath?.split(/[\\/]/).pop() ?? t('unsavedProject')}
           </span>
         </div>
+        {activeProfile ? (
+          <div className="toolbar__profile" title={t('releaseProfileActiveHint')}>
+            <span className="toolbar__profile-label">{t('releaseProfile')}</span>
+            <select
+              value={activeProfile.id}
+              aria-label={t('releaseProfileActive')}
+              onChange={(event) => selectReleaseProfile(event.target.value)}
+            >
+              {(project.releaseProfiles?.profiles ?? []).map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name} ·{' '}
+                  {profile.mode === 'all'
+                    ? t('releaseProfileAll')
+                    : t('releaseProfileSelected')}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="button button--ghost toolbar__profile-manage"
+              title={t('releaseProfileManage')}
+              aria-label={t('releaseProfileManage')}
+              onClick={() => {
+                setSettingsCategory('publish');
+                setShowSettings(true);
+              }}
+            >
+              ⚙
+            </button>
+          </div>
+        ) : null}
         <div className="toolbar__validation" aria-label={t('issues')}>
           {dirtyTableIds.length > 0 ? (
             <span
@@ -1924,7 +2189,7 @@ export default function App() {
                     </span>
                   ) : null}
                   {table.name}
-                  {table.publish === true ? null : (
+                  {tableInActiveProfile(project, table.id) ? null : (
                     <span className="table-list-item__publish">{t('unpublishedTable')}</span>
                   )}
                 </span>
@@ -2002,10 +2267,12 @@ export default function App() {
 
       <SettingsPanel
         open={showSettings}
+        initialCategory={settingsCategory}
         language={language}
         themePreference={themePreference}
         showMiniMap={showMiniMap}
         desktopAvailable={isDesktopRuntime()}
+        releaseProfiles={releaseProfiles}
         publishSettings={publishSettings}
         mcpBusy={mcpBusy}
         mcpStatus={mcpStatus}
@@ -2014,10 +2281,16 @@ export default function App() {
         onLanguageChange={setLanguage}
         onThemePreferenceChange={setThemePreference}
         onMiniMapChange={setShowMiniMap}
+        onReleaseProfileSelect={selectReleaseProfile}
+        onReleaseProfileCreate={createReleaseProfile}
+        onReleaseProfileDuplicate={duplicateReleaseProfile}
+        onReleaseProfileRename={renameReleaseProfile}
+        onReleaseProfileModeChange={changeReleaseProfileMode}
+        onReleaseProfileDelete={deleteReleaseProfile}
         onPublishEnabledChange={changePublishEnabled}
         onPublishDirectoryPick={choosePublishDirectory}
-        onPublishDirectoryClear={clearPublishDirectory}
-        onPublishNow={publishCurrentProject}
+        onPublishDirectoryClear={clearProfilePublishDirectory}
+        onPublishNow={publishReleaseProfile}
         onMcpEnabledChange={changeMcpEnabled}
         onMcpRestart={restartMcpService}
         onMcpPortChange={changeMcpPort}

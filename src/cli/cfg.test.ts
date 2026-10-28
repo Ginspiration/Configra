@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { sha256Text } from '../patch/dataPatch';
+import { projectKeyForPath } from '../export/projectKey';
 
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const createTempDir = () => mkdtempSync(join(tmpdir(), 'cfg-cli-'));
@@ -86,8 +87,48 @@ const createProject = () => ({
   ],
 });
 
-describe('cfg cli', () => {
-  it('prints inspect and validate JSON with stable hashes', () => {
+const createProfileProject = () => ({
+  version: 3,
+  releaseProfiles: {
+    version: 1,
+    activeProfileId: 'profile_a',
+    profiles: [
+      { id: 'profile_a', name: 'A all', mode: 'all' },
+      {
+        id: 'profile_b',
+        name: 'B selected',
+        mode: 'selected',
+        tables: [{ tableId: 'item_table', rows: ['row_1'] }],
+      },
+    ],
+  },
+  tables: [
+    {
+      id: 'item_table',
+      name: 'Item',
+      remark: 'Item definitions for gameplay',
+      position: { x: 0, y: 0 },
+      columns: [
+        { id: 'id_column', name: 'id', type: 'int', primary: true, required: true },
+        { id: 'name_column', name: 'name', type: 'string', required: true },
+      ],
+      rows: [
+        { _rowId: 'row_1', values: { id_column: 1, name_column: 'Sword' } },
+        { _rowId: 'row_2', values: { id_column: 2, name_column: 'Shield' } },
+      ],
+    },
+    {
+      id: 'extra_table',
+      name: 'Extra',
+      remark: 'Only the full release includes this table',
+      position: { x: 320, y: 0 },
+      columns: [{ id: 'value_column', name: 'value', type: 'string' }],
+      rows: [{ _rowId: 'row_extra', values: { value_column: 'all only' } }],
+    },
+  ],
+});
+
+describe('cfg cli', () => {  it('prints inspect and validate JSON with stable hashes', () => {
     const dir = createTempDir();
     const project = createProject();
     const projectPath = writeProjectFile(dir, 'project.json', project);
@@ -97,8 +138,28 @@ describe('cfg cli', () => {
     const inspectBody = parseJson(inspect.stdout);
     expect(inspectBody.ok).toBe(true);
     expect(inspectBody.projectHash).toBe(sha256Text(`${JSON.stringify(project, null, 2)}\n`));
+    expect(inspectBody.version).toBe(3);
     expect(inspectBody.tableCount).toBe(2);
+    expect(inspectBody.releaseProfiles).toMatchObject({
+      activeProfileId: 'profile_default',
+      profiles: [
+        {
+          id: 'profile_default',
+          name: 'Default',
+          mode: 'selected',
+          tableCount: 2,
+          rowCount: 3,
+        },
+      ],
+    });
+    expect(inspectBody.profile).toMatchObject({
+      id: 'profile_default',
+      mode: 'selected',
+      tableCount: 2,
+      rowCount: 3,
+    });
     expect(inspectBody.publishScope).toMatchObject({
+      profileId: 'profile_default',
       configured: true,
       publishableTableCount: 2,
       publishableRowCount: 3,
@@ -529,6 +590,179 @@ describe('cfg cli', () => {
     expect(existsSync(join(outDir, 'Item_2.json'))).toBe(false);
   }, 20000);
 
+  it('runs export, publish and confirmation binding per release profile', () => {
+    const dir = createTempDir();
+    const projectPath = writeProjectFile(dir, 'project.json', createProfileProject());
+    const runExportFor = (profile: string, outDir: string) =>
+      runCfg([
+        'export',
+        'all',
+        '--project',
+        projectPath,
+        '--profile',
+        profile,
+        '--out',
+        outDir,
+        '--json',
+      ]);
+
+    const allDir = join(dir, 'export-all');
+    const selectedDir = join(dir, 'export-selected');
+    const allExport = runExportFor('profile_a', allDir);
+    const selectedExport = runExportFor('profile_b', selectedDir);
+    expect(allExport.code).toBe(0);
+    expect(selectedExport.code).toBe(0);
+
+    expect(JSON.parse(allExport.stdout)).toMatchObject({
+      profileId: 'profile_a',
+      profileMode: 'all',
+      tableCount: 2,
+      rowCount: 3,
+    });
+    expect(JSON.parse(selectedExport.stdout)).toMatchObject({
+      profileId: 'profile_b',
+      profileMode: 'selected',
+      tableCount: 1,
+      rowCount: 1,
+    });
+
+    expect(existsSync(join(allDir, 'Extra.json'))).toBe(true);
+    expect(existsSync(join(selectedDir, 'Extra.json'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(allDir, 'Item.json'), 'utf8'))).toHaveLength(2);
+    expect(JSON.parse(readFileSync(join(selectedDir, 'Item.json'), 'utf8'))).toHaveLength(1);
+
+    // 目录 A / B 各自发布，互不清理。
+    const publishFor = (profile: string, outDir: string, confirm?: string) =>
+      runCfg(
+        [
+          'publish',
+          '--project',
+          projectPath,
+          '--profile',
+          profile,
+          '--out',
+          outDir,
+          ...(confirm ? ['--confirm', confirm] : ['--dry-run']),
+          '--json',
+        ],
+      );
+    const publishDirA = join(dir, 'pub-a');
+    const publishDirB = join(dir, 'pub-b');
+    const previewA = parseJson(publishFor('profile_a', publishDirA).stdout);
+    const previewB = parseJson(publishFor('profile_b', publishDirB).stdout);
+    expect(publishFor('profile_a', publishDirA, previewA.confirmationHash).code).toBe(0);
+    expect(publishFor('profile_b', publishDirB, previewB.confirmationHash).code).toBe(0);
+
+    expect(existsSync(join(publishDirA, 'Extra.json'))).toBe(true);
+    expect(existsSync(join(publishDirA, 'Item.json'))).toBe(true);
+    expect(existsSync(join(publishDirB, 'Extra.json'))).toBe(false);
+    expect(existsSync(join(publishDirB, 'Item.json'))).toBe(true);
+
+    const republishB = parseJson(publishFor('profile_b', publishDirB).stdout);
+    expect(publishFor('profile_b', publishDirB, republishB.confirmationHash).code).toBe(0);
+    expect(existsSync(join(publishDirA, 'Extra.json'))).toBe(true);
+    expect(existsSync(join(publishDirA, 'Item.json'))).toBe(true);
+
+    const crossProfile = publishFor('profile_b', publishDirA);
+    expect(crossProfile.code).toBe(2);
+    expect(parseJson(crossProfile.stdout).error.kind).toBe('FOREIGN_RELEASE_PROFILE');
+    expect(existsSync(join(publishDirA, 'Extra.json'))).toBe(true);
+
+    // 确认值绑定 profile 与目录：换方案或换目录后旧确认值失效。
+    const sharedDir = join(dir, 'shared');
+    const hashForA = parseJson(publishFor('profile_a', sharedDir).stdout);
+    const hashForB = parseJson(publishFor('profile_b', sharedDir).stdout);
+    expect(hashForA.confirmationHash).not.toBe(hashForB.confirmationHash);
+
+    const wrongProfileConfirm = publishFor('profile_b', sharedDir, hashForA.confirmationHash);
+    expect(wrongProfileConfirm.code).toBe(3);
+
+    const otherDirConfirm = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--profile',
+      'profile_a',
+      '--out',
+      join(dir, 'shared-other'),
+      '--confirm',
+      hashForA.confirmationHash,
+      '--json',
+    ]);
+    expect(otherDirConfirm.code).toBe(3);
+    expect(publishFor('profile_b', sharedDir, hashForB.confirmationHash).code).toBe(0);
+
+    // 多方案时未显式传 --profile 使用 active profile，并在结果中标记。
+    const implicitActive = parseJson(
+      runCfg([
+        'publish',
+        '--project',
+        projectPath,
+        '--out',
+        join(dir, 'implicit'),
+        '--dry-run',
+        '--json',
+      ]).stdout,
+    );
+    expect(implicitActive).toMatchObject({
+      profileId: 'profile_a',
+      profileSource: 'active',
+      profileImplicit: true,
+    });
+  }, 30000);
+
+  it('adopts a legacy publish manifest only with an explicit confirmation and keeps unknown files', () => {
+    const dir = createTempDir();
+    const projectPath = writeProjectFile(dir, 'project.json', createProfileProject());
+    const outDir = join(dir, 'legacy');
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, 'Old.json'), '[]', 'utf8');
+    writeFileSync(
+      join(outDir, '.configra-publish.json'),
+      `${JSON.stringify({
+        version: 1,
+        projectKey: projectKeyForPath(projectPath),
+        updatedAt: '2025-01-01T00:00:00.000Z',
+        files: { 'Old.json': 'sha256:unknown' },
+      })}\n`,
+      'utf8',
+    );
+
+    const preview = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--profile',
+      'profile_a',
+      '--out',
+      outDir,
+      '--dry-run',
+      '--json',
+    ]);
+    expect(preview.code).toBe(0);
+    const previewBody = parseJson(preview.stdout);
+    expect(previewBody.legacyManifest).toBe(true);
+    expect(previewBody.manifestProfileId).toBeNull();
+
+    const published = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--profile',
+      'profile_a',
+      '--out',
+      outDir,
+      '--confirm',
+      previewBody.confirmationHash,
+      '--json',
+    ]);
+    expect(published.code).toBe(0);
+    expect(existsSync(join(outDir, 'Old.json'))).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(outDir, '.configra-publish.json'), 'utf8'));
+    expect(manifest.profileId).toBe('profile_a');
+    expect(manifest.files).not.toHaveProperty('Old.json');
+  }, 30000);
+
   it('blocks unscoped export unless --all is explicit', () => {
     const dir = createTempDir();
     const project = createProject();
@@ -556,7 +790,7 @@ describe('cfg cli', () => {
       '--json',
     ]);
     expect(blocked.code).toBe(2);
-    expect(parseJson(blocked.stdout).error.kind).toBe('EXPORT_SCOPE_UNCONFIGURED');
+    expect(parseJson(blocked.stdout).error.kind).toBe('TABLE_NOT_PUBLISHED');
 
     const explicit = runCfg([
       'export',

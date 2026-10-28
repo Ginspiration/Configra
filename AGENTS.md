@@ -222,8 +222,20 @@ React Flow 画布行为：
 export const COLUMN_TYPES = ['int', 'float', 'string', 'bool', 'enum', 'ref', 'json'] as const;
 
 export type ProjectFile = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
+  /** @deprecated 仅用于读取 v1/v2 旧工程。 */
   exportPolicy?: 'explicit';
+  /** v3 起发布范围的唯一来源。 */
+  releaseProfiles?: {
+    version: 1;
+    activeProfileId?: string;
+    profiles: Array<{
+      id: string;
+      name: string;
+      mode: 'all' | 'selected';
+      tables?: Array<{ tableId: string; rows: 'all' | string[] }>;
+    }>;
+  };
   tables: ConfigTable[];
 };
 
@@ -235,6 +247,7 @@ export type ConfigTable = {
   columns: ConfigColumn[];
   rows: ConfigRow[];
   identity?: TableIdentity;
+  /** @deprecated 仅用于 v1/v2 迁移。 */
   publish?: boolean;
 };
 
@@ -259,6 +272,7 @@ export type ConfigColumn = {
 
 export type ConfigRow = {
   _rowId: string;
+  /** @deprecated 仅用于 v1/v2 迁移。 */
   publish?: boolean;
   values: Record<string, unknown>;
 };
@@ -272,8 +286,12 @@ export type ConfigRow = {
 - 行数据通过 `column.id` 存取。
 - `_rowId` 是编辑器内部元数据，不参与导出。
 - 表 JSON 导出使用 `column.name || column.id` 作为 key。
-- `publish` 是导出/发布范围标记；表与行都必须 `publish: true` 才进入普通导出，新表/新行默认不发布。
-- 第一次把表标记为可发布时，`version` 升级为 2 并写入 `exportPolicy: 'explicit'`；旧版 Configra 会拒绝打开版本 2，避免忽略发布范围后全量导出。
+- 发布范围只由 `releaseProfiles` 决定；`table.publish` / `row.publish` / `exportPolicy` 只保留用于打开 v1/v2 旧工程时迁移。
+- 每个方案有稳定 `id`；`name` 只用于展示和 CLI 选择，不能作为工程内引用。
+- `mode: 'all'` 的方案包含全部表和行；`mode: 'selected'` 只包含 `tables` 里列出的表，`rows` 为 `'all'` 或稳定 `_rowId` 数组。
+- 打开 v1/v2 时迁移成 v3 + `default` 方案：旧 `publish` 标记转成 selected 范围；没有任何标记时迁移成空 selected，绝不默认全发。
+- 工程保存后 `version` 为 3；旧版 Configra 会拒绝打开 v3，避免忽略方案后按旧标记全量导出。
+- 方案只保存“范围”，不保存另一套行值；同一 `_rowId` 如果 A/B 需要不同值，应拆成两个工程文件或分支。
 
 ## 7. ID 注册表
 
@@ -320,12 +338,15 @@ SOUND_CLICK (1)
 
 发布范围：
 
-- 普通导出只包含 `table.publish === true` 且 `row.publish === true` 的表和行。
-- 工程没有 `exportPolicy: 'explicit'` 时普通导出直接拒绝；旧工程必须先勾选可发布表。
-- `config_ids.json` 与表 JSON 使用同一批行，未发布行的 ID 不会泄漏。
-- 已发布行引用未发布表/行时拒绝导出；目标字段必须参与导出（`export !== false`），且已发布目标值必须唯一。
-- 单表导出时，被引用目标表只需在工程里标记为可发布，不要求同时出现在本次输出文件里；但目标行仍必须在可发布范围内。
-- 显式全量导出（CLI `--all`、MCP `includeUnpublished: true`）会绕过发布范围，但仍是显式操作。
+- 普通导出按发布方案（release profile）取范围；不传 `profileId` 时使用 `activeProfileId`。
+- `mode: 'all'` 的方案包含全部表和行；`mode: 'selected'` 只包含列出的表，`rows: 'all'` 表示全部行，否则只包含列出的 `_rowId`。
+- 方案引用了不存在的 `tableId` / `_rowId` 时直接报错（`PROFILE_TABLE_NOT_FOUND` / `PROFILE_ROW_NOT_FOUND`），不静默跳过。
+- `config_ids.json` 与表 JSON 使用同一方案、同一批行，方案外的 ID 不会泄漏。
+- 方案外的源行/目标行引用会拒绝导出；目标字段必须参与导出（`export !== false`），且方案内目标值必须唯一。
+- 单表导出时，被引用目标表只需在方案范围内，不要求同时出现在本次输出文件里；但目标行仍必须在方案范围内。
+- `export: false` 列始终全局排除。
+- 显式全量导出（CLI `--all`、MCP `includeUnpublished: true`）会绕过方案，只是显式开发出口；**发布流程不允许使用它绕过方案**。
+- 工程没有发布方案时普通导出拒绝（`EXPORT_SCOPE_UNCONFIGURED`）；不能因为方案缺失就退回全量发布。
 
 表导出：
 
@@ -343,25 +364,28 @@ ID 注册表导出：
 - key 格式是 `${namespace}.${symbolKey}`。
 - value 是配置的运行时 ID 字段值。
 - key 或 value 为空的行会跳过。
-- 只包含可发布行；浏览器模式会下载 `config_ids.json`。
+- 只包含方案范围内的行；浏览器模式会下载 `config_ids.json`。
 - 桌面模式会弹出保存路径并写文件。
 
-一键导出全部表时使用 Zustand 中的当前内存工程，包括未保存修改，但只导出可发布内容。桌面模式覆盖已有文件时使用布尔确认结果，并在每个文件写入后读回比较；只有全部一致才显示成功。桌面“导出全部”和“发布”共用同一套发布清单与旧文件清理逻辑。
+一键导出全部表时使用 Zustand 中的当前内存工程，包括未保存修改，但只导出当前方案范围。桌面模式覆盖已有文件时使用布尔确认结果，并在每个文件写入后读回比较；只有全部一致才显示成功。桌面“导出全部”和“发布”共用同一套发布清单与旧文件清理逻辑。
 
-桌面发布还会在目标目录写 `.configra-publish.json` 清单。清单记录工程标识、文件 hash 和更新时间；下一次发布时，上次清单里存在、这次不再生成且内容未被改动的文件会被删除。清单属于另一个工程时拒绝发布。发布目录按工程保存在 localStorage；发布目录不能是工程文件所在目录、其父目录或游戏工程根目录。
+桌面发布还会在目标目录写 `.configra-publish.json` 清单。清单记录工程标识、发布方案 id、文件 hash 和更新时间；下一次发布时，上次清单里存在、这次不再生成且内容未被改动的文件会被删除。清单属于另一个工程或另一个方案时拒绝发布。发布目录按“工程 + 方案”保存在 localStorage；发布目录不能是工程文件所在目录、其父目录或游戏工程根目录。
 
 ### 保存时自动发布（仅桌面模式）
 
-设置 → “发布”分类里可以配置发布目录并开启“保存时自动发布”：
+设置 → “发布”分类里可以管理发布方案、为每个方案选择发布目录并开启“保存时自动发布”：
 
-- 开启开关时如果还没有目录，会先弹出目录选择；取消选择则保持关闭。
-- 每次保存成功后，自动把 `config_ids.json` 和可发布表 JSON 静默覆盖写入发布目录，不弹覆盖确认，写入后逐文件读回校验。
-- 自动发布失败不影响保存结果：工程仍算保存成功，失败原因显示在状态栏；发布被发布范围/校验/路径守卫拦截时同样只影响状态栏。
-- “立即发布”按钮可以对当前内存工程手动触发一次发布；发布目录按工程路径分别保存在 `localStorage`，键为 `configra:publish-settings:<projectPath>`。
+- 方案列表支持切换当前方案、创建、复制、重命名、删除；删除最后一个方案会被拒绝。
+- 每个方案绑定自己的发布目录；绝对路径只保存在本机 `localStorage`，不写进工程文件。
+- 开启自动发布时如果当前方案还没有目录，会先弹出目录选择；取消选择则保持关闭。
+- 每次保存成功后，自动把当前方案的 `config_ids.json` 和表 JSON 静默覆盖写入该方案的发布目录，不弹覆盖确认，写入后逐文件读回校验。
+- 自动发布失败不影响保存结果：工程仍算保存成功，失败原因显示在状态栏；发布被方案范围/校验/路径守卫拦截时同样只影响状态栏。
+- 每个方案行提供“发布此方案”按钮，可以立即发布该方案；“发布当前方案”等同于发布 active 方案。
 - 发布目录不能是工程文件所在目录、其父目录或游戏工程根目录；目标目录内已有工程源文件时拒绝发布。
-- 发布逻辑位于 `src/export/publishProject.ts`，设置持久化位于 `src/settings/publishSettings.ts`。
-- 发布会在目标目录写 `.configra-publish.json` 清单；下次发布清理上次清单内、这次不再生成且内容未被改动的旧 JSON。清单属于另一个工程时拒绝发布。
-- 首次发布到没有清单的旧目录时，工具无法判断哪些旧 JSON 是自己写的，因此不会删除未知文件，只会在状态栏提示；从第二次发布起才按清单清理。
+- 发布逻辑位于 `src/export/publishProject.ts`，方案解析位于 `src/release/releaseProfiles.ts`，设置持久化位于 `src/settings/publishSettings.ts`。
+- 发布会写 `.configra-publish.json` 清单；下次发布只清理**本方案清单**内、这次不再生成且内容未被改动的旧 JSON，绝不删除其他方案的文件。
+- 旧清单没有 `profileId` 时按 legacy 处理：首次用新方案发布到该目录必须显式确认，本次不自动删除任何旧文件；清单随后升级为本方案的清单。
+- 首次发布到没有清单的目录时，工具无法判断哪些旧 JSON 是自己写的，因此不会删除未知文件，只会在状态栏提示；从第二次发布起才按清单清理。
 
 ## 9. 校验规则
 
@@ -406,6 +430,10 @@ type ValidationIssue = {
 - ID 注册表运行时值不能为空。
 - ID 注册表运行时值在表内不能重复。
 - ID 注册表条目在工程内不能重复。
+- 发布方案名不能为空；方案 id 不能重复。
+- 方案名重复是警告（引用仍必须用 id）。
+- selected 方案引用了已删除的 `tableId` / `_rowId` 是错误；删除表/行时 store 会自动从所有方案中清理引用。
+- `activeProfileId` 必须指向已存在的方案。
 
 ## 10. 保存和导入
 
@@ -459,8 +487,8 @@ Store action：
 - `selectTable`
 - `addTable`
 - `updateTable`
-- `setTablePublish`
-- `setRowsPublish`
+- `setTablePublish` / `setRowsPublish`（改当前方案的选表/选行范围）
+- `addReleaseProfile` / `duplicateReleaseProfile` / `renameReleaseProfile` / `deleteReleaseProfile` / `setActiveReleaseProfile`
 - `moveTable`
 - `deleteTable`
 - `addColumn`
@@ -481,12 +509,15 @@ Store action：
 
 撤销/重做行为：
 
-- 快照内容是 `{ name, remark, columns, rows, identity, publish }` 的深拷贝，不包含 `position`；撤销恢复表内容但保留画布位置。行的 `publish` 随 `rows` 一起快照。
+- 快照内容是 `{ name, remark, columns, rows, identity }` 的深拷贝，不包含 `position`，也不包含发布方案；撤销恢复表内容但保留画布位置和方案范围。
 - 内容修改类 action（`updateTable`、`addColumn`、`updateColumn`、`moveColumn`、`deleteColumn`、`addRow`、`insertRow`、`moveRow`、`updateCell`、`deleteRow`、`deleteRows`、`appendRows`）在真正发生变更前压入快照并清空该表重做栈；`moveTable` 等纯布局变化不记录。
 - `beginUndoBatch(tableId)` 立即捕获一条快照，期间所有修改共用它；组件侧用 try/finally 配对 `endUndoBatch()`。
 - `undo`/`redo` 在撤销/重做栈间互换快照，并把目标表标记为内容脏。
 - `deleteTable` 移除该表的两条栈；`loadProject`/`newProject`/`reloadProject` 清空全部栈（外部 AI/CLI 改盘重载后不允许撤销到旧内存状态）。
-- 表的新建/删除本身不可撤销。
+- 表的新建/删除、方案新建/删除/切换、方案范围修改本身不进入按表撤销栈。
+- 删除表或行时，store 会自动从所有 selected 方案中清理对应的 `tableId` / `_rowId` 引用。
+- `loadProject` / `reloadProject` 会把 v1/v2 工程迁移成 v3 并剥掉旧 `publish` / `exportPolicy` 字段；已迁移工程再次加载保持幂等。
+- all 模式方案的 `setTablePublish` / `setRowsPublish` 是只读 no-op；UI 也禁用对应控件。
 
 脏状态行为：
 
@@ -606,6 +637,9 @@ Configra/
 |   |-- patch/
 |   |   |-- dataPatch.test.ts
 |   |   `-- dataPatch.ts
+|   |-- release/
+|   |   |-- releaseProfiles.test.ts
+|   |   `-- releaseProfiles.ts
 |   |-- store/
 |   |   `-- editorStore.ts
 |   |-- validation/
@@ -708,24 +742,26 @@ A Node CLI is now available and should be used for AI batch work without startin
 
 Commands:
 
-- `npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]`
-- `npm run --silent cfg -- query rows --project <file> --query <file|-> [--json]`
+- `npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--profile <id|name>] [--offset 0] [--limit 100] [--json]`
+- `npm run --silent cfg -- query rows --project <file> --query <file|-> [--profile <id|name>] [--json]`
 - `npm run --silent cfg -- validate --project <file> [--json]`
 - `npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]`
 - `npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]`
 - `npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]`
-- `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]`
-- `npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]`
-- `npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]`
-- `npm run --silent cfg -- publish --project <file> --out <directory> [--dry-run] [--confirm <hash>] [--json]`
+- `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--profile <id|name>] [--all] [--overwrite] [--json]`
+- `npm run --silent cfg -- export all --project <file> --out <directory> [--profile <id|name>] [--all] [--overwrite] [--json]`
+- `npm run --silent cfg -- export ids --project <file> --out <file> [--profile <id|name>] [--all] [--overwrite] [--json]`
+- `npm run --silent cfg -- publish --project <file> --out <directory> [--profile <id|name>] [--dry-run] [--confirm <hash>] [--json]`
 
-Export commands only include publishable tables/rows. `--all` is the explicit override for exporting unpublished content. Export targets are rejected when they are the project directory, its parent, or a game project root.
+Export and publish use the project's release profiles. `--profile` selects a profile by stable id or unique name; without it the active profile is used. Inspect returns `releaseProfiles` (per-profile table/row counts), the active profile, and counts for the selected profile. `--all` is the explicit override that bypasses profiles for development exports and must not be used for releases. Export targets are rejected when they are the project directory, its parent, or a game project root.
 
 Patch contract:
 
 - Schema: `schemas/data-patch.schema.json`
 - Stable IDs only: `tableId`, `columnId`, `_rowId`
-- `setTablePublish` and `setRowsPublish` change publish scope; before applying they return a normal patch/diff and `confirmationHash`
+- `setTablePublish` and `setRowsPublish` take an optional `profileId` (stable id or unique name; defaults to the active profile) and change that profile's table/row scope
+- `setActiveReleaseProfile` switches which profile exports and publishes use by default
+- all-mode profiles reject table/row scope edits; patches return a normal diff and `confirmationHash`
 - Ordered operations only; later operations see earlier results
 - Reject unknown targets, conflicting matches, bad shapes, and stale hashes
 - `baseHash` is the SHA-256 of the original project file text
@@ -743,7 +779,8 @@ Recommended AI flow:
 5. Run `patch apply --confirm <hash> --json`.
 6. Run `validate --json`.
 7. Export the needed table(s) or `config_ids.json`.
-8. For a real release, run `publish --dry-run`, review the plan and `confirmationHash`, then run `publish --confirm <hash>`; this writes the publish manifest and cleans stale files.
+8. For a real release, run `publish --dry-run --profile <id|name>`, review the profile, plan, target ownership and `confirmationHash`, then run `publish --confirm <hash>` with the same profile and directory; this writes the profile into the publish manifest and cleans only stale files from that profile's manifest.
+9. A legacy publish manifest without `profileId` is adopted only by an explicit confirmed publish; the first adoption never deletes existing files.
 
 Inspect behavior relevant to references:
 
@@ -779,10 +816,11 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
 - `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
-- MCP inspect results expose `publishScope` plus per-table/per-row `publish` flags and publishable row counts.
-- MCP can change publish scope through the `setTablePublish` and `setRowsPublish` patch operations. `configra_preview_set_table_publish` and `configra_preview_set_rows_publish` return a normal patch plus `confirmationHash`; `configra_apply_patch` still requires the same project, patch, and confirmation value. AI-created tables/rows are unpublished by default.
-- MCP can run the complete publish workflow through `configra_preview_publish` and `configra_publish_all`. Preview returns the exact file list, plan counts, target ownership, and a `confirmationHash`; apply uses that value, writes `.configra-publish.json`, removes stale files from the previous manifest, and enforces scope, ref consistency, path safety, and manifest ownership.
-- MCP export tools remain ad-hoc exports: they do not write the publish manifest or clean stale files. MCP publish tools use an explicit `outPath`; they do not read or change the UI auto-publish preference or the per-project publish directory stored by the desktop UI.
+- MCP inspect results expose `releaseProfiles` (id, name, mode, per-profile table/row counts), `activeProfileId`, the selected `profile`, and a profile-based `publishScope` plus per-table/per-row scope flags.
+- MCP can change one profile's scope through `setTablePublish` / `setRowsPublish` with `profileId`; `configra_preview_set_table_publish` and `configra_preview_set_rows_publish` accept profile ids or unique names and resolve them to stable ids in the returned patch. `configra_preview_set_active_release_profile` previews switching the active profile. `configra_apply_patch` still requires the same project, patch, and confirmation value. AI-created tables/rows start outside selected profiles.
+- MCP export tools accept an optional `profileId` and default to the active profile. They remain ad-hoc exports: they do not write the publish manifest or clean stale files, and `includeUnpublished` is the explicit development override.
+- MCP can run the complete publish workflow through `configra_preview_publish` and `configra_publish_all`, both accepting an optional `profileId`. Preview returns the profile, exact file list, plan counts, target ownership, legacy-manifest state, and a `confirmationHash` bound to project + profile + directory + manifest state. Apply requires the same project, profile, and directory; a directory owned by another project or profile is refused, and only stale files recorded by that profile's manifest are removed. Legacy manifests require the explicit confirmed publish and are never auto-cleaned on adoption.
+- MCP publish tools use an explicit `outPath`; they do not read or change the UI auto-publish preference or the per-project/per-profile publish directory stored by the desktop UI. Profile creation/deletion stays in the desktop UI.
 - While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a bottom taskbar button, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity and optional target `projectId` to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.

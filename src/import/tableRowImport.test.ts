@@ -21,9 +21,13 @@ const row = (id: string, values: Record<string, unknown>): ConfigRow => ({
 });
 
 const project = (tables: ConfigTable[]): ProjectFile => ({
-  version: 1,
-  exportPolicy: 'explicit',
-  tables: tables.map((table) => ({ ...table, publish: true })),
+  version: 3,
+  releaseProfiles: {
+    version: 1,
+    activeProfileId: 'profile_all',
+    profiles: [{ id: 'profile_all', name: 'All', mode: 'all' }],
+  },
+  tables,
 });
 
 const soundTable = (): ConfigTable => ({

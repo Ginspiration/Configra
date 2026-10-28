@@ -3,6 +3,11 @@ export const PUBLISH_MANIFEST_FILE = '.configra-publish.json';
 export type PublishManifest = {
   version: 1;
   projectKey: string;
+  /**
+   * 写入该清单的发布方案稳定 id。旧清单没有该字段，按 legacy 处理：
+   * 首次用新方案发布到该目录必须显式确认，且不自动清理未知旧文件。
+   */
+  profileId?: string;
   updatedAt: string;
   files: Record<string, string>;
 };
@@ -26,6 +31,9 @@ export const parsePublishManifest = (text: string): PublishManifest | undefined 
   if (typeof value.files !== 'object' || value.files === null || Array.isArray(value.files)) {
     return undefined;
   }
+  if (value.profileId !== undefined && (typeof value.profileId !== 'string' || !value.profileId)) {
+    return undefined;
+  }
 
   const files: Record<string, string> = {};
   for (const [fileName, hash] of Object.entries(value.files)) {
@@ -44,6 +52,7 @@ export const parsePublishManifest = (text: string): PublishManifest | undefined 
   return {
     version: 1,
     projectKey: value.projectKey,
+    ...(value.profileId ? { profileId: value.profileId } : {}),
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
     files,
   };
