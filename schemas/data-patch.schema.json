@@ -26,7 +26,9 @@
           { "$ref": "#/$defs/updateRows" },
           { "$ref": "#/$defs/upsertRows" },
           { "$ref": "#/$defs/addRows" },
-          { "$ref": "#/$defs/deleteRows" }
+          { "$ref": "#/$defs/deleteRows" },
+          { "$ref": "#/$defs/setTablePublish" },
+          { "$ref": "#/$defs/setRowsPublish" }
         ]
       }
     }
@@ -282,6 +284,31 @@
           "type": "array",
           "items": { "$ref": "#/$defs/nonEmptyString" }
         }
+      }
+    },
+    "setTablePublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "publish"],
+      "properties": {
+        "op": { "const": "setTablePublish" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "publish": { "type": "boolean" }
+      }
+    },
+    "setRowsPublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "tableId", "rowIds", "publish"],
+      "properties": {
+        "op": { "const": "setRowsPublish" },
+        "tableId": { "$ref": "#/$defs/nonEmptyString" },
+        "rowIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "publish": { "type": "boolean" }
       }
     },
     "rowValues": {

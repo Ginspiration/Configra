@@ -447,6 +447,52 @@ describe('data patch engine', () => {
     expect(issueIds.some((id) => id.includes('ref-target-missing'))).toBe(true);
   });
 
+  it('updates table and row publish scope through patch operations', () => {
+    const project = createBaseProject();
+    const projectHash = createProjectHash(project);
+    const patch: DataPatch = {
+      version: 1,
+      baseHash: projectHash,
+      operations: [
+        { op: 'setTablePublish', tableId: 'item_table', publish: true },
+        {
+          op: 'setRowsPublish',
+          tableId: 'item_table',
+          rowIds: ['row_1'],
+          publish: true,
+        },
+      ],
+    };
+
+    const result = applyDataPatch(project, patch);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.project.version).toBe(2);
+    expect(result.project.exportPolicy).toBe('explicit');
+    const table = result.project.tables[0];
+    expect(table.publish).toBe(true);
+    expect(table.rows[0].publish).toBe(true);
+    expect(table.rows[1].publish).toBeUndefined();
+    expect(result.diff.some((change) => change.type === 'tableUpdated')).toBe(true);
+    expect(result.diff.some((change) => change.type === 'rowPublishChanged')).toBe(true);
+
+    const reversed = applyDataPatch(result.project, {
+      version: 1,
+      baseHash: sha256Text(`${JSON.stringify(result.project, null, 2)}\n`),
+      operations: [
+        {
+          op: 'setRowsPublish',
+          tableId: 'item_table',
+          rowIds: ['row_1'],
+          publish: false,
+        },
+      ],
+    });
+    expect(reversed.ok).toBe(true);
+    if (reversed.ok) expect(reversed.project.tables[0].rows[0].publish).toBeUndefined();
+  });
+
   it('produces stable export helpers for config ids and duplicate table names', () => {
     const project: ProjectFile = {
       version: 1,

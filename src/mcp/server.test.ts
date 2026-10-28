@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -134,6 +134,10 @@ describe('Configra MCP server', () => {
         'configra_apply_patch',
         'configra_rollback_transaction',
         'configra_export_all',
+        'configra_preview_publish',
+        'configra_publish_all',
+        'configra_preview_set_table_publish',
+        'configra_preview_set_rows_publish',
       ]),
     );
     const exportAllTool = tools.tools.find((tool) => tool.name === 'configra_export_all');
@@ -153,6 +157,8 @@ describe('Configra MCP server', () => {
       'upsertRows',
       'addRows',
       'deleteRows',
+      'setTablePublish',
+      'setRowsPublish',
     ]) {
       expect(publicPatchSchema).toContain(`"const":"${operation}"`);
     }
@@ -562,6 +568,122 @@ describe('Configra MCP server', () => {
     expect(applied).toMatchObject({ written: true, projectId: 'alpha' });
     expect(JSON.parse(readFileSync(projectAPath, 'utf8')).tables[0].rows[0].values.name).toBe('Axe');
     expect(JSON.parse(readFileSync(projectBPath, 'utf8')).tables[0].rows[0].values.name).toBe('Sword');
+
+    await client.close();
+  }, 60000);
+
+  it('supports publish scope changes and the full publish workflow over MCP', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'configra-mcp-publish-'));
+    const configDir = join(root, 'config');
+    const projectPath = join(root, 'project.configra.json');
+    const publishedDir = join(root, 'published');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      projectPath,
+      `${JSON.stringify({
+        version: 1,
+        tables: [
+          {
+            id: 'items',
+            name: 'Items',
+            position: { x: 0, y: 0 },
+            columns: [
+              { id: 'id', name: 'id', type: 'int', primary: true, required: true },
+              { id: 'name', name: 'name', type: 'string' },
+            ],
+            rows: [
+              { _rowId: 'row_1', values: { id: 1, name: 'Sword' } },
+              { _rowId: 'row_2', values: { id: 2, name: 'Shield' } },
+            ],
+          },
+        ],
+      }, null, 2)}\n`,
+      'utf8',
+    );
+    writeFileSync(
+      join(configDir, 'mcp-context.json'),
+      `${JSON.stringify({
+        version: 1,
+        projectPath,
+        uiDirty: false,
+        dirtyScope: 'none',
+        fullAccess: false,
+        revision: 1,
+        updatedAt: new Date().toISOString(),
+      })}\n`,
+      'utf8',
+    );
+
+    const started = await startMcpHttpServer({ configDir, port: 0, repoDir: repoRoot });
+    runningServers.push(started.httpServer);
+    const client = new Client({ name: 'configra-test-publish', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${started.port}/mcp`),
+    );
+    await client.connect(transport);
+
+    const before = parseToolText(await client.callTool({
+      name: 'configra_inspect_project',
+      arguments: {},
+    }));
+    expect(before.publishScope).toMatchObject({
+      configured: false,
+      publishableTableCount: 0,
+    });
+
+    const tablePreview = parseToolText(await client.callTool({
+      name: 'configra_preview_set_table_publish',
+      arguments: { tableId: 'items', publish: true },
+    }));
+    expect(tablePreview.patch).toMatchObject({
+      operations: [{ op: 'setTablePublish', tableId: 'items', publish: true }],
+    });
+    const appliedTable = parseToolText(await client.callTool({
+      name: 'configra_apply_patch',
+      arguments: {
+        patch: tablePreview.patch,
+        confirmationHash: tablePreview.confirmationHash,
+      },
+    }));
+    expect(appliedTable.written).toBe(true);
+
+    const rowPreview = parseToolText(await client.callTool({
+      name: 'configra_preview_set_rows_publish',
+      arguments: { tableId: 'items', rowIds: ['row_1'], publish: true },
+    }));
+    const appliedRow = parseToolText(await client.callTool({
+      name: 'configra_apply_patch',
+      arguments: {
+        patch: rowPreview.patch,
+        confirmationHash: rowPreview.confirmationHash,
+      },
+    }));
+    expect(appliedRow.written).toBe(true);
+
+    const projectAfter = JSON.parse(readFileSync(projectPath, 'utf8'));
+    expect(projectAfter.version).toBe(2);
+    expect(projectAfter.exportPolicy).toBe('explicit');
+    expect(projectAfter.tables[0].publish).toBe(true);
+    expect(projectAfter.tables[0].rows[0].publish).toBe(true);
+    expect(projectAfter.tables[0].rows[1].publish).toBeUndefined();
+
+    const publishPreview = parseToolText(await client.callTool({
+      name: 'configra_preview_publish',
+      arguments: { outPath: publishedDir },
+    }));
+    expect(publishPreview.confirmationHash).toMatch(/^sha256:/);
+    expect(publishPreview.files).toEqual(['config_ids.json', 'Items.json']);
+
+    const published = parseToolText(await client.callTool({
+      name: 'configra_publish_all',
+      arguments: {
+        outPath: publishedDir,
+        confirmationHash: publishPreview.confirmationHash,
+      },
+    }));
+    expect(published).toMatchObject({ status: 'published', count: 2 });
+    expect(existsSync(join(publishedDir, '.configra-publish.json'))).toBe(true);
+    expect(JSON.parse(readFileSync(join(publishedDir, 'Items.json'), 'utf8'))).toHaveLength(1);
 
     await client.close();
   }, 60000);

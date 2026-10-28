@@ -423,6 +423,7 @@ Configra/
 |   |   |-- desktopExport.ts
 |   |   |-- exportSafety.ts
 |   |   |-- exportScope.ts
+|   |   |-- projectKey.ts
 |   |   |-- exportTables.ts
 |   |   |-- publishManifest.ts
 |   |   `-- publishProject.ts
@@ -511,9 +512,12 @@ npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --
 npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]
 npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]
 npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]
+npm run --silent cfg -- publish --project <file> --out <directory> [--dry-run] [--confirm <hash>] [--json]
 ```
 
 Patch files use stable IDs only and follow `schemas/data-patch.schema.json`.
+
+`publish` runs the same publish workflow as the desktop app: write the publish manifest, clean stale files recorded by it, enforce export scope and ref consistency. Run `publish --dry-run` first and pass the returned `confirmationHash` to `publish --confirm`.
 
 不指定 `--table` 的 inspect 会返回工程级 `referenceSemantics` 和 `relationships`；表级 inspect 会返回与该表有关的传入、传出关系。关系摘要包含源/目标稳定 ID、展示名、目标是否存在，以及目标字段是否为主键或 identity 运行时值字段。
 
@@ -548,7 +552,7 @@ Exit codes:
 
 服务的 canonical ID 是 `configra`，初始化能力只声明 `tools`。不支持的 `resources/*` 请求会稳定返回 `CAPABILITY_NOT_SUPPORTED`，不会被伪装成另一个资源服务器。
 
-MCP 只操作桌面窗口中已打开且已保存的工程，并通过 Headless CLI 完成检查、两阶段 patch、校验和导出。`configra_list_projects` 返回当前工程及其 `projectId`；当打开多个工程时，所有工程相关工具都必须显式传入目标 `projectId`，避免依赖当前焦点窗口猜测目标。仅蓝图布局发生变化时不会阻断该工程的 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”按工程明确放行 MCP 操作，此时 MCP 应用可能替换该工程窗口中未保存的内容，但不会授权其他工程。
+MCP 只操作桌面窗口中已打开且已保存的工程，并通过 Headless CLI 完成检查、发布范围修改、两阶段 patch、校验、导出和完整发布。`configra_list_projects` 返回当前工程及其 `projectId`；当打开多个工程时，所有工程相关工具都必须显式传入目标 `projectId`，避免依赖当前焦点窗口猜测目标。仅蓝图布局发生变化时不会阻断该工程的 MCP，应用 patch 后会保留未保存的节点位置；存在未保存的内容修改时默认拒绝修改和导出。用户可以通过“设置 → AI / MCP → 完全访问”按工程明确放行 MCP 操作，此时 MCP 应用可能替换该工程窗口中未保存的内容，但不会授权其他工程。
 
 MCP 启用后，右下角会显示 AI/MCP 活动日志窗口，展示连接、工具调用记录及工具显式指定的 `projectId`。收起后窗口会变成右下角的小按钮，点击即可恢复；该偏好会保存在 `localStorage`。日志保存在应用配置目录的 `mcp-logs.jsonl` 中，日志窗口右键菜单可以清空当前日志。
 
@@ -564,10 +568,12 @@ inspect 结果中的 `referenceSemantics` 会说明 `ref` 单元格保存目标�
 - 读取：`configra_inspect_project`、`configra_inspect_table`、`configra_query_rows`。
 - 校验：`configra_validate`。
 - 通用修改预览：`configra_preview_patch`。
+- 发布范围预览：`configra_preview_set_table_publish`、`configra_preview_set_rows_publish`；返回普通 patch 和 `confirmationHash`，用 `configra_apply_patch` 应用。
 - 引用预览：`configra_preview_define_ref`、`configra_preview_assign_refs`。
 - 应用与恢复：`configra_apply_patch`、`configra_rollback_transaction`。
 - 导出：`configra_export_table`、`configra_export_ids`、`configra_export_all`；默认只导出可发布内容，`includeUnpublished: true` 是显式全量开关。
-- 只读：inspect 结果会返回 `publishScope`、表/行的 `publish` 标记和可发布行数。MCP 不能修改发布范围；可发布标记仍由人在界面里决定。MCP 导出不会执行桌面端的发布清单清理，也不会触发自动发布。
+- 发布：`configra_preview_publish` 返回发布清单和 `confirmationHash`；`configra_publish_all` 用该确认值执行完整发布，写发布清单并清理旧文件。
+- 只读：inspect 结果会返回 `publishScope`、表/行的 `publish` 标记和可发布行数。MCP 可以修改发布范围，但必须经过 preview/apply 两阶段确认。MCP 不会修改界面里的“保存时自动发布”开关，也不会使用按工程保存的发布目录；发布目标由 `outPath` 显式传入。
 
 所有修改仍采用两阶段流程：preview 返回目标 `projectId`、精确 `patch` 和绑定该项目的 `confirmationHash`，apply 必须对同一工程原样提交后二者。即使两个工程文件内容完全相同，A 工程的确认值也不能用于 B 工程。ref 专用工具不会绕过 patch 校验、工程哈希、写锁、事务快照或校验增量。
 

@@ -10,15 +10,6 @@ const settingsKey = (projectPath?: string) =>
     ? `${PUBLISH_SETTINGS_STORAGE_KEY}:${projectPath.toLowerCase()}`
     : PUBLISH_SETTINGS_STORAGE_KEY;
 
-export const projectKeyForPath = (projectPath?: string) => {
-  if (!projectPath) return 'unsaved';
-  let hash = 2166136261;
-  for (let index = 0; index < projectPath.length; index += 1) {
-    hash = Math.imul(hash ^ projectPath.toLowerCase().charCodeAt(index), 16777619);
-  }
-  return `project-${(hash >>> 0).toString(16).padStart(8, '0')}`;
-};
-
 export const loadPublishSettings = (projectPath?: string): PublishSettings => {
   try {
     const raw = window.localStorage.getItem(settingsKey(projectPath));

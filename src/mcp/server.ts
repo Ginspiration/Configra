@@ -683,7 +683,7 @@ const createServer = (options: ServerOptions) => {
     'configra_preview_patch',
     {
       description:
-        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} ${IDENTITY_USAGE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
+        `Preview an ordered project patch without writing. ${REF_CELL_VALUE_DESCRIPTION} ${IDENTITY_USAGE_DESCRIPTION} Use configra_preview_define_ref and configra_preview_assign_refs for simpler ref work. setTablePublish and setRowsPublish change publish scope. New addTable operations require table remarks and new addColumn operations require field remarks. Returns the exact patch and confirmationHash.`,
       inputSchema: {
         ...projectSelectorSchema,
         description: z.string().optional(),
@@ -695,6 +695,63 @@ const createServer = (options: ServerOptions) => {
       try {
         const context = await requireProject('write', projectId);
         return await previewDataPatch(context, description, operations);
+      } catch (error) {
+        return caughtToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'configra_preview_set_table_publish',
+    {
+      description:
+        'Preview changing one table publish flag without writing. Publish scope controls what export and publish may include; review the diff and confirmationHash before applying. Turning a table on does not mark its existing rows publishable.',
+      inputSchema: {
+        ...projectSelectorSchema,
+        tableId: z.string().min(1).describe('Stable internal table ID.'),
+        publish: z.boolean(),
+        description: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, tableId, publish, description }) => {
+      try {
+        const context = await requireProject('write', projectId);
+        return await previewDataPatch(
+          context,
+          description ??
+            `${publish ? 'Mark' : 'Unmark'} table ${tableId} as publishable`,
+          [{ op: 'setTablePublish', tableId, publish }],
+        );
+      } catch (error) {
+        return caughtToolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    'configra_preview_set_rows_publish',
+    {
+      description:
+        'Preview changing publish flags for specific rows without writing. Use stable _rowId values from inspect. Publish scope controls what export and publish may include; review the diff and confirmationHash before applying.',
+      inputSchema: {
+        ...projectSelectorSchema,
+        tableId: z.string().min(1).describe('Stable internal table ID.'),
+        rowIds: z.array(z.string().min(1)).min(1).describe('Stable _rowId values.'),
+        publish: z.boolean(),
+        description: z.string().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ projectId, tableId, rowIds, publish, description }) => {
+      try {
+        const context = await requireProject('write', projectId);
+        return await previewDataPatch(
+          context,
+          description ??
+            `${publish ? 'Mark' : 'Unmark'} ${rowIds.length} row(s) in ${tableId} as publishable`,
+          [{ op: 'setRowsPublish', tableId, rowIds, publish }],
+        );
       } catch (error) {
         return caughtToolError(error);
       }
@@ -1107,6 +1164,60 @@ const createServer = (options: ServerOptions) => {
     ({ projectId, outPath, overwrite, includeUnpublished }) =>
       runExport('all', projectId, outPath, overwrite, includeUnpublished),
   );
+  const runPublish = async (
+    mode: 'preview' | 'apply',
+    projectId: string | undefined,
+    outPath: string,
+    confirmationHash?: string,
+  ) => {
+    try {
+      const context = await requireProject('write', projectId);
+      ensureAbsolute(outPath);
+      const cliArgs = ['publish', '--project', context.projectPath!, '--out', outPath];
+      if (mode === 'preview') {
+        cliArgs.push('--dry-run');
+      } else {
+        cliArgs.push('--confirm', confirmationHash ?? '');
+      }
+      return cliToolResult(await runCli(options, cliArgs), accessState(context));
+    } catch (error) {
+      return caughtToolError(error);
+    }
+  };
+
+  server.registerTool(
+    'configra_preview_publish',
+    {
+      description:
+        'Preview publishing every publishable table and config_ids.json to an absolute local directory. Returns the exact file list, plan counts, target ownership, and a confirmationHash. No files are written. Publish also enforces export scope, ref consistency, path safety, and the publish manifest.',
+      inputSchema: {
+        ...projectSelectorSchema,
+        outPath: z.string().min(1).describe('Absolute publish directory.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ projectId, outPath }) => runPublish('preview', projectId, outPath),
+  );
+
+  server.registerTool(
+    'configra_publish_all',
+    {
+      description:
+        'Publish every publishable table and config_ids.json to an absolute local directory using the confirmationHash from configra_preview_publish. Writes the publish manifest and removes stale files recorded there; this is the full desktop publish workflow, not an ad-hoc export.',
+      inputSchema: {
+        ...projectSelectorSchema,
+        outPath: z.string().min(1).describe('Absolute publish directory.'),
+        confirmationHash: z
+          .string()
+          .min(1)
+          .describe('Value returned by configra_preview_publish for the same project and directory.'),
+      },
+      annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
+    ({ projectId, outPath, confirmationHash }) =>
+      runPublish('apply', projectId, outPath, confirmationHash),
+  );
+
   server.registerTool(
     'configra_export_ids',
     {

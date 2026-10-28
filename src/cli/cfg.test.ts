@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -460,6 +460,73 @@ describe('cfg cli', () => {
     ]);
     expect(atomicFailure.code).toBe(4);
     expect(readFileSync(join(failedDir, 'config_ids.json'), 'utf8')).toBe('original ids');
+  }, 20000);
+
+  it('previews and publishes with a confirmation hash and stale-file cleanup', () => {
+    const dir = createTempDir();
+    const projectPath = writeProjectFile(dir, 'project.json', createProject());
+    const outDir = join(dir, 'published');
+    mkdirSync(outDir, { recursive: true });
+
+    const preview = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--out',
+      outDir,
+      '--dry-run',
+      '--json',
+    ]);
+    expect(preview.code).toBe(0);
+    const previewBody = parseJson(preview.stdout);
+    expect(previewBody.confirmationHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(previewBody.files).toEqual(
+      expect.arrayContaining(['config_ids.json', 'Item.json', 'Item_2.json']),
+    );
+    expect(existsSync(join(outDir, 'Item.json'))).toBe(false);
+
+    const published = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--out',
+      outDir,
+      '--confirm',
+      previewBody.confirmationHash,
+      '--json',
+    ]);
+    expect(published.code).toBe(0);
+    expect(existsSync(join(outDir, 'Item.json'))).toBe(true);
+    expect(existsSync(join(outDir, 'Item_2.json'))).toBe(true);
+    expect(existsSync(join(outDir, '.configra-publish.json'))).toBe(true);
+
+    const changed = createProject();
+    changed.tables[1].publish = false;
+    writeFileSync(projectPath, `${JSON.stringify(changed, null, 2)}\n`, 'utf8');
+
+    const secondPreview = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--out',
+      outDir,
+      '--dry-run',
+      '--json',
+    ]);
+    const secondBody = parseJson(secondPreview.stdout);
+    expect(secondBody.files).not.toContain('Item_2.json');
+    const secondPublished = runCfg([
+      'publish',
+      '--project',
+      projectPath,
+      '--out',
+      outDir,
+      '--confirm',
+      secondBody.confirmationHash,
+      '--json',
+    ]);
+    expect(secondPublished.code).toBe(0);
+    expect(existsSync(join(outDir, 'Item_2.json'))).toBe(false);
   }, 20000);
 
   it('blocks unscoped export unless --all is explicit', () => {

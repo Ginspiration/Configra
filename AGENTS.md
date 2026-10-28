@@ -580,6 +580,7 @@ Configra/
 |   |   |-- desktopExport.ts
 |   |   |-- exportSafety.ts
 |   |   |-- exportScope.ts
+|   |   |-- projectKey.ts
 |   |   |-- exportTables.ts
 |   |   |-- publishManifest.ts
 |   |   `-- publishProject.ts
@@ -716,6 +717,7 @@ Commands:
 - `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]`
 - `npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]`
 - `npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]`
+- `npm run --silent cfg -- publish --project <file> --out <directory> [--dry-run] [--confirm <hash>] [--json]`
 
 Export commands only include publishable tables/rows. `--all` is the explicit override for exporting unpublished content. Export targets are rejected when they are the project directory, its parent, or a game project root.
 
@@ -723,6 +725,7 @@ Patch contract:
 
 - Schema: `schemas/data-patch.schema.json`
 - Stable IDs only: `tableId`, `columnId`, `_rowId`
+- `setTablePublish` and `setRowsPublish` change publish scope; before applying they return a normal patch/diff and `confirmationHash`
 - Ordered operations only; later operations see earlier results
 - Reject unknown targets, conflicting matches, bad shapes, and stale hashes
 - `baseHash` is the SHA-256 of the original project file text
@@ -740,6 +743,7 @@ Recommended AI flow:
 5. Run `patch apply --confirm <hash> --json`.
 6. Run `validate --json`.
 7. Export the needed table(s) or `config_ids.json`.
+8. For a real release, run `publish --dry-run`, review the plan and `confirmationHash`, then run `publish --confirm <hash>`; this writes the publish manifest and cleans stale files.
 
 Inspect behavior relevant to references:
 
@@ -775,8 +779,10 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
 - `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
-- MCP inspect results expose `publishScope` plus per-table/per-row `publish` flags and publishable row counts. MCP cannot change publish flags or `exportPolicy`; release scope remains a human decision in the desktop UI. AI-created tables/rows are unpublished by default.
-- MCP export tools export only publishable tables/rows by default; `includeUnpublished: true` is the explicit override. MCP exports are ad-hoc CLI exports and do not run the desktop publish workflow (per-project publish directory, `.configra-publish.json` manifest cleanup, or auto publish).
+- MCP inspect results expose `publishScope` plus per-table/per-row `publish` flags and publishable row counts.
+- MCP can change publish scope through the `setTablePublish` and `setRowsPublish` patch operations. `configra_preview_set_table_publish` and `configra_preview_set_rows_publish` return a normal patch plus `confirmationHash`; `configra_apply_patch` still requires the same project, patch, and confirmation value. AI-created tables/rows are unpublished by default.
+- MCP can run the complete publish workflow through `configra_preview_publish` and `configra_publish_all`. Preview returns the exact file list, plan counts, target ownership, and a `confirmationHash`; apply uses that value, writes `.configra-publish.json`, removes stale files from the previous manifest, and enforces scope, ref consistency, path safety, and manifest ownership.
+- MCP export tools remain ad-hoc exports: they do not write the publish manifest or clean stale files. MCP publish tools use an explicit `outPath`; they do not read or change the UI auto-publish preference or the per-project publish directory stored by the desktop UI.
 - While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a bottom taskbar button, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity and optional target `projectId` to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.

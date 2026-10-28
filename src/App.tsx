@@ -76,10 +76,10 @@ import {
 import { translate, type Language, type Translator } from './i18n';
 import {
   loadPublishSettings,
-  projectKeyForPath,
   savePublishSettings,
   type PublishSettings,
 } from './settings/publishSettings';
+import { projectKeyForPath } from './export/projectKey';
 import { useWindowManager } from './window/WindowManager';
 import {
   applyTheme,

@@ -5,6 +5,12 @@ import * as path from 'node:path';
 import { idRegistryJson, tableJson } from '../export/exportTables';
 import { buildExportPlan, ExportScopeError } from '../export/exportScope';
 import { assertSafeExportTarget } from '../export/exportSafety';
+import { projectKeyForPath } from '../export/projectKey';
+import { publishProjectFiles } from '../export/publishProject';
+import {
+  parsePublishManifest,
+  publishManifestPath,
+} from '../export/publishManifest';
 import { parseProjectFileText } from '../file/projectFile';
 import type { ConfigTable, ProjectFile, ValidationIssue } from '../model/types';
 import {
@@ -62,7 +68,7 @@ const VALUE_OPTIONS = new Set([
   'transaction-id',
 ]);
 
-const FLAG_OPTIONS = new Set(['json', 'overwrite', 'all', 'help']);
+const FLAG_OPTIONS = new Set(['json', 'overwrite', 'all', 'dry-run', 'help']);
 
 const usage = `Usage:
   npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]
@@ -74,8 +80,10 @@ const usage = `Usage:
   npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]
   npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]
   npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]
+  npm run --silent cfg -- publish --project <file> --out <directory> [--dry-run] [--confirm <hash>] [--json]
 
-By default export only includes tables/rows marked publish=true. Pass --all to explicitly export unpublished content.`;
+By default export only includes tables/rows marked publish=true. Pass --all to explicitly export unpublished content.
+publish uses the publish manifest and stale-file cleanup; run it with --dry-run first, then pass the returned confirmationHash to --confirm.`;
 
 const fail = (
   exitCode: ExitCode,
@@ -1225,6 +1233,171 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   };
 };
 
+const publishCommand = async (args: ParsedArgs): Promise<CliOutput> => {
+  const loaded = await loadProject(requiredOption(args, 'project'));
+  const outDir = toAbsolutePath(requiredOption(args, 'out'));
+  const dryRun = args.flags.has('dry-run');
+  const issues = validate(loaded.project);
+
+  let plan;
+  try {
+    plan = buildExportPlan(loaded.project, { issues });
+  } catch (error) {
+    if (error instanceof ExportScopeError) return failExportScope(error);
+    throw error;
+  }
+
+  await assertCliExportTarget(outDir, loaded.projectPath);
+
+  const projectKey = projectKeyForPath(loaded.projectPath);
+  const manifestPath = publishManifestPath(outDir);
+  let manifestText = '';
+  if (await pathExists(manifestPath)) {
+    manifestText = await readFileText(manifestPath, 'publish manifest');
+    const manifest = parsePublishManifest(manifestText);
+    if (!manifest) {
+      return fail(1, 'manifest', `Publish manifest is invalid: ${manifestPath}`, manifestPath);
+    }
+    if (manifest.projectKey !== projectKey) {
+      fail(
+        2,
+        'publish-target',
+        `Publish directory belongs to another project: ${outDir}`,
+        outDir,
+      );
+    }
+  }
+
+  const fileHashes = plan.files
+    .map((file) => ({ fileName: file.fileName, hash: sha256Text(file.text) }))
+    .sort((left, right) => left.fileName.localeCompare(right.fileName));
+  const confirmationHash = sha256Text(
+    JSON.stringify({
+      projectHash: loaded.projectHash,
+      outDir,
+      projectKey,
+      files: fileHashes,
+      manifestHash: manifestText ? sha256Text(manifestText) : null,
+    }),
+  );
+
+  const preview = {
+    ok: true,
+    dryRun,
+    projectHash: loaded.projectHash,
+    outDir,
+    projectKey,
+    confirmationHash,
+    hasManifest: manifestText !== '',
+    tableCount: plan.tables.length,
+    rowCount: plan.totalRows,
+    skippedTables: plan.skippedTables,
+    skippedRows: plan.skippedRows,
+    files: plan.files.map((file) => file.fileName),
+  };
+
+  if (dryRun) {
+    return {
+      exitCode: 0,
+      body: preview,
+      text: [
+        `Publish preview for ${outDir}`,
+        `Tables: ${plan.tables.length}, rows: ${plan.totalRows}`,
+        `Skipped: ${plan.skippedTables} table(s), ${plan.skippedRows} row(s)`,
+        `Confirmation: ${confirmationHash}`,
+      ].join('\n'),
+    };
+  }
+
+  const confirm = requiredOption(args, 'confirm');
+  if (confirm !== confirmationHash) {
+    return {
+      exitCode: 3,
+      body: {
+        ok: false,
+        dryRun: false,
+        outDir,
+        projectHash: loaded.projectHash,
+        providedConfirmationHash: confirm,
+        confirmationHash,
+        problem: {
+          kind: 'hash',
+          message: 'Publish confirmation hash does not match the current project or target.',
+        },
+      },
+      text: `Hash conflict: expected ${confirmationHash}, got ${confirm}`,
+    };
+  }
+
+  const result = await publishProjectFiles(
+    outDir,
+    loaded.project,
+    {
+      fileExists: pathExists,
+      writeTextFile: async (filePath, text) => writeTextFile(filePath, text, true),
+      readTextFile: async (filePath) => readFileText(filePath, 'publish file'),
+      removeFile: async (directory, fileName) => {
+        if (path.basename(fileName) !== fileName) {
+          fail(4, 'filesystem', `Unsafe publish file name: ${fileName}`, directory);
+        }
+        await fs.rm(path.join(directory, fileName), { force: true });
+      },
+    },
+    {
+      projectPath: loaded.projectPath,
+      projectKey,
+      issues,
+    },
+  );
+
+  if (result.status === 'published') {
+    return {
+      exitCode: 0,
+      body: {
+        ...preview,
+        dryRun: false,
+        status: result.status,
+        count: result.count,
+        removed: result.removed,
+        skippedTables: result.skippedTables,
+        skippedRows: result.skippedRows,
+        warning: result.warning,
+      },
+      text: [
+        `Published ${result.count} file(s) to ${outDir}`,
+        result.removed > 0 ? `Removed ${result.removed} stale file(s).` : '',
+        result.warning ?? '',
+      ].filter(Boolean).join('\n'),
+    };
+  }
+
+  if (result.status === 'blocked') {
+    return fail(
+      result.reason === 'VALIDATION_ERRORS' ? 1 : 2,
+      result.reason,
+      result.message,
+      outDir,
+      result,
+    );
+  }
+
+  return fail(
+    4,
+    result.status === 'write-failed'
+      ? 'write'
+      : result.status === 'verify-failed'
+        ? 'verify'
+        : 'filesystem',
+    result.status === 'write-failed'
+      ? `Could not write ${result.fileName}: ${result.error}`
+      : result.status === 'verify-failed'
+        ? `Verification failed for ${result.fileName}.`
+        : result.error,
+    outDir,
+    result,
+  );
+};
+
 const dispatch = async (args: ParsedArgs): Promise<CliOutput> => {
   if (args.flags.has('help') || args.positionals.length === 0) {
     return { exitCode: 0, body: { ok: true, usage }, text: usage };
@@ -1243,6 +1416,7 @@ const dispatch = async (args: ParsedArgs): Promise<CliOutput> => {
   if (command === 'export' && subcommand === 'table') return exportTableCommand(args);
   if (command === 'export' && subcommand === 'all') return exportAllCommand(args);
   if (command === 'export' && subcommand === 'ids') return exportIdsCommand(args);
+  if (command === 'publish') return publishCommand(args);
 
   return fail(2, 'arguments', `Unknown command: ${args.positionals.join(' ') || '(empty)'}`);
 };

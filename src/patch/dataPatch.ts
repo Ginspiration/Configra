@@ -55,6 +55,19 @@ export type DeleteRowsOperation = {
   rowIds: string[];
 };
 
+export type SetTablePublishOperation = {
+  op: 'setTablePublish';
+  tableId: string;
+  publish: boolean;
+};
+
+export type SetRowsPublishOperation = {
+  op: 'setRowsPublish';
+  tableId: string;
+  rowIds: string[];
+  publish: boolean;
+};
+
 export type AddTableOperation = {
   op: 'addTable';
   tableId: string;
@@ -128,7 +141,9 @@ export type DataPatchOperation =
   | UpdateRowsOperation
   | UpsertRowsOperation
   | AddRowsOperation
-  | DeleteRowsOperation;
+  | DeleteRowsOperation
+  | SetTablePublishOperation
+  | SetRowsPublishOperation;
 
 export type DataPatch = {
   version: 1;
@@ -233,6 +248,14 @@ export type PatchDiff =
       columnName: string;
       before: unknown;
       after: unknown;
+    }
+  | {
+      type: 'rowPublishChanged';
+      tableId: string;
+      tableName: string;
+      rowId: string;
+      before: boolean;
+      after: boolean;
     };
 
 export type ValidationDelta = {
@@ -847,6 +870,62 @@ const parseDeleteRowsOperation = (
   return { ok: true, value: { op: 'deleteRows', tableId: tableId.value, rowIds: raw.rowIds } };
 };
 
+const parseSetTablePublishOperation = (
+  raw: Record<string, unknown>,
+  path: string,
+): { ok: true; value: SetTablePublishOperation } | { ok: false; problem: PatchProblem } => {
+  const unknownKeys = unknownKeysProblem(raw, ['op', 'tableId', 'publish'], path);
+  if (unknownKeys) return { ok: false, problem: unknownKeys };
+
+  const tableId = readString(raw, 'tableId', path);
+  if (!tableId.ok) return tableId;
+  if (typeof raw.publish !== 'boolean') {
+    return { ok: false, problem: invalidPatch('publish must be a boolean.', `${path}.publish`) };
+  }
+
+  return {
+    ok: true,
+    value: { op: 'setTablePublish', tableId: tableId.value, publish: raw.publish },
+  };
+};
+
+const parseSetRowsPublishOperation = (
+  raw: Record<string, unknown>,
+  path: string,
+): { ok: true; value: SetRowsPublishOperation } | { ok: false; problem: PatchProblem } => {
+  const unknownKeys = unknownKeysProblem(raw, ['op', 'tableId', 'rowIds', 'publish'], path);
+  if (unknownKeys) return { ok: false, problem: unknownKeys };
+
+  const tableId = readString(raw, 'tableId', path);
+  if (!tableId.ok) return tableId;
+  if (
+    !Array.isArray(raw.rowIds) ||
+    raw.rowIds.length === 0 ||
+    raw.rowIds.some((rowId) => typeof rowId !== 'string' || !rowId)
+  ) {
+    return {
+      ok: false,
+      problem: invalidPatch(
+        'rowIds must be a non-empty array of non-empty strings.',
+        `${path}.rowIds`,
+      ),
+    };
+  }
+  if (typeof raw.publish !== 'boolean') {
+    return { ok: false, problem: invalidPatch('publish must be a boolean.', `${path}.publish`) };
+  }
+
+  return {
+    ok: true,
+    value: {
+      op: 'setRowsPublish',
+      tableId: tableId.value,
+      rowIds: raw.rowIds,
+      publish: raw.publish,
+    },
+  };
+};
+
 const parseOperation = (
   raw: unknown,
   path: string,
@@ -868,6 +947,8 @@ const parseOperation = (
   if (raw.op === 'upsertRows') return parseUpsertRowsOperation(raw, path);
   if (raw.op === 'addRows') return parseAddRowsOperation(raw, path);
   if (raw.op === 'deleteRows') return parseDeleteRowsOperation(raw, path);
+  if (raw.op === 'setTablePublish') return parseSetTablePublishOperation(raw, path);
+  if (raw.op === 'setRowsPublish') return parseSetRowsPublishOperation(raw, path);
 
   return { ok: false, problem: invalidPatch(`Unsupported operation "${raw.op}".`, `${path}.op`) };
 };
@@ -918,6 +999,11 @@ export function parseDataPatch(raw: unknown):
 }
 
 const cloneProject = (project: ProjectFile): ProjectFile => JSON.parse(JSON.stringify(project));
+
+const ensureExplicitPublishPolicy = (project: ProjectFile) => {
+  project.version = 2;
+  project.exportPolicy = 'explicit';
+};
 
 const sortForCanonicalJson = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(sortForCanonicalJson);
@@ -1391,6 +1477,51 @@ const applyDeleteRows = (
   return undefined;
 };
 
+const applySetTablePublish = (
+  project: ProjectFile,
+  operation: SetTablePublishOperation,
+  operationPath: string,
+): PatchProblem | undefined => {
+  const target = findTable(project, operation.tableId, `${operationPath}.tableId`);
+  if (!target.ok) return target.problem;
+
+  target.table.publish = operation.publish ? true : undefined;
+  if (operation.publish) ensureExplicitPublishPolicy(project);
+  return undefined;
+};
+
+const applySetRowsPublish = (
+  project: ProjectFile,
+  operation: SetRowsPublishOperation,
+  operationPath: string,
+): PatchProblem | undefined => {
+  const target = findTable(project, operation.tableId, `${operationPath}.tableId`);
+  if (!target.ok) return target.problem;
+
+  const duplicateRowId = duplicateText(operation.rowIds);
+  if (duplicateRowId) {
+    return conflictProblem(
+      `rowId "${duplicateRowId}" appears more than once in one setRowsPublish operation.`,
+      `${operationPath}.rowIds`,
+    );
+  }
+
+  for (const [index, rowId] of operation.rowIds.entries()) {
+    const row = findRowIndex(target.table, rowId, `${operationPath}.rowIds[${index}]`);
+    if (!row.ok) return row.problem;
+    target.table.rows[row.index] = {
+      ...row.row,
+      publish: operation.publish ? true : undefined,
+    };
+  }
+
+  if (operation.publish) {
+    target.table.publish = true;
+    ensureExplicitPublishPolicy(project);
+  }
+  return undefined;
+};
+
 const propertyChanges = (
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -1452,7 +1583,7 @@ const makeDiff = (before: ProjectFile, after: ProjectFile): PatchDiff[] => {
     const tableChanges = propertyChanges(
       beforeTable as unknown as Record<string, unknown>,
       afterTable as unknown as Record<string, unknown>,
-      ['name', 'remark', 'position', 'identity'],
+      ['name', 'remark', 'position', 'identity', 'publish'],
     );
     if (Object.keys(tableChanges).length > 0) {
       diff.push({
@@ -1552,6 +1683,19 @@ const makeDiff = (before: ProjectFile, after: ProjectFile): PatchDiff[] => {
         continue;
       }
 
+      const beforePublish = beforeRow.publish === true;
+      const afterPublish = afterRow.publish === true;
+      if (beforePublish !== afterPublish) {
+        diff.push({
+          type: 'rowPublishChanged',
+          tableId: afterTable.id,
+          tableName: afterTable.name,
+          rowId: afterRow._rowId,
+          before: beforePublish,
+          after: afterPublish,
+        });
+      }
+
       for (const column of afterTable.columns) {
         if (!beforeColumns.has(column.id)) continue;
         const beforeValue = beforeRow.values[column.id];
@@ -1612,6 +1756,10 @@ export function applyDataPatch(
       problem = applyAddRows(nextProject, operation, operationPath, usedRowIds, createRowId);
     } else if (operation.op === 'upsertRows') {
       problem = applyUpsertRows(nextProject, operation, operationPath, usedRowIds, createRowId);
+    } else if (operation.op === 'setTablePublish') {
+      problem = applySetTablePublish(nextProject, operation, operationPath);
+    } else if (operation.op === 'setRowsPublish') {
+      problem = applySetRowsPublish(nextProject, operation, operationPath);
     } else {
       problem = applyDeleteRows(nextProject, operation, operationPath);
     }

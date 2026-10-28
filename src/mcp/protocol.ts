@@ -153,6 +153,19 @@ export const dataPatchOperationSchema = z.discriminatedUnion('op', [
     tableId: nonEmptyString,
     rowIds: z.array(nonEmptyString),
   }),
+  z.strictObject({
+    op: z.literal('setTablePublish'),
+    tableId: nonEmptyString.describe('Stable ID of the table.'),
+    publish: z
+      .boolean()
+      .describe('true includes the table in exports; new rows still need their own publish flag.'),
+  }),
+  z.strictObject({
+    op: z.literal('setRowsPublish'),
+    tableId: nonEmptyString.describe('Stable ID of the table containing the rows.'),
+    rowIds: z.array(nonEmptyString).min(1).describe('Stable _rowId values.'),
+    publish: z.boolean().describe('true includes these rows in exports.'),
+  }),
 ]);
 
 export type DataPatchOperationInput = z.infer<typeof dataPatchOperationSchema>;
