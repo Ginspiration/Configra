@@ -207,7 +207,11 @@ export function applyMerge(
     });
   }
 
-  return { version: 1, tables };
+  return {
+    version: current.version === 2 || incoming.version === 2 ? 2 : 1,
+    ...(current.exportPolicy ? { exportPolicy: current.exportPolicy } : {}),
+    tables,
+  };
 }
 
 export function computeMergeReport(

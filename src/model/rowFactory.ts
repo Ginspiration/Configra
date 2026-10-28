@@ -47,8 +47,10 @@ export const createDefaultRow = (
   table: ConfigTable,
   rowId = makeId('row'),
   values: Record<string, unknown> = {},
+  publish = false,
 ): ConfigRow => ({
   _rowId: rowId,
+  publish,
   values: {
     ...defaultValuesForTable(table),
     ...values,

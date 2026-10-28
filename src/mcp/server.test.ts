@@ -136,6 +136,9 @@ describe('Configra MCP server', () => {
         'configra_export_all',
       ]),
     );
+    const exportAllTool = tools.tools.find((tool) => tool.name === 'configra_export_all');
+    expect(JSON.stringify(exportAllTool?.inputSchema)).toContain('includeUnpublished');
+
     const previewTool = tools.tools.find((tool) => tool.name === 'configra_preview_patch');
     const publicPatchSchema = JSON.stringify(previewTool?.inputSchema);
     for (const operation of [

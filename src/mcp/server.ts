@@ -587,7 +587,7 @@ const createServer = (options: ServerOptions) => {
     'configra_inspect_project',
     {
       description:
-        'Inspect one open project and list stable table IDs, names, remarks, row/column counts, ref semantics, and resolved table relationships. Read referenceSemantics before creating or assigning refs.',
+        'Inspect one open project and list stable table IDs, names, remarks, row/column counts, publish scope, per-table publish flags, ref semantics, and resolved table relationships. Read referenceSemantics before creating or assigning refs.',
       inputSchema: projectSelectorSchema,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -602,7 +602,7 @@ const createServer = (options: ServerOptions) => {
     'configra_inspect_table',
     {
       description:
-        'Inspect one table by stable tableId, including schema remarks, ref semantics, incoming/outgoing relationships, and paginated rows with stable row IDs.',
+        'Inspect one table by stable tableId, including schema remarks, table/row publish flags, ref semantics, incoming/outgoing relationships, and paginated rows with stable row IDs.',
       inputSchema: {
         ...projectSelectorSchema,
         tableId: z.string().min(1).describe('Stable internal table ID, not its display name.'),
@@ -1050,6 +1050,7 @@ const createServer = (options: ServerOptions) => {
     projectId: string | undefined,
     outPath: string,
     overwrite: boolean,
+    includeUnpublished: boolean,
     tableId?: string,
   ) => {
     try {
@@ -1059,6 +1060,7 @@ const createServer = (options: ServerOptions) => {
       if (tableId) cliArgs.push('--table', tableId);
       cliArgs.push('--out', outPath);
       if (overwrite) cliArgs.push('--overwrite');
+      if (includeUnpublished) cliArgs.push('--all');
       return cliToolResult(await runCli(options, cliArgs), accessState(context));
     } catch (error) {
       return caughtToolError(error);
@@ -1068,43 +1070,58 @@ const createServer = (options: ServerOptions) => {
   server.registerTool(
     'configra_export_table',
     {
-      description: 'Export one table JSON to an absolute local file path.',
+      description:
+        'Export one published table JSON to an absolute local file path. Only tables and rows marked publishable by a human are included; new rows default to unpublished. Set includeUnpublished=true only for an explicit development export.',
       inputSchema: {
         ...projectSelectorSchema,
         tableId: z.string().min(1),
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
+        includeUnpublished: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, tableId, outPath, overwrite }) =>
-      runExport('table', projectId, outPath, overwrite, tableId),
+    ({ projectId, tableId, outPath, overwrite, includeUnpublished }) =>
+      runExport(
+        'table',
+        projectId,
+        outPath,
+        overwrite,
+        includeUnpublished,
+        tableId,
+      ),
   );
   server.registerTool(
     'configra_export_all',
     {
-      description: 'Export every table and config_ids.json to an absolute local directory.',
+      description:
+        'Export every published table and config_ids.json to an absolute local directory. Only tables and rows marked publishable by a human are included; new rows default to unpublished. Set includeUnpublished=true only for an explicit development export.',
       inputSchema: {
         ...projectSelectorSchema,
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
+        includeUnpublished: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, outPath, overwrite }) => runExport('all', projectId, outPath, overwrite),
+    ({ projectId, outPath, overwrite, includeUnpublished }) =>
+      runExport('all', projectId, outPath, overwrite, includeUnpublished),
   );
   server.registerTool(
     'configra_export_ids',
     {
-      description: 'Export config_ids.json to an absolute local file path.',
+      description:
+        'Export the published config_ids.json to an absolute local file path. Only IDs from publishable rows are included. Set includeUnpublished=true only for an explicit development export.',
       inputSchema: {
         ...projectSelectorSchema,
         outPath: z.string().min(1),
         overwrite: z.boolean().default(false),
+        includeUnpublished: z.boolean().default(false),
       },
       annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    ({ projectId, outPath, overwrite }) => runExport('ids', projectId, outPath, overwrite),
+    ({ projectId, outPath, overwrite, includeUnpublished }) =>
+      runExport('ids', projectId, outPath, overwrite, includeUnpublished),
   );
 
   return server;

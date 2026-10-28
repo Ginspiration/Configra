@@ -24,6 +24,8 @@ type ColumnDropMarker = {
 
 export default function TableInspector({ table, project, t, compact = false }: TableInspectorProps) {
   const updateTable = useEditorStore((state) => state.updateTable);
+  const setTablePublish = useEditorStore((state) => state.setTablePublish);
+  const setRowsPublish = useEditorStore((state) => state.setRowsPublish);
   const deleteTable = useEditorStore((state) => state.deleteTable);
   const addColumn = useEditorStore((state) => state.addColumn);
   const moveColumn = useEditorStore((state) => state.moveColumn);
@@ -218,6 +220,44 @@ export default function TableInspector({ table, project, t, compact = false }: T
           }}
         />
       </label>
+
+      <div className={`publish-scope ${table.publish === true ? 'is-published' : ''}`}>
+        <label className="publish-scope__toggle">
+          <input
+            type="checkbox"
+            checked={table.publish === true}
+            onChange={(event) => setTablePublish(table.id, event.target.checked)}
+          />
+          <span>{t('tablePublish')}</span>
+        </label>
+        <p className="publish-scope__hint">{t('tablePublishHint')}</p>
+        <p className="publish-scope__count">
+          {t('tablePublishedRows', {
+            published: table.rows.filter((row) => row.publish === true).length,
+            total: table.rows.length,
+          })}
+        </p>
+        <button
+          type="button"
+          className="button button--ghost publish-scope__rows"
+          disabled={table.rows.length === 0}
+          onClick={() => {
+            const allPublished = table.rows.every((row) => row.publish === true);
+            setRowsPublish(
+              table.id,
+              table.rows.map((row) => row._rowId),
+              !allPublished,
+            );
+          }}
+        >
+          {table.rows.every((row) => row.publish === true)
+            ? t('unpublishAllRows')
+            : t('publishAllRows')}
+        </button>
+        {project.exportPolicy !== 'explicit' ? (
+          <p className="publish-scope__warning">{t('publishScopeNotConfigured')}</p>
+        ) : null}
+      </div>
 
       <div className="panel-heading panel-heading--spaced">
         <h3>{t('identityRegistry')}</h3>

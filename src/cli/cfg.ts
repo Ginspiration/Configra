@@ -2,7 +2,9 @@ import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { idRegistryJson, projectJsonFiles, tableJson } from '../export/exportTables';
+import { idRegistryJson, tableJson } from '../export/exportTables';
+import { buildExportPlan, ExportScopeError } from '../export/exportScope';
+import { assertSafeExportTarget } from '../export/exportSafety';
 import { parseProjectFileText } from '../file/projectFile';
 import type { ConfigTable, ProjectFile, ValidationIssue } from '../model/types';
 import {
@@ -60,7 +62,7 @@ const VALUE_OPTIONS = new Set([
   'transaction-id',
 ]);
 
-const FLAG_OPTIONS = new Set(['json', 'overwrite', 'help']);
+const FLAG_OPTIONS = new Set(['json', 'overwrite', 'all', 'help']);
 
 const usage = `Usage:
   npm run --silent cfg -- inspect --project <file> [--table <id|unique-name>] [--offset 0] [--limit 100] [--json]
@@ -69,9 +71,11 @@ const usage = `Usage:
   npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]
   npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]
   npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]
-  npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--overwrite] [--json]
-  npm run --silent cfg -- export all --project <file> --out <directory> [--overwrite] [--json]
-  npm run --silent cfg -- export ids --project <file> --out <file> [--overwrite] [--json]`;
+  npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]
+  npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]
+  npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]
+
+By default export only includes tables/rows marked publish=true. Pass --all to explicitly export unpublished content.`;
 
 const fail = (
   exitCode: ExitCode,
@@ -346,7 +350,7 @@ const writeReport = async (reportPathOption: string | undefined, body: unknown) 
   }
 };
 
-const pathExists = async (filePath: string) => {
+const pathExists = async (filePath: string): Promise<boolean> => {
   try {
     await fs.stat(filePath);
     return true;
@@ -354,6 +358,7 @@ const pathExists = async (filePath: string) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     fail(4, 'filesystem', `Could not inspect path: ${filePath}`, filePath, String(error));
   }
+  return false;
 };
 
 const writeTextFile = async (filePath: string, text: string, overwrite: boolean) => {
@@ -581,19 +586,44 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const relationships = summarizeProjectReferences(loaded.project);
 
   if (!tableSelector) {
+    const publishableTables = loaded.project.tables.filter(
+      (table) => table.publish === true,
+    );
+    const publishableRowCount = publishableTables.reduce(
+      (count, table) =>
+        count + table.rows.filter((row) => row.publish === true).length,
+      0,
+    );
+    const rowCount = loaded.project.tables.reduce(
+      (count, table) => count + table.rows.length,
+      0,
+    );
+
     const body = {
       ok: true,
       projectHash: loaded.projectHash,
       version: loaded.project.version,
+      exportPolicy: loaded.project.exportPolicy ?? null,
       tableCount: loaded.project.tables.length,
       referenceSemantics: REFERENCE_SEMANTICS,
       relationships,
+      publishScope: {
+        configured: loaded.project.exportPolicy === 'explicit',
+        tableCount: loaded.project.tables.length,
+        publishableTableCount: publishableTables.length,
+        rowCount,
+        publishableRowCount,
+        skippedTableCount: loaded.project.tables.length - publishableTables.length,
+        skippedRowCount: rowCount - publishableRowCount,
+      },
       tables: loaded.project.tables.map((table) => ({
         tableId: table.id,
         name: table.name,
         remark: table.remark,
+        publish: table.publish === true,
         columnCount: table.columns.length,
         rowCount: table.rows.length,
+        publishableRowCount: table.rows.filter((row) => row.publish === true).length,
         identity: table.identity,
       })),
     };
@@ -622,6 +652,8 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       tableId: table.id,
       name: table.name,
       remark: table.remark,
+      publish: table.publish === true,
+      publishableRowCount: table.rows.filter((row) => row.publish === true).length,
       identity: table.identity,
       referenceSemantics: REFERENCE_SEMANTICS,
       relationships: relationships.filter(
@@ -642,6 +674,7 @@ const inspectCommand = async (args: ParsedArgs): Promise<CliOutput> => {
       })),
       rows: rows.map((row) => ({
         rowId: row._rowId,
+        publish: row.publish === true,
         values: row.values,
       })),
       offset,
@@ -684,6 +717,7 @@ const queryRowsCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   });
   const rows = matched.slice(query.offset, query.offset + query.limit).map((row) => ({
     rowId: row._rowId,
+    publish: row.publish === true,
     values: row.values,
   }));
   const body = {
@@ -972,13 +1006,59 @@ const patchRollbackCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   };
 };
 
+const exportOptionsFor = (
+  args: ParsedArgs,
+  project: ProjectFile,
+  onlyTableId?: string,
+) => {
+  const issues = validateProject(project, (key, vars) => translate('en', key, vars));
+  return {
+    includeUnpublished: args.flags.has('all'),
+    issues,
+    onlyTableId,
+  };
+};
+
+const failExportScope = (error: ExportScopeError): never =>
+  fail(
+    error.problem.code === 'VALIDATION_ERRORS' ? 1 : 2,
+    error.problem.code,
+    error.problem.message,
+    undefined,
+    error.problem,
+  );
+
+const assertCliExportTarget = async (directory: string, projectPath: string) => {
+  try {
+    await assertSafeExportTarget(directory, projectPath, {
+      fileExists: pathExists,
+    });
+  } catch (error) {
+    if (error instanceof ExportScopeError) failExportScope(error);
+    throw error;
+  }
+};
+
 const exportTableCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const loaded = await loadProject(requiredOption(args, 'project'));
   const table = resolveTable(loaded.project, requiredOption(args, 'table'));
   const outPath = toAbsolutePath(requiredOption(args, 'out'));
   const overwrite = args.flags.has('overwrite');
 
-  await writeTextFile(outPath, tableJson(loaded.project, table.id), overwrite);
+  let text: string;
+  try {
+    text = tableJson(
+      loaded.project,
+      table.id,
+      exportOptionsFor(args, loaded.project, table.id),
+    );
+  } catch (error) {
+    if (error instanceof ExportScopeError) return failExportScope(error);
+    throw error;
+  }
+
+  await assertCliExportTarget(path.dirname(outPath), loaded.projectPath);
+  await writeTextFile(outPath, text, overwrite);
 
   const body = {
     ok: true,
@@ -1000,7 +1080,16 @@ const exportIdsCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const outPath = toAbsolutePath(requiredOption(args, 'out'));
   const overwrite = args.flags.has('overwrite');
 
-  await writeTextFile(outPath, idRegistryJson(loaded.project), overwrite);
+  let text: string;
+  try {
+    text = idRegistryJson(loaded.project, exportOptionsFor(args, loaded.project));
+  } catch (error) {
+    if (error instanceof ExportScopeError) return failExportScope(error);
+    throw error;
+  }
+
+  await assertCliExportTarget(path.dirname(outPath), loaded.projectPath);
+  await writeTextFile(outPath, text, overwrite);
 
   const body = {
     ok: true,
@@ -1020,7 +1109,20 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
   const loaded = await loadProject(requiredOption(args, 'project'));
   const outDir = toAbsolutePath(requiredOption(args, 'out'));
   const overwrite = args.flags.has('overwrite');
-  const files = projectJsonFiles(loaded.project);
+
+  let plan;
+  try {
+    plan = buildExportPlan(
+      loaded.project,
+      exportOptionsFor(args, loaded.project),
+    );
+  } catch (error) {
+    if (error instanceof ExportScopeError) return failExportScope(error);
+    throw error;
+  }
+
+  await assertCliExportTarget(outDir, loaded.projectPath);
+  const files = plan.files;
 
   try {
     const exists = await pathExists(outDir);
@@ -1108,6 +1210,11 @@ const exportAllCommand = async (args: ParsedArgs): Promise<CliOutput> => {
     projectHash: loaded.projectHash,
     outDir,
     overwritten: overwrite,
+    mode: plan.mode,
+    tableCount: plan.tables.length,
+    rowCount: plan.totalRows,
+    skippedTables: plan.skippedTables,
+    skippedRows: plan.skippedRows,
     files: files.map((file) => path.join(outDir, file.fileName)),
   };
 

@@ -1193,11 +1193,24 @@ h3 {
 }
 
 .table-list-item__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
+}
+
+.table-list-item__publish {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .table-list-item small {
@@ -1253,6 +1266,52 @@ h3 {
 
 .inspector-panel > .field-stack {
   padding: 6px 10px 0;
+}
+
+.publish-scope {
+  margin: 10px 10px 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.publish-scope.is-published {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--line));
+}
+
+.publish-scope__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.publish-scope__toggle input {
+  width: auto;
+  min-height: auto;
+}
+
+.publish-scope__hint,
+.publish-scope__count,
+.publish-scope__warning {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.publish-scope__warning {
+  color: var(--danger);
+}
+
+.publish-scope__rows {
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 7px;
+  font-size: 11px;
 }
 
 .field-stack {

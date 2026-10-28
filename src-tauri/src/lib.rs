@@ -709,6 +709,40 @@ fn path_exists(path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn delete_export_file(directory: String, file_name: String) -> Result<(), String> {
+    let dir = PathBuf::from(&directory);
+    let canonical_dir = fs::canonicalize(&dir).map_err(|error| {
+        format!(
+            "Could not open export directory {}: {error}",
+            dir.display()
+        )
+    })?;
+
+    let name_path = Path::new(&file_name);
+    let mut components = name_path.components();
+    let single_normal_component = matches!(
+        components.next(),
+        Some(std::path::Component::Normal(_))
+    ) && components.next().is_none();
+    if !single_normal_component || !file_name.ends_with(".json") {
+        return Err(format!(
+            "Refusing to delete unsafe export file name: {file_name}"
+        ));
+    }
+
+    let target = canonical_dir.join(&file_name);
+    if target.parent() != Some(canonical_dir.as_path()) {
+        return Err(format!(
+            "Refusing to delete file outside the export directory: {}",
+            target.display()
+        ));
+    }
+
+    fs::remove_file(&target)
+        .map_err(|error| format!("Could not delete {}: {error}", target.display()))
+}
+
+#[tauri::command]
 fn load_recent_project_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let path = recent_project_path_file(&app)?;
     if !path.exists() {
@@ -1114,6 +1148,7 @@ pub fn run() {
             read_project_file,
             write_project_file,
             path_exists,
+            delete_export_file,
             load_recent_project_path,
             save_recent_project_path,
             claim_project_window,

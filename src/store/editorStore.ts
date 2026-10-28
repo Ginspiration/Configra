@@ -20,7 +20,7 @@ export type DirtyScope = 'none' | 'layout' | 'content';
 /** 撤销快照覆盖的表内容；position 属于画布布局，不参与撤销。 */
 export type TableSnapshot = Pick<
   ConfigTable,
-  'name' | 'remark' | 'columns' | 'rows' | 'identity'
+  'name' | 'remark' | 'columns' | 'rows' | 'identity' | 'publish'
 >;
 
 export type UndoEntry = { snapshot: TableSnapshot };
@@ -40,6 +40,8 @@ type EditorStore = {
   selectTable(tableId: string): void;
   addTable(position?: GraphPosition): string;
   updateTable(tableId: string, patch: Partial<ConfigTable>): void;
+  setTablePublish(tableId: string, publish: boolean): void;
+  setRowsPublish(tableId: string, rowIds: string[], publish: boolean): void;
   moveTable(tableId: string, position: GraphPosition): void;
   deleteTable(tableId: string): void;
 
@@ -102,7 +104,13 @@ const snapshotTable = (table: ConfigTable): TableSnapshot =>
     columns: table.columns,
     rows: table.rows,
     identity: table.identity,
+    publish: table.publish,
   });
+
+const withExplicitExportPolicy = (project: ProjectFile): ProjectFile =>
+  project.exportPolicy === 'explicit' && project.version === 2
+    ? project
+    : { ...project, version: 2, exportPolicy: 'explicit' };
 
 /** 修改前对目标表做快照，返回需要合并进本次 set 的撤销栈增量；无表或批量事务中时返回空。 */
 const captureUndo = (
@@ -193,6 +201,79 @@ export const useEditorStore = create<EditorStore>((set) => ({
         ...(touchesContent ? captureUndo(state, tableId) : {}),
         dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
         ...markDirty('updateTable', state.dirtyScope),
+      };
+    }),
+
+  setTablePublish: (tableId, publish) =>
+    set((state) => {
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+
+        const nextTable: ConfigTable = {
+          ...table,
+          publish: publish ? true : undefined,
+        };
+        if (sameValue(table, nextTable)) return table;
+
+        updated = true;
+        return nextTable;
+      });
+
+      const policyNeedsUpdate =
+        publish && state.project.exportPolicy !== 'explicit';
+      if (!updated && !policyNeedsUpdate) return state;
+
+      return {
+        project: {
+          ...(publish ? withExplicitExportPolicy(state.project) : state.project),
+          tables,
+        },
+        ...captureUndo(state, tableId),
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
+        ...markDirty('setTablePublish', state.dirtyScope),
+      };
+    }),
+
+  setRowsPublish: (tableId, rowIds, publish) =>
+    set((state) => {
+      const rowIdSet = new Set(rowIds);
+      let updated = false;
+      const tables = state.project.tables.map((table) => {
+        if (table.id !== tableId) return table;
+
+        let rowUpdated = false;
+        const rows = table.rows.map((row) => {
+          if (!rowIdSet.has(row._rowId)) return row;
+          const nextPublish = publish ? true : undefined;
+          if (row.publish === nextPublish) return row;
+          rowUpdated = true;
+          return { ...row, publish: nextPublish };
+        });
+
+        const tableNeedsPublish = publish && table.publish !== true;
+        if (!rowUpdated && !tableNeedsPublish) return table;
+
+        updated = true;
+        return {
+          ...table,
+          ...(publish ? { publish: true } : {}),
+          rows,
+        };
+      });
+
+      const policyNeedsUpdate =
+        publish && state.project.exportPolicy !== 'explicit';
+      if (!updated && !policyNeedsUpdate) return state;
+
+      return {
+        project: {
+          ...(publish ? withExplicitExportPolicy(state.project) : state.project),
+          tables,
+        },
+        ...captureUndo(state, tableId),
+        dirtyTableIds: mergeDirtyTableIds(state.dirtyTableIds, tableId),
+        ...markDirty('setRowsPublish', state.dirtyScope),
       };
     }),
 
@@ -522,9 +603,16 @@ export const useEditorStore = create<EditorStore>((set) => ({
         if (table.id !== tableId) return table;
         appended = true;
 
-        const importedRows = rows.map((row) =>
-          createDefaultRow(table, row._rowId || makeId('row'), row.values),
-        );
+        const importedRows = rows.map((row) => {
+          const rowId = row._rowId || makeId('row');
+          const existing = table.rows.find((item) => item._rowId === rowId);
+          return createDefaultRow(
+            table,
+            rowId,
+            row.values,
+            row.publish ?? existing?.publish ?? false,
+          );
+        });
         const replacements = new Map(importedRows.map((row) => [row._rowId, row]));
         const existingRowIds = new Set(table.rows.map((row) => row._rowId));
 

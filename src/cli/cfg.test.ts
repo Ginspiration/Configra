@@ -35,11 +35,13 @@ const parseJson = (stdout: string) => JSON.parse(stdout.trim());
 
 const createProject = () => ({
   version: 1 as const,
+  exportPolicy: 'explicit' as const,
   tables: [
     {
       id: 'item_table',
       name: 'Item',
       remark: 'Item definitions for gameplay',
+      publish: true,
       position: { x: 0, y: 0 },
       columns: [
         { id: 'id_column', name: 'id', type: 'int', primary: true, required: true, autoIncrement: true },
@@ -49,10 +51,12 @@ const createProject = () => ({
       rows: [
         {
           _rowId: 'row_1',
+          publish: true,
           values: { id_column: 1, name_column: 'Sword', kind_column: 'weapon' },
         },
         {
           _rowId: 'row_2',
+          publish: true,
           values: { id_column: 2, name_column: 'Shield', kind_column: 'weapon' },
         },
       ],
@@ -60,6 +64,7 @@ const createProject = () => ({
     {
       id: 'loot_table',
       name: 'Item',
+      publish: true,
       position: { x: 320, y: 0 },
       columns: [
         { id: 'value_column', name: 'value', type: 'string' },
@@ -71,7 +76,11 @@ const createProject = () => ({
         },
       ],
       rows: [
-        { _rowId: 'row_3', values: { value_column: 'Loose', item_ref_column: 1 } },
+        {
+          _rowId: 'row_3',
+          publish: true,
+          values: { value_column: 'Loose', item_ref_column: 1 },
+        },
       ],
     },
   ],
@@ -89,6 +98,16 @@ describe('cfg cli', () => {
     expect(inspectBody.ok).toBe(true);
     expect(inspectBody.projectHash).toBe(sha256Text(`${JSON.stringify(project, null, 2)}\n`));
     expect(inspectBody.tableCount).toBe(2);
+    expect(inspectBody.publishScope).toMatchObject({
+      configured: true,
+      publishableTableCount: 2,
+      publishableRowCount: 3,
+    });
+    expect(inspectBody.tables[0]).toMatchObject({
+      tableId: 'item_table',
+      publish: true,
+      publishableRowCount: 2,
+    });
     expect(inspectBody.referenceSemantics.cellValue).toContain("target column's actual value");
     expect(inspectBody.relationships).toEqual([
       expect.objectContaining({
@@ -108,6 +127,8 @@ describe('cfg cli', () => {
     const tableBody = parseJson(tableInspect.stdout);
     expect(tableBody.table.tableId).toBe('item_table');
     expect(tableBody.table.remark).toBe('Item definitions for gameplay');
+    expect(tableBody.table.publish).toBe(true);
+    expect(tableBody.table.rows[0].publish).toBe(true);
     expect(tableBody.table.offset).toBe(1);
     expect(tableBody.table.returnedRows).toBe(1);
     expect(tableBody.table.rows[0].rowId).toBe('row_2');
@@ -140,6 +161,7 @@ describe('cfg cli', () => {
     const body = parseJson(query.stdout);
     expect(body.totalMatches).toBe(1);
     expect(body.rows[0].rowId).toBe('row_1');
+    expect(body.rows[0].publish).toBe(true);
 
     const wrongType = runCfg(
       ['query', 'rows', '--project', projectPath, '--query', '-', '--json'],
@@ -352,8 +374,10 @@ describe('cfg cli', () => {
     const dir = createTempDir();
     const project = createProject();
     const projectPath = writeProjectFile(dir, 'project.json', project);
+    const outDir = join(dir, 'out');
+    mkdirSync(outDir, { recursive: true });
 
-    const tableOut = join(dir, 'item.json');
+    const tableOut = join(outDir, 'item.json');
     const exportTable = runCfg([
       'export',
       'table',
@@ -369,7 +393,7 @@ describe('cfg cli', () => {
     expect(JSON.parse(readFileSync(tableOut, 'utf8'))).toHaveLength(2);
     expect(readFileSync(tableOut, 'utf8')).not.toContain('Item definitions for gameplay');
 
-    const idsOut = join(dir, 'config_ids.json');
+    const idsOut = join(outDir, 'config_ids.json');
     const exportIds = runCfg([
       'export',
       'ids',
@@ -382,7 +406,7 @@ describe('cfg cli', () => {
     expect(exportIds.code).toBe(0);
     expect(JSON.parse(readFileSync(idsOut, 'utf8'))).toEqual({});
 
-    const allDir = join(dir, 'all');
+    const allDir = join(outDir, 'all');
     const exportAll = runCfg([
       'export',
       'all',
@@ -437,4 +461,49 @@ describe('cfg cli', () => {
     expect(atomicFailure.code).toBe(4);
     expect(readFileSync(join(failedDir, 'config_ids.json'), 'utf8')).toBe('original ids');
   }, 20000);
+
+  it('blocks unscoped export unless --all is explicit', () => {
+    const dir = createTempDir();
+    const project = createProject();
+    delete (project as { exportPolicy?: string }).exportPolicy;
+    for (const table of project.tables) {
+      delete (table as { publish?: boolean }).publish;
+      for (const row of table.rows) {
+        delete (row as { publish?: boolean }).publish;
+      }
+    }
+    const projectPath = writeProjectFile(dir, 'project.json', project);
+    const outDir = join(dir, 'out');
+    mkdirSync(outDir, { recursive: true });
+    const tableOut = join(outDir, 'item.json');
+
+    const blocked = runCfg([
+      'export',
+      'table',
+      '--project',
+      projectPath,
+      '--table',
+      'item_table',
+      '--out',
+      tableOut,
+      '--json',
+    ]);
+    expect(blocked.code).toBe(2);
+    expect(parseJson(blocked.stdout).error.kind).toBe('EXPORT_SCOPE_UNCONFIGURED');
+
+    const explicit = runCfg([
+      'export',
+      'table',
+      '--project',
+      projectPath,
+      '--table',
+      'item_table',
+      '--out',
+      tableOut,
+      '--all',
+      '--json',
+    ]);
+    expect(explicit.code).toBe(0);
+    expect(JSON.parse(readFileSync(tableOut, 'utf8'))).toHaveLength(2);
+  });
 });

@@ -1,28 +1,55 @@
-import { identityNamespace } from '../model/schemaUtils';
-import type { ConfigColumn, ProjectFile } from '../model/types';
+import type { ProjectFile } from '../model/types';
+import {
+  buildExportPlan,
+  exportRowObject,
+  safeFileName,
+  type BuildExportPlanOptions,
+  type ExportJsonFile,
+} from './exportScope';
 
-export type ExportJsonFile = {
-  fileName: string;
-  text: string;
-};
+export { safeFileName };
+export type { ExportJsonFile };
 
-export const safeFileName = (value: string) =>
-  value.trim().replace(/[^a-z0-9_-]+/gi, '_') || 'table';
+export type ExportOptions = BuildExportPlanOptions;
 
-const uniqueJsonFileName = (baseName: string, usedFileNames: Set<string>) => {
-  let suffix = 1;
-  let fileName = `${baseName}.json`;
+export function exportTableRows(
+  project: ProjectFile,
+  tableId: string,
+  options?: ExportOptions,
+): Record<string, unknown>[] {
+  const plan = buildExportPlan(project, { ...options, onlyTableId: tableId });
+  const table = plan.tables.find((candidate) => candidate.tableId === tableId);
+  return table ? table.rows.map((row) => exportRowObject(table.columns, row)) : [];
+}
 
-  while (usedFileNames.has(fileName.toLowerCase())) {
-    suffix += 1;
-    fileName = `${baseName}_${suffix}.json`;
-  }
+// 导出的 JSON 文本统一以单个换行符结尾：对 git diff 和文本工具友好，
+// 并保证复制、下载、导出、自动发布与 CLI 导出的文件字节一致。
+export function tableJson(project: ProjectFile, tableId: string, options?: ExportOptions) {
+  const plan = buildExportPlan(project, { ...options, onlyTableId: tableId });
+  const table = plan.tables.find((candidate) => candidate.tableId === tableId);
+  return table?.file.text ?? '[]\n';
+}
 
-  usedFileNames.add(fileName.toLowerCase());
-  return fileName;
-};
+export function exportIdRegistry(project: ProjectFile, options?: ExportOptions) {
+  return buildExportPlan(project, options).idRegistry;
+}
 
-export const downloadTextFile = (fileName: string, text: string, mimeType = 'application/json') => {
+export function idRegistryJson(project: ProjectFile, options?: ExportOptions) {
+  return `${JSON.stringify(exportIdRegistry(project, options), null, 2)}\n`;
+}
+
+export function projectJsonFiles(
+  project: ProjectFile,
+  options?: ExportOptions,
+): ExportJsonFile[] {
+  return buildExportPlan(project, options).files;
+}
+
+export const downloadTextFile = (
+  fileName: string,
+  text: string,
+  mimeType = 'application/json',
+) => {
   const blob = new Blob([text], { type: `${mimeType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -32,93 +59,20 @@ export const downloadTextFile = (fileName: string, text: string, mimeType = 'app
   URL.revokeObjectURL(url);
 };
 
-const exportValue = (column: ConfigColumn, value: unknown) => {
-  if (column.type !== 'json' || typeof value !== 'string') return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-};
-
-export function exportTableRows(project: ProjectFile, tableId: string): Record<string, unknown>[] {
-  const table = project.tables.find((item) => item.id === tableId);
-  if (!table) return [];
-
-  return table.rows.map((row) =>
-    Object.fromEntries(
-      table.columns
-        .filter((column) => column.export !== false)
-        .map((column) => [
-          column.name || column.id,
-          exportValue(column, row.values[column.id]),
-        ]),
-    ),
-  );
-}
-
-// 导出的 JSON 文本统一以单个换行符结尾：对 git diff 和文本工具友好，
-// 并保证复制、下载、导出、自动发布与 CLI 导出的文件字节一致。
-export function tableJson(project: ProjectFile, tableId: string) {
-  return `${JSON.stringify(exportTableRows(project, tableId), null, 2)}\n`;
-}
-
-export function exportIdRegistry(project: ProjectFile): Record<string, unknown> {
-  return Object.fromEntries(
-    project.tables.flatMap((table) => {
-      const keyColumn = table.columns.find((column) => column.id === table.identity?.keyColumnId);
-      const valueColumn = table.columns.find((column) => column.id === table.identity?.valueColumnId);
-      if (!keyColumn || !valueColumn) return [];
-
-      const namespace = identityNamespace(table);
-
-      return table.rows.flatMap((row) => {
-        const key = row.values[keyColumn.id];
-        const value = row.values[valueColumn.id];
-        if (key === null || key === undefined || key === '' || value === null || value === undefined || value === '') {
-          return [];
-        }
-
-        return [[`${namespace}.${String(key)}`, value] as const];
-      });
-    }),
-  );
-}
-
-export function idRegistryJson(project: ProjectFile) {
-  return `${JSON.stringify(exportIdRegistry(project), null, 2)}\n`;
-}
-
-export function projectJsonFiles(project: ProjectFile): ExportJsonFile[] {
-  const usedFileNames = new Set<string>();
-  const files: ExportJsonFile[] = [
-    {
-      fileName: uniqueJsonFileName('config_ids', usedFileNames),
-      text: idRegistryJson(project),
-    },
-  ];
-
-  for (const table of project.tables) {
-    files.push({
-      fileName: uniqueJsonFileName(safeFileName(table.name), usedFileNames),
-      text: tableJson(project, table.id),
-    });
-  }
-
-  return files;
-}
-
-export function downloadTableJson(project: ProjectFile, tableId: string) {
+export function downloadTableJson(
+  project: ProjectFile,
+  tableId: string,
+  options?: ExportOptions,
+) {
   const table = project.tables.find((item) => item.id === tableId);
   if (!table) return;
-  downloadTextFile(`${safeFileName(table.name)}.json`, tableJson(project, tableId));
+  downloadTextFile(`${safeFileName(table.name)}.json`, tableJson(project, tableId, options));
 }
 
 export function downloadProjectFile(project: ProjectFile) {
   downloadTextFile('project.configra.json', JSON.stringify(project, null, 2));
 }
 
-export function downloadIdRegistry(project: ProjectFile) {
-  downloadTextFile('config_ids.json', idRegistryJson(project));
+export function downloadIdRegistry(project: ProjectFile, options?: ExportOptions) {
+  downloadTextFile('config_ids.json', idRegistryJson(project, options));
 }

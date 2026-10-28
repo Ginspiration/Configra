@@ -1,24 +1,27 @@
 import type { ProjectFile } from './types';
 
 export const sampleProject: ProjectFile = {
-  version: 1,
+  version: 2,
+  exportPolicy: 'explicit',
   tables: [
     {
       id: 'speaker',
       name: 'Speaker',
+      publish: true,
       position: { x: 120, y: 120 },
       columns: [
         { id: 'id', name: 'id', type: 'int', primary: true, required: true },
         { id: 'name', name: 'name', type: 'string', required: true },
       ],
       rows: [
-        { _rowId: 'row_speaker_1', values: { id: 1001, name: '人类' } },
-        { _rowId: 'row_speaker_2', values: { id: 1002, name: '旁白' } },
+        { _rowId: 'row_speaker_1', publish: true, values: { id: 1001, name: '人类' } },
+        { _rowId: 'row_speaker_2', publish: true, values: { id: 1002, name: '旁白' } },
       ],
     },
     {
       id: 'dialogue',
       name: 'Dialogue',
+      publish: true,
       position: { x: 460, y: 120 },
       columns: [
         { id: 'id', name: 'id', type: 'int', primary: true, required: true },
@@ -34,6 +37,7 @@ export const sampleProject: ProjectFile = {
       rows: [
         {
           _rowId: 'row_dialogue_1',
+          publish: true,
           values: {
             id: 1,
             desc: '上帝为什么要创造我',
@@ -42,6 +46,7 @@ export const sampleProject: ProjectFile = {
         },
         {
           _rowId: 'row_dialogue_2',
+          publish: true,
           values: {
             id: 2,
             desc: '今天心情不错',

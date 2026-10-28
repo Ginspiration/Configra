@@ -68,11 +68,50 @@ describe('editor dirty scopes', () => {
     useEditorStore.getState().newProject();
 
     expect(useEditorStore.getState()).toMatchObject({
-      project: { version: 1, tables: [] },
+      project: { version: 2, exportPolicy: 'explicit', tables: [] },
       selectedTableId: undefined,
       isDirty: false,
       dirtyScope: 'none',
     });
+  });
+
+  it('publishes table and rows separately, and undo restores the flags', () => {
+    const table = useEditorStore.getState().project.tables[0];
+    const rowIds = table.rows.map((row) => row._rowId);
+
+    useEditorStore.getState().setRowsPublish(table.id, rowIds, false);
+    useEditorStore.getState().setTablePublish(table.id, false);
+    expect(useEditorStore.getState().project.tables[0].publish).toBeUndefined();
+
+    useEditorStore.getState().setTablePublish(table.id, true);
+    const tableOnly = useEditorStore.getState().project.tables[0];
+    expect(tableOnly.publish).toBe(true);
+    expect(tableOnly.rows.every((row) => row.publish === true)).toBe(false);
+    expect(useEditorStore.getState().project.version).toBe(2);
+    expect(useEditorStore.getState().project.exportPolicy).toBe('explicit');
+
+    useEditorStore.getState().setRowsPublish(table.id, rowIds, true);
+    expect(
+      useEditorStore.getState().project.tables[0].rows.every((row) => row.publish === true),
+    ).toBe(true);
+
+    useEditorStore.getState().undo(table.id);
+    expect(useEditorStore.getState().project.tables[0].publish).toBe(true);
+    expect(
+      useEditorStore.getState().project.tables[0].rows.every((row) => row.publish === true),
+    ).toBe(false);
+  });
+
+  it('publishing a row also brings an unpublished table into scope', () => {
+    const table = useEditorStore.getState().project.tables[0];
+    useEditorStore.getState().setTablePublish(table.id, false);
+
+    useEditorStore.getState().setRowsPublish(table.id, [table.rows[0]._rowId], true);
+
+    const next = useEditorStore.getState().project.tables[0];
+    expect(next.publish).toBe(true);
+    expect(next.rows[0].publish).toBe(true);
+    expect(useEditorStore.getState().project.exportPolicy).toBe('explicit');
   });
 
   it('appends imported rows with fresh defaults and marks content dirty', () => {

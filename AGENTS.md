@@ -151,6 +151,7 @@ React Flow 画布行为：
 - 下方插入行。
 - 追加到末尾。
 - 全部大写。
+- 标记选中行为可发布 / 取消可发布。
 - 复制当前行或选中行 JSON。
 - 删除当前行或选中行。
 
@@ -181,7 +182,7 @@ React Flow 画布行为：
 - 行编辑窗口内的快捷键：`Ctrl/Cmd+Enter` 在当前行下方插入行、`Ctrl/Cmd+Shift+Enter` 在上方插入行（无选区时追加到末尾；复用右键菜单的插入/追加逻辑，插入选中并滚动定位）；`Esc` 关闭当前行编辑窗口（单元格编辑、右键菜单、备注编辑、表格预览等叠层优先消费 Esc，且仅本窗口处于前台时生效）。键位解析是纯函数，位于 `src/dataGrid/gridShortcuts.ts` 的 `resolveGridShortcut`。
 - 支持撤销/重做：标题栏提供撤销/重做按钮（随栈深禁用），快捷键为 `Ctrl/Cmd+Z` 与 `Ctrl/Cmd+Shift+Z` / `Ctrl/Cmd+Y`（焦点在输入框时让位给浏览器原生文本撤销）。实现是 store 内的按表快照栈，见第 11 节；粘贴、填充、多格编辑、全部大写等复合操作通过 `beginUndoBatch`/`endUndoBatch` 合并为一条记录。
 - 单元格编辑与 Excel 一致：单击选中单元格，再次单击已选中的单元格或双击进入编辑（不依赖系统双击时间判定）；选中单元格后直接键入字符会激活输入模式（`editOnType` 已开启；仅限 ASCII 字符，中文输入法候选上屏仍需双击进入编辑）。
-- 行标记使用可点击数字。
+- 行标记使用可点击数字；第一列数据单元格最左缘有发布状态竖条（紧贴行号右侧）：绿色表示该行可发布，灰色表示未发布。窗口副标题也会显示这条图例。
 - 按住行号上下拖动可以移动整行：只调整行顺序，不修改任何单元格数据；拖到已有行下方的空白行区域会把该行移动到表末尾；拖动结束后选中状态跟随被移动的行。该能力来自 Glide 的 `onRowMoved` 回调（未包含在其官方 Props 类型中，通过独立类型对象展开传入），行移动落点由 store 的 `moveRow` 落实。
 - 支持多行和多矩形选择。
 - 支持填充柄，行为与 Excel 一致：拖动填充柄释放时通过 Glide 的 `onFillPattern` 事件拦截默认的循环复制，改按序列填充。`int`/`float` 列在源区域构成等差数列时向下/上/左/右延续递增（如 1、2 拖出 3、4、5…），`string` 列支持“文本+尾随数字”递增（如 `item1`、`item2` 拖出 `item3`，并保留 `ID001` 式前导零宽度）；单格或无法构成序列时退回循环复制。填充落到已有行下方的空白行会自动创建新行，写入前会跳过与当前值相同或对空白行的空值写入。序列外推与填充编辑计算是纯函数，位于 `src/dataGrid/gridEditing.ts` 的 `extrapolatedFillValue` 和 `computeFillPatternEdits`。
@@ -221,7 +222,8 @@ React Flow 画布行为：
 export const COLUMN_TYPES = ['int', 'float', 'string', 'bool', 'enum', 'ref', 'json'] as const;
 
 export type ProjectFile = {
-  version: 1;
+  version: 1 | 2;
+  exportPolicy?: 'explicit';
   tables: ConfigTable[];
 };
 
@@ -233,6 +235,7 @@ export type ConfigTable = {
   columns: ConfigColumn[];
   rows: ConfigRow[];
   identity?: TableIdentity;
+  publish?: boolean;
 };
 
 export type TableIdentity = {
@@ -256,6 +259,7 @@ export type ConfigColumn = {
 
 export type ConfigRow = {
   _rowId: string;
+  publish?: boolean;
   values: Record<string, unknown>;
 };
 ```
@@ -268,6 +272,8 @@ export type ConfigRow = {
 - 行数据通过 `column.id` 存取。
 - `_rowId` 是编辑器内部元数据，不参与导出。
 - 表 JSON 导出使用 `column.name || column.id` 作为 key。
+- `publish` 是导出/发布范围标记；表与行都必须 `publish: true` 才进入普通导出，新表/新行默认不发布。
+- 第一次把表标记为可发布时，`version` 升级为 2 并写入 `exportPolicy: 'explicit'`；旧版 Configra 会拒绝打开版本 2，避免忽略发布范围后全量导出。
 
 ## 7. ID 注册表
 
@@ -310,7 +316,16 @@ SOUND_CLICK (1)
 
 ## 8. 导出规则
 
-导出逻辑位于 `src/export/exportTables.ts`。
+导出逻辑位于 `src/export/exportScope.ts`，`exportTables.ts` 只是对外包装。
+
+发布范围：
+
+- 普通导出只包含 `table.publish === true` 且 `row.publish === true` 的表和行。
+- 工程没有 `exportPolicy: 'explicit'` 时普通导出直接拒绝；旧工程必须先勾选可发布表。
+- `config_ids.json` 与表 JSON 使用同一批行，未发布行的 ID 不会泄漏。
+- 已发布行引用未发布表/行时拒绝导出；目标字段必须参与导出（`export !== false`），且已发布目标值必须唯一。
+- 单表导出时，被引用目标表只需在工程里标记为可发布，不要求同时出现在本次输出文件里；但目标行仍必须在可发布范围内。
+- 显式全量导出（CLI `--all`、MCP `includeUnpublished: true`）会绕过发布范围，但仍是显式操作。
 
 表导出：
 
@@ -320,6 +335,7 @@ SOUND_CLICK (1)
 - 不输出 `_rowId`、位置、字段配置和编辑器元数据。
 - `json` 字段如果是合法 JSON 字符串，导出前会解析。
 - 导出的 JSON 文本统一以单个换行符结尾；复制、下载、导出、自动发布与 CLI 导出的文件字节一致。
+- `exportScope.ts` 在返回前会自检行数、字段名和 `config_ids.json` 集合。
 
 ID 注册表导出：
 
@@ -327,20 +343,25 @@ ID 注册表导出：
 - key 格式是 `${namespace}.${symbolKey}`。
 - value 是配置的运行时 ID 字段值。
 - key 或 value 为空的行会跳过。
-- 浏览器模式会下载 `config_ids.json`。
+- 只包含可发布行；浏览器模式会下载 `config_ids.json`。
 - 桌面模式会弹出保存路径并写文件。
 
-一键导出全部表时使用 Zustand 中的当前内存工程，包括未保存修改。桌面模式覆盖已有文件时使用布尔确认结果，并在每个文件写入后读回比较；只有全部一致才显示成功。
+一键导出全部表时使用 Zustand 中的当前内存工程，包括未保存修改，但只导出可发布内容。桌面模式覆盖已有文件时使用布尔确认结果，并在每个文件写入后读回比较；只有全部一致才显示成功。桌面“导出全部”和“发布”共用同一套发布清单与旧文件清理逻辑。
+
+桌面发布还会在目标目录写 `.configra-publish.json` 清单。清单记录工程标识、文件 hash 和更新时间；下一次发布时，上次清单里存在、这次不再生成且内容未被改动的文件会被删除。清单属于另一个工程时拒绝发布。发布目录按工程保存在 localStorage；发布目录不能是工程文件所在目录、其父目录或游戏工程根目录。
 
 ### 保存时自动发布（仅桌面模式）
 
 设置 → “发布”分类里可以配置发布目录并开启“保存时自动发布”：
 
 - 开启开关时如果还没有目录，会先弹出目录选择；取消选择则保持关闭。
-- 每次保存成功后，自动把 `config_ids.json` 和全部表 JSON 静默覆盖写入发布目录，不弹覆盖确认，写入后逐文件读回校验。
-- 自动发布失败不影响保存结果：工程仍算保存成功，失败原因显示在状态栏。
-- “立即发布”按钮可以对当前内存工程手动触发一次发布；发布目录随设置保存在 `localStorage`（`configra:publish-settings`），为应用级全局设置。
+- 每次保存成功后，自动把 `config_ids.json` 和可发布表 JSON 静默覆盖写入发布目录，不弹覆盖确认，写入后逐文件读回校验。
+- 自动发布失败不影响保存结果：工程仍算保存成功，失败原因显示在状态栏；发布被发布范围/校验/路径守卫拦截时同样只影响状态栏。
+- “立即发布”按钮可以对当前内存工程手动触发一次发布；发布目录按工程路径分别保存在 `localStorage`，键为 `configra:publish-settings:<projectPath>`。
+- 发布目录不能是工程文件所在目录、其父目录或游戏工程根目录；目标目录内已有工程源文件时拒绝发布。
 - 发布逻辑位于 `src/export/publishProject.ts`，设置持久化位于 `src/settings/publishSettings.ts`。
+- 发布会在目标目录写 `.configra-publish.json` 清单；下次发布清理上次清单内、这次不再生成且内容未被改动的旧 JSON。清单属于另一个工程时拒绝发布。
+- 首次发布到没有清单的旧目录时，工具无法判断哪些旧 JSON 是自己写的，因此不会删除未知文件，只会在状态栏提示；从第二次发布起才按清单清理。
 
 ## 9. 校验规则
 
@@ -415,6 +436,8 @@ type ValidationIssue = {
 
 - `read_project_file(path)`
 - `write_project_file(path, text)`
+- `path_exists(path)`
+- `delete_export_file(directory, fileName)`：只允许删除指定目录下的单个 `.json` 文件，用于发布清单清理。
 - `load_recent_project_path()`
 - `save_recent_project_path(path)`
 
@@ -436,6 +459,8 @@ Store action：
 - `selectTable`
 - `addTable`
 - `updateTable`
+- `setTablePublish`
+- `setRowsPublish`
 - `moveTable`
 - `deleteTable`
 - `addColumn`
@@ -456,7 +481,7 @@ Store action：
 
 撤销/重做行为：
 
-- 快照内容是 `{ name, remark, columns, rows, identity }` 的深拷贝，不包含 `position`；撤销恢复表内容但保留画布位置。
+- 快照内容是 `{ name, remark, columns, rows, identity, publish }` 的深拷贝，不包含 `position`；撤销恢复表内容但保留画布位置。行的 `publish` 随 `rows` 一起快照。
 - 内容修改类 action（`updateTable`、`addColumn`、`updateColumn`、`moveColumn`、`deleteColumn`、`addRow`、`insertRow`、`moveRow`、`updateCell`、`deleteRow`、`deleteRows`、`appendRows`）在真正发生变更前压入快照并清空该表重做栈；`moveTable` 等纯布局变化不记录。
 - `beginUndoBatch(tableId)` 立即捕获一条快照，期间所有修改共用它；组件侧用 try/finally 配对 `endUndoBatch()`。
 - `undo`/`redo` 在撤销/重做栈间互换快照，并把目标表标记为内容脏。
@@ -552,7 +577,12 @@ Configra/
 |   |   |-- gridHeader.test.ts
 |   |   `-- gridHeader.ts
 |   |-- export/
-|   |   `-- exportTables.ts
+|   |   |-- desktopExport.ts
+|   |   |-- exportSafety.ts
+|   |   |-- exportScope.ts
+|   |   |-- exportTables.ts
+|   |   |-- publishManifest.ts
+|   |   `-- publishProject.ts
 |   |-- file/
 |   |   |-- desktopProjectFile.ts
 |   |   `-- projectFile.ts
@@ -601,7 +631,7 @@ Configra/
 - 图节点只展示表结构。
 - 优先扩展现有 store action，不要在组件中做零散状态变更。
 - 校验逻辑集中在 `validateProject.ts`。
-- 导出逻辑集中在 `exportTables.ts`。
+- 导出逻辑集中在 `exportScope.ts`；`exportTables.ts` 只保留对外包装和浏览器下载。
 - 文件解析和结构校验集中在 `projectFile.ts`。
 - Tauri 文件系统调用封装在 `desktopProjectFile.ts`。
 - 除非用户明确要求，否则不要添加某种特定语言的常量生成；优先使用语言无关 JSON。
@@ -683,9 +713,11 @@ Commands:
 - `npm run --silent cfg -- patch check --project <file> --patch <file|-> [--report <file>] [--json]`
 - `npm run --silent cfg -- patch apply --project <file> --patch <file|-> --confirm <hash> [--transaction-id <id>] [--backup-dir <directory>] [--report <file>] [--json]`
 - `npm run --silent cfg -- patch rollback --project <file> --transaction-id <id> --confirm <current-project-hash> [--backup-dir <directory>] [--json]`
-- `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--overwrite] [--json]`
-- `npm run --silent cfg -- export all --project <file> --out <directory> [--overwrite] [--json]`
-- `npm run --silent cfg -- export ids --project <file> --out <file> [--overwrite] [--json]`
+- `npm run --silent cfg -- export table --project <file> --table <id|unique-name> --out <file> [--all] [--overwrite] [--json]`
+- `npm run --silent cfg -- export all --project <file> --out <directory> [--all] [--overwrite] [--json]`
+- `npm run --silent cfg -- export ids --project <file> --out <file> [--all] [--overwrite] [--json]`
+
+Export commands only include publishable tables/rows. `--all` is the explicit override for exporting unpublished content. Export targets are rejected when they are the project directory, its parent, or a game project root.
 
 Patch contract:
 
@@ -743,6 +775,8 @@ The source desktop application now manages a local Streamable HTTP MCP service.
 - Generic `configra_preview_patch` responses include semantic `referenceChanges` for relationships defined or removed by the ordered operations.
 - `configra_preview_define_ref` previews converting an existing field into a `ref`. `configra_preview_assign_refs` accepts stable source/target row IDs, resolves each target row to the referenced target-column value, and accepts `targetRowId: null` to clear a reference. Both return a normal patch and `confirmationHash` for `configra_apply_patch`.
 - MCP apply creates or reuses a transaction snapshot in the application config backup directory, returns `transactionId`, and exposes a current-hash-guarded rollback tool.
+- MCP inspect results expose `publishScope` plus per-table/per-row `publish` flags and publishable row counts. MCP cannot change publish flags or `exportPolicy`; release scope remains a human decision in the desktop UI. AI-created tables/rows are unpublished by default.
+- MCP export tools export only publishable tables/rows by default; `includeUnpublished: true` is the explicit override. MCP exports are ad-hoc CLI exports and do not run the desktop publish workflow (per-project publish directory, `.configra-publish.json` manifest cleanup, or auto publish).
 - While MCP is enabled, the desktop UI can show an AI/MCP activity log window. Minimizing it collapses the window into a bottom taskbar button, which restores the window directly without reopening Settings. The expanded state persists in `localStorage`. The service writes request/tool activity and optional target `projectId` to `mcp-logs.jsonl`, and the UI keeps the latest 300 entries.
 - New tables created by AI require `ConfigTable.remark`; new fields require `ConfigColumn.remark`.
 - Existing tables/fields do not need remarks added before AI can modify, move, delete, query, or edit their rows.

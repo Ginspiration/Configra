@@ -23,25 +23,27 @@ import StartupScreen from './startup/StartupScreen';
 import { useEditorStore } from './store/editorStore';
 import { validateProject } from './validation/validateProject';
 import {
-  downloadIdRegistry,
   downloadProjectFile,
-  downloadTableJson,
   downloadTextFile,
   idRegistryJson,
-  projectJsonFiles,
   safeFileName,
   tableJson,
 } from './export/exportTables';
+import { DesktopExportFileError } from './export/desktopExport';
 import {
-  DesktopExportFileError,
-  exportDesktopFiles,
-} from './export/desktopExport';
+  buildExportPlan,
+  ExportScopeError,
+  type ExportPlan,
+  type ExportProblem,
+} from './export/exportScope';
+import { assertSafeExportTarget } from './export/exportSafety';
 import { publishProjectFiles, type PublishResult } from './export/publishProject';
 import { parseProjectFileText } from './file/projectFile';
 import type { GraphPosition, ProjectFile } from './model/types';
 import {
   clearMcpLogs,
   claimProjectWindow,
+  deleteExportFile,
   fileExists,
   getAssignedProjectPath,
   getMcpEvents,
@@ -74,6 +76,7 @@ import {
 import { translate, type Language, type Translator } from './i18n';
 import {
   loadPublishSettings,
+  projectKeyForPath,
   savePublishSettings,
   type PublishSettings,
 } from './settings/publishSettings';
@@ -183,10 +186,86 @@ const browserDirectoryFileExists = async (directory: BrowserDirectoryHandle, fil
   }
 };
 
+const directoryOfPath = (filePath: string) => {
+  const normalized = filePath.replace(/\\/g, '/');
+  const index = normalized.lastIndexOf('/');
+  return index < 0 ? '' : normalized.slice(0, index);
+};
+
+const exportProblemText = (t: Translator, problem: ExportProblem) => {
+  switch (problem.code) {
+    case 'EXPORT_SCOPE_UNCONFIGURED':
+      return t('exportScopeNotConfigured');
+    case 'NO_PUBLISHED_TABLES':
+      return t('exportNoPublishedTables');
+    case 'TABLE_NOT_PUBLISHED':
+      return t('exportTableNotPublished', { table: problem.tableId ?? '' });
+    case 'VALIDATION_ERRORS':
+      return t('exportBlockedByIssues', { count: problem.count ?? 0 });
+    case 'REF_NOT_PUBLISHED':
+      return t('exportRefNotPublished');
+    case 'REF_TARGET_NOT_EXPORTED':
+      return t('exportRefTargetNotExported');
+    case 'REF_TARGET_DUPLICATE':
+      return t('exportRefTargetDuplicate');
+    case 'DUPLICATE_ID':
+      return t('exportDuplicateId');
+    case 'UNSAFE_EXPORT_TARGET':
+      return t('exportUnsafeTarget');
+    case 'FOREIGN_PUBLISH_MANIFEST':
+      return t('publishForeignDirectory');
+    case 'INVALID_PUBLISH_MANIFEST':
+      return t('publishInvalidManifest');
+    default:
+      return problem.message;
+  }
+};
+
+const publishBlockedText = (t: Translator, result: Extract<PublishResult, { status: 'blocked' }>) => {
+  switch (result.reason) {
+    case 'EXPORT_SCOPE_UNCONFIGURED':
+      return t('exportScopeNotConfigured');
+    case 'NO_PUBLISHED_TABLES':
+      return t('exportNoPublishedTables');
+    case 'VALIDATION_ERRORS':
+      return t('exportBlockedByIssues', { count: result.count ?? 0 });
+    case 'UNSAFE_EXPORT_TARGET':
+      return t('exportUnsafeTarget');
+    case 'FOREIGN_PUBLISH_MANIFEST':
+      return t('publishForeignDirectory');
+    case 'INVALID_PUBLISH_MANIFEST':
+      return t('publishInvalidManifest');
+    case 'REF_NOT_PUBLISHED':
+      return t('exportRefNotPublished');
+    case 'REF_TARGET_NOT_EXPORTED':
+      return t('exportRefTargetNotExported');
+    case 'REF_TARGET_DUPLICATE':
+      return t('exportRefTargetDuplicate');
+    default:
+      return t('publishFailed', { error: result.message });
+  }
+};
+
 const publishResultStatus = (t: Translator, result: PublishResult, directory: string) => {
   switch (result.status) {
-    case 'published':
-      return t('publishedFiles', { count: result.count, directory });
+    case 'published': {
+      const parts = [t('publishedFiles', { count: result.count, directory })];
+      if (result.skippedTables > 0 || result.skippedRows > 0) {
+        parts.push(
+          t('exportSkippedScope', {
+            tables: result.skippedTables,
+            rows: result.skippedRows,
+          }),
+        );
+      }
+      if (result.removed > 0) {
+        parts.push(t('publishRemovedStale', { count: result.removed }));
+      }
+      if (result.warning) parts.push(result.warning);
+      return parts.join(' ');
+    }
+    case 'blocked':
+      return publishBlockedText(t, result);
     case 'write-failed':
       return t('exportFileFailed', { name: result.fileName, error: result.error });
     case 'verify-failed':
@@ -231,6 +310,7 @@ export default function App() {
   openGridWindowsRef.current = openGridWindows;
   const dataGridFocusSequenceRef = useRef(0);
   const [projectPath, setProjectPath] = useState<string>();
+  const projectPathRef = useRef(projectPath);
   const [status, setStatus] = useState('');
   const [menu, setMenu] = useState<MenuState>();
   const [mcpStatus, setMcpStatus] = useState<McpStatus>();
@@ -342,6 +422,13 @@ export default function App() {
     void getCurrentWindow().setTitle(name ? `${name} — Configra` : 'Configra');
   }, [projectPath]);
 
+  useEffect(() => {
+    projectPathRef.current = projectPath;
+    const next = loadPublishSettings(projectPath);
+    publishSettingsRef.current = next;
+    setPublishSettings(next);
+  }, [projectPath]);
+
   const selectedTable = project.tables.find((table) => table.id === selectedTableId);
   const issues = useMemo(() => validateProject(project, t), [project, t]);
   const dirtyTableNames = useMemo(
@@ -379,15 +466,36 @@ export default function App() {
 
   // 保存成功后按设置静默发布到固定目录；返回要展示的状态文案，未启用时返回 undefined。
   const publishAfterSave = useCallback(
-    async (savedProject: ProjectFile) => {
+    async (savedProject: ProjectFile, savedPath?: string) => {
       const { enabled, directory } = publishSettingsRef.current;
       if (!enabled || !directory) return undefined;
 
-      const result = await publishProjectFiles(directory, savedProject, {
-        fileExists,
-        writeTextFile,
-        readTextFile,
-      });
+      const currentIssues = validateProject(savedProject, t);
+      try {
+        buildExportPlan(savedProject, { issues: currentIssues });
+      } catch (error) {
+        if (error instanceof ExportScopeError) {
+          return exportProblemText(t, error.problem);
+        }
+        throw error;
+      }
+
+      const path = savedPath ?? projectPathRef.current;
+      const result = await publishProjectFiles(
+        directory,
+        savedProject,
+        {
+          fileExists,
+          writeTextFile,
+          readTextFile,
+          removeFile: deleteExportFile,
+        },
+        {
+          projectPath: path,
+          projectKey: projectKeyForPath(path),
+          issues: currentIssues,
+        },
+      );
       if (result.status === 'published') showPublishToast();
       return publishResultStatus(t, result, directory);
     },
@@ -414,9 +522,12 @@ export default function App() {
 
       await writeProjectFileText(nextPath, JSON.stringify(project, null, 2));
       setProjectPath(nextPath);
+      const nextPublishSettings = loadPublishSettings(nextPath);
+      publishSettingsRef.current = nextPublishSettings;
+      setPublishSettings(nextPublishSettings);
       markClean();
       const savedLabel = `Saved ${nextPath.split(/[\\/]/).pop() ?? nextPath}`;
-      const publishLabel = await publishAfterSave(project);
+      const publishLabel = await publishAfterSave(project, nextPath);
       setStatus(publishLabel ? `${savedLabel} · ${publishLabel}` : savedLabel);
       return true;
     } catch (error) {
@@ -634,28 +745,85 @@ export default function App() {
     })();
   }, [confirmReplaceProject, openDesktopProjectFile, t]);
 
+  const confirmExportPlan = useCallback(
+    (plan: ExportPlan, destination?: string) => {
+      const summary = t('exportPlanSummary', {
+        tables: plan.tables.length,
+        rows: plan.totalRows,
+        skippedTables: plan.skippedTables,
+        skippedRows: plan.skippedRows,
+      });
+      return window.confirm(
+        destination ? `${summary}\n${t('exportPlanTarget', { directory: destination })}` : summary,
+      );
+    },
+    [t],
+  );
+
+  const reportExportError = useCallback(
+    (error: unknown) => {
+      if (error instanceof ExportScopeError) {
+        setStatus(exportProblemText(t, error.problem));
+        return true;
+      }
+      return false;
+    },
+    [t],
+  );
+
+  const tableExportOptions = useCallback(
+    async (table: { name: string; publish?: boolean }) => {
+      const currentIssues = validateProject(project, t);
+      if (table.publish === true) return { issues: currentIssues };
+      if (!window.confirm(t('exportTableNotPublishedConfirm', { table: table.name }))) {
+        return undefined;
+      }
+      return { issues: currentIssues, includeUnpublished: true as const };
+    },
+    [project, t],
+  );
+
   const copyTableJsonToClipboard = useCallback(async (tableId = selectedTable?.id) => {
     if (!tableId) return;
 
     const table = project.tables.find((item) => item.id === tableId);
     if (!table) return;
 
+    const options = await tableExportOptions(table);
+    if (!options) return;
+
+    let text: string;
     try {
-      await navigator.clipboard.writeText(tableJson(project, table.id));
+      text = tableJson(project, table.id, options);
+    } catch (error) {
+      if (reportExportError(error)) return;
+      throw error;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
       setStatus(t('copiedTableJson', { name: table.name }));
     } catch {
       setStatus(t('clipboardDenied'));
     }
-  }, [project, selectedTable?.id, t]);
+  }, [project, reportExportError, selectedTable?.id, t, tableExportOptions]);
 
   const copyIdRegistryToClipboard = useCallback(async () => {
+    let text: string;
     try {
-      await navigator.clipboard.writeText(idRegistryJson(project));
+      text = idRegistryJson(project, { issues: validateProject(project, t) });
+    } catch (error) {
+      if (reportExportError(error)) return;
+      throw error;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
       setStatus(t('copiedIdRegistry'));
     } catch {
       setStatus(t('clipboardDenied'));
     }
-  }, [project, t]);
+  }, [project, reportExportError, t]);
 
   const downloadTableJsonFile = useCallback(async (tableId = selectedTable?.id) => {
     if (!tableId) return;
@@ -663,8 +831,19 @@ export default function App() {
     const table = project.tables.find((item) => item.id === tableId);
     if (!table) return;
 
+    const options = await tableExportOptions(table);
+    if (!options) return;
+
+    let text: string;
+    try {
+      text = tableJson(project, table.id, options);
+    } catch (error) {
+      if (reportExportError(error)) return;
+      throw error;
+    }
+
     if (!isDesktopRuntime()) {
-      downloadTableJson(project, table.id);
+      downloadTextFile(`${safeFileName(table.name)}.json`, text);
       return;
     }
 
@@ -672,16 +851,28 @@ export default function App() {
       const path = await pickJsonSavePath(`${safeFileName(table.name)}.json`);
       if (!path) return;
 
-      await writeTextFile(path, tableJson(project, table.id));
+      await assertSafeExportTarget(directoryOfPath(path), projectPathRef.current, {
+        fileExists,
+      });
+      await writeTextFile(path, text);
       setStatus(`Saved ${path.split(/[\\/]/).pop() ?? path}`);
     } catch (error) {
+      if (reportExportError(error)) return;
       setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [project, selectedTable?.id]);
+  }, [project, reportExportError, selectedTable?.id, tableExportOptions]);
 
   const downloadIdRegistryFile = useCallback(async () => {
+    let text: string;
+    try {
+      text = idRegistryJson(project, { issues: validateProject(project, t) });
+    } catch (error) {
+      if (reportExportError(error)) return;
+      throw error;
+    }
+
     if (!isDesktopRuntime()) {
-      downloadIdRegistry(project);
+      downloadTextFile('config_ids.json', text);
       return;
     }
 
@@ -689,12 +880,16 @@ export default function App() {
       const path = await pickIdRegistrySavePath();
       if (!path) return;
 
-      await writeTextFile(path, idRegistryJson(project));
+      await assertSafeExportTarget(directoryOfPath(path), projectPathRef.current, {
+        fileExists,
+      });
+      await writeTextFile(path, text);
       setStatus(`Saved ${path.split(/[\\/]/).pop() ?? path}`);
     } catch (error) {
+      if (reportExportError(error)) return;
       setStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [project]);
+  }, [project, reportExportError, t]);
 
   const confirmOverwriteExport = useCallback(
     async (count: number) => {
@@ -721,23 +916,50 @@ export default function App() {
 
     try {
       const currentProject = useEditorStore.getState().project;
-      const files = projectJsonFiles(structuredClone(currentProject));
+      const currentIssues = validateProject(currentProject, t);
+      let plan: ExportPlan;
+      try {
+        plan = buildExportPlan(currentProject, { issues: currentIssues });
+      } catch (error) {
+        if (reportExportError(error)) return;
+        throw error;
+      }
+      if (!confirmExportPlan(plan)) return;
 
       if (isDesktopRuntime()) {
         const directory = await pickExportDirectoryPath();
         if (!directory) return;
 
-        const result = await exportDesktopFiles(directory, files, {
-          fileExists,
-          confirmOverwrite: confirmOverwriteExport,
-          writeTextFile,
-          readTextFile,
-        });
-        if (result.status === 'exported') {
-          setStatus(t('exportedJsonFiles', { count: result.count }));
+        const result = await publishProjectFiles(
+          directory,
+          currentProject,
+          {
+            fileExists,
+            writeTextFile,
+            readTextFile,
+            removeFile: deleteExportFile,
+          },
+          {
+            projectPath: projectPathRef.current,
+            projectKey: projectKeyForPath(projectPathRef.current),
+            issues: currentIssues,
+            confirmOverwrite: confirmOverwriteExport,
+          },
+        );
+        if (result.status === 'published') {
+          const parts = [t('exportedJsonFiles', { count: result.count })];
+          if (result.removed > 0) {
+            parts.push(t('publishRemovedStale', { count: result.removed }));
+          }
+          if (result.warning) parts.push(result.warning);
+          setStatus(parts.join(' '));
+        } else if (!(result.status === 'failed' && result.error === 'cancelled')) {
+          setStatus(publishResultStatus(t, result, directory));
         }
         return;
       }
+
+      const files = plan.files;
 
       const directoryPicker = (window as DirectoryPickerWindow).showDirectoryPicker;
       if (directoryPicker) {
@@ -763,6 +985,10 @@ export default function App() {
       setStatus(t('exportedJsonFiles', { count: files.length }));
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (error instanceof ExportScopeError) {
+        setStatus(exportProblemText(t, error.problem));
+        return;
+      }
       if (error instanceof DesktopExportFileError) {
         setStatus(
           error.reason === 'verify'
@@ -782,11 +1008,11 @@ export default function App() {
       exportingRef.current = false;
       setIsExporting(false);
     }
-  }, [confirmOverwriteExport, t]);
+  }, [confirmExportPlan, confirmOverwriteExport, reportExportError, t]);
 
   const updatePublishSettings = useCallback((next: PublishSettings) => {
     publishSettingsRef.current = next;
-    savePublishSettings(next);
+    savePublishSettings(next, projectPathRef.current);
     setPublishSettings(next);
   }, []);
 
@@ -812,9 +1038,17 @@ export default function App() {
   const choosePublishDirectory = useCallback(async () => {
     const directory = await pickExportDirectoryPath();
     if (!directory) return;
+
+    try {
+      await assertSafeExportTarget(directory, projectPathRef.current, { fileExists });
+    } catch (error) {
+      if (reportExportError(error)) return;
+      throw error;
+    }
+
     updatePublishSettings({ ...publishSettingsRef.current, directory });
     setStatus(t('publishDirectoryUpdated', { directory }));
-  }, [t, updatePublishSettings]);
+  }, [reportExportError, t, updatePublishSettings]);
 
   const clearPublishDirectory = useCallback(() => {
     updatePublishSettings({ enabled: false });
@@ -824,20 +1058,46 @@ export default function App() {
   const publishCurrentProject = useCallback(async () => {
     const { directory } = publishSettingsRef.current;
     if (!directory || exportingRef.current) return;
+    if (!projectPathRef.current) {
+      setStatus(t('publishRequiresSavedProject'));
+      return;
+    }
+
+    const currentProject = useEditorStore.getState().project;
+    const currentIssues = validateProject(currentProject, t);
+    let plan: ExportPlan;
+    try {
+      plan = buildExportPlan(currentProject, { issues: currentIssues });
+    } catch (error) {
+      if (reportExportError(error)) return;
+      throw error;
+    }
+    if (!confirmExportPlan(plan, directory)) return;
+
     exportingRef.current = true;
     setIsExporting(true);
     try {
       const result = await publishProjectFiles(
         directory,
-        useEditorStore.getState().project,
-        { fileExists, writeTextFile, readTextFile },
+        currentProject,
+        {
+          fileExists,
+          writeTextFile,
+          readTextFile,
+          removeFile: deleteExportFile,
+        },
+        {
+          projectPath: projectPathRef.current,
+          projectKey: projectKeyForPath(projectPathRef.current),
+          issues: currentIssues,
+        },
       );
       setStatus(publishResultStatus(t, result, directory));
     } finally {
       exportingRef.current = false;
       setIsExporting(false);
     }
-  }, [t]);
+  }, [confirmExportPlan, reportExportError, t]);
 
   const addFieldToSelectedTable = useCallback(() => {
     if (selectedTable) addColumn(selectedTable.id);
@@ -1664,6 +1924,9 @@ export default function App() {
                     </span>
                   ) : null}
                   {table.name}
+                  {table.publish === true ? null : (
+                    <span className="table-list-item__publish">{t('unpublishedTable')}</span>
+                  )}
                 </span>
                 <span className="table-list-item__meta">
                   {table.remark?.trim() ? (

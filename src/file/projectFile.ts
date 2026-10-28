@@ -21,8 +21,13 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
   }
 
   if (!isRecord(raw)) return { ok: false, error: t('parseRootObject') };
-  if (raw.version !== 1) return { ok: false, error: t('parseUnsupportedVersion') };
+  if (raw.version !== 1 && raw.version !== 2) {
+    return { ok: false, error: t('parseUnsupportedVersion') };
+  }
   if (!Array.isArray(raw.tables)) return { ok: false, error: t('parseTablesArray') };
+  if (raw.exportPolicy !== undefined && raw.exportPolicy !== 'explicit') {
+    return { ok: false, error: t('parseExportPolicy') };
+  }
 
   for (const [tableIndex, table] of raw.tables.entries()) {
     if (!isRecord(table)) return { ok: false, error: t('parseTableObject', { index: tableIndex }) };
@@ -32,6 +37,10 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
 
     if (table.remark !== undefined && typeof table.remark !== 'string') {
       return { ok: false, error: t('parseTableRemark', { table: table.name }) };
+    }
+
+    if (table.publish !== undefined && typeof table.publish !== 'boolean') {
+      return { ok: false, error: t('parseTablePublish', { table: table.name }) };
     }
 
     if (
@@ -136,6 +145,13 @@ export function parseProjectFileText(text: string, t: Translator): ParseResult {
         return {
           ok: false,
           error: t('parseRowShape', { table: table.name, index: rowIndex }),
+        };
+      }
+
+      if (row.publish !== undefined && typeof row.publish !== 'boolean') {
+        return {
+          ok: false,
+          error: t('parseRowPublish', { table: table.name, index: rowIndex }),
         };
       }
     }

@@ -16,10 +16,15 @@ const column = (
 
 const row = (id: string, values: Record<string, unknown>): ConfigRow => ({
   _rowId: id,
+  publish: true,
   values,
 });
 
-const project = (tables: ConfigTable[]): ProjectFile => ({ version: 1, tables });
+const project = (tables: ConfigTable[]): ProjectFile => ({
+  version: 1,
+  exportPolicy: 'explicit',
+  tables: tables.map((table) => ({ ...table, publish: true })),
+});
 
 const soundTable = (): ConfigTable => ({
   id: 'sound',

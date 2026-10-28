@@ -1,4 +1,4 @@
-import type { ExportJsonFile } from './exportTables';
+import type { ExportJsonFile } from './exportScope';
 
 export type DesktopExportResult =
   | { status: 'cancelled' }

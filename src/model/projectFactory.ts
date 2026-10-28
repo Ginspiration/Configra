@@ -2,7 +2,8 @@ import type { ProjectFile } from './types';
 
 export function createEmptyProject(): ProjectFile {
   return {
-    version: 1,
+    version: 2,
+    exportPolicy: 'explicit',
     tables: [],
   };
 }

@@ -5,9 +5,23 @@ export type PublishSettings = {
 
 const PUBLISH_SETTINGS_STORAGE_KEY = 'configra:publish-settings';
 
-export const loadPublishSettings = (): PublishSettings => {
+const settingsKey = (projectPath?: string) =>
+  projectPath
+    ? `${PUBLISH_SETTINGS_STORAGE_KEY}:${projectPath.toLowerCase()}`
+    : PUBLISH_SETTINGS_STORAGE_KEY;
+
+export const projectKeyForPath = (projectPath?: string) => {
+  if (!projectPath) return 'unsaved';
+  let hash = 2166136261;
+  for (let index = 0; index < projectPath.length; index += 1) {
+    hash = Math.imul(hash ^ projectPath.toLowerCase().charCodeAt(index), 16777619);
+  }
+  return `project-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+};
+
+export const loadPublishSettings = (projectPath?: string): PublishSettings => {
   try {
-    const raw = window.localStorage.getItem(PUBLISH_SETTINGS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(settingsKey(projectPath));
     if (!raw) return { enabled: false };
 
     const parsed = JSON.parse(raw) as Partial<PublishSettings>;
@@ -22,9 +36,15 @@ export const loadPublishSettings = (): PublishSettings => {
   }
 };
 
-export const savePublishSettings = (settings: PublishSettings) => {
+export const savePublishSettings = (
+  settings: PublishSettings,
+  projectPath?: string,
+) => {
   try {
-    window.localStorage.setItem(PUBLISH_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    window.localStorage.setItem(
+      settingsKey(projectPath),
+      JSON.stringify(settings),
+    );
   } catch {
     // Local persistence is a convenience; ignore quota/private-mode failures.
   }

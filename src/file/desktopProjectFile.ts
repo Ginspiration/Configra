@@ -74,6 +74,10 @@ export async function fileExists(path: string) {
   return invoke<boolean>('path_exists', { path });
 }
 
+export async function deleteExportFile(directory: string, fileName: string) {
+  await invoke('delete_export_file', { directory, fileName });
+}
+
 export async function writeProjectFileText(path: string, text: string) {
   await writeTextFile(path, text);
   await invoke('save_recent_project_path', { path });

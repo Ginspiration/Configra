@@ -450,24 +450,27 @@ describe('data patch engine', () => {
   it('produces stable export helpers for config ids and duplicate table names', () => {
     const project: ProjectFile = {
       version: 1,
+      exportPolicy: 'explicit',
       tables: [
         {
           id: 'speaker_a',
           name: 'Speaker',
+          publish: true,
           position: { x: 0, y: 0 },
           identity: { namespace: 'Sound', keyColumnId: 'key', valueColumnId: 'id' },
           columns: [
             { id: 'key', name: 'key', type: 'string', required: true },
             { id: 'id', name: 'id', type: 'int', required: true },
           ],
-          rows: [{ _rowId: 'row_a', values: { key: 'CLICK', id: 1 } }],
+          rows: [{ _rowId: 'row_a', publish: true, values: { key: 'CLICK', id: 1 } }],
         },
         {
           id: 'speaker_b',
           name: 'Speaker',
+          publish: true,
           position: { x: 1, y: 1 },
           columns: [{ id: 'value', name: 'value', type: 'string' }],
-          rows: [{ _rowId: 'row_b', values: { value: 'x' } }],
+          rows: [{ _rowId: 'row_b', publish: true, values: { value: 'x' } }],
         },
       ],
     };

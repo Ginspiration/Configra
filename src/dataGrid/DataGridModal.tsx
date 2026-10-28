@@ -118,6 +118,19 @@ const isEditableTarget = (target: EventTarget | null) => {
   return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
 };
 
+type PublishMarkerDrawArgs = {
+  ctx: CanvasRenderingContext2D;
+  rect: { x: number; y: number; width: number; height: number };
+  col: number;
+  row: number;
+  theme: Theme;
+};
+
+type GridDrawExtras = {
+  /** Glide 支持但未包含在公开 Props 类型中的逐单元格绘制钩子。 */
+  drawCell?: (args: PublishMarkerDrawArgs, drawContent: () => void) => void;
+};
+
 const columnRemark = (column: ConfigColumn) => column.remark?.trim() ?? '';
 
 /** 表头备注测量用的离屏 canvas；不参与渲染，仅用于预先计算表头高度。 */
@@ -518,6 +531,7 @@ export default function DataGridModal({
   const insertRow = useEditorStore((state) => state.insertRow);
   const moveRow = useEditorStore((state) => state.moveRow);
   const deleteRows = useEditorStore((state) => state.deleteRows);
+  const setRowsPublish = useEditorStore((state) => state.setRowsPublish);
   const updateColumn = useEditorStore((state) => state.updateColumn);
   const updateCell = useEditorStore((state) => state.updateCell);
   const undoTable = useEditorStore((state) => state.undo);
@@ -662,6 +676,43 @@ export default function DataGridModal({
         };
       }) ?? [],
     [columnWidths, table],
+  );
+
+  const drawPublishMarker = useCallback(
+    (args: PublishMarkerDrawArgs, drawContent: () => void) => {
+      drawContent();
+
+      // Glide 的 drawCell 不会对行号单元格（InnerOnly Marker）回调，
+      // 因此把发布状态竖条画在第一列数据单元格的最左缘，紧贴行号右侧。
+      if (!table || args.col !== 0 || args.row < 0 || args.row >= table.rows.length) {
+        return;
+      }
+
+      const row = table.rows[args.row];
+      if (!row) return;
+
+      const { ctx, rect, theme } = args;
+      ctx.save();
+      ctx.fillStyle =
+        row.publish === true
+          ? isDarkTheme
+            ? '#4ade80'
+            : '#16a34a'
+          : theme.textLight;
+      ctx.fillRect(
+        rect.x + 0.5,
+        rect.y + 4,
+        4,
+        Math.max(2, rect.height - 8),
+      );
+      ctx.restore();
+    },
+    [isDarkTheme, table],
+  );
+
+  const gridDrawExtras = useMemo<GridDrawExtras>(
+    () => ({ drawCell: drawPublishMarker }),
+    [drawPublishMarker],
   );
 
   const headerHeight = useMemo(() => {
@@ -1209,6 +1260,12 @@ export default function DataGridModal({
     const uppercaseTargets = [...uppercaseTargetMap.values()];
     const menuColumn = table.columns[cellMenu.colIndex];
     const menuRow = table.rows[cellMenu.rowIndex];
+    const actionRowIds = actionRowIndexes
+      .map((rowIndex) => table.rows[rowIndex]?._rowId)
+      .filter((rowId): rowId is string => Boolean(rowId));
+    const allActionRowsPublished =
+      actionRowIndexes.length > 0 &&
+      actionRowIndexes.every((rowIndex) => table.rows[rowIndex]?.publish === true);
     const referenceTarget = resolveReferenceTarget(
       project,
       menuColumn,
@@ -1259,6 +1316,15 @@ export default function DataGridModal({
         disabled: uppercaseTargets.length === 0,
         onSelect: () => uppercaseCells(uppercaseTargets),
       },
+      {
+        id: 'toggle-publish',
+        label: allActionRowsPublished
+          ? t('markRowsUnpublished')
+          : t('markRowsPublished'),
+        disabled: actionRowIds.length === 0,
+        onSelect: () =>
+          setRowsPublish(table.id, actionRowIds, !allActionRowsPublished),
+      },
       { id: 'row-separator-copy', type: 'separator' },
       {
         id: 'copy-selection',
@@ -1294,6 +1360,7 @@ export default function DataGridModal({
     onOpenTable,
     project,
     selection,
+    setRowsPublish,
     t,
     table,
     uppercaseCells,
@@ -1568,6 +1635,7 @@ export default function DataGridModal({
           {tableIssueCount > 0 ? ` / ${tableIssueCount}` : ''}
           {selectedRowCount > 0 ? ` / ${t('selectedRowsCount', { count: selectedRowCount })}` : ''}
           {searchStatus ? ` / ${searchStatus}` : ''}
+          {` / ${t('publishMarkerLegend')}`}
         </>
       }
       actions={
@@ -1630,6 +1698,7 @@ export default function DataGridModal({
           <div className="data-modal__grid" ref={setGridWrap}>
             <GlideDataEditor
               ref={gridRef}
+              {...gridDrawExtras}
               columns={columns}
               rows={gridRowCount}
               getCellContent={getCellContent}
